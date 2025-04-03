@@ -251,6 +251,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 
 	var blobs []lexutil.LexLink
 	for _, entry := range entries {
+		var cids []cid.Cid
 		if entry.Cid != "" {
 			if err := rm.s.db.Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: "did"}, {Name: "nsid"}, {Name: "rkey"}},
@@ -259,26 +260,22 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 				return nil, err
 			}
 
-			cids, err := rm.incrementBlobRefs(urepo, entry.Value)
+			cids, err = rm.incrementBlobRefs(urepo, entry.Value)
 			if err != nil {
 				return nil, err
-			}
-
-			for _, c := range cids {
-				blobs = append(blobs, lexutil.LexLink(c))
 			}
 		} else {
 			if err := rm.s.db.Delete(&entry).Error; err != nil {
 				return nil, err
 			}
-			cids, err := rm.decrementBlobRefs(urepo, entry.Value)
+			cids, err = rm.decrementBlobRefs(urepo, entry.Value)
 			if err != nil {
 				return nil, err
 			}
+		}
 
-			for _, c := range cids {
-				blobs = append(blobs, lexutil.LexLink(c))
-			}
+		for _, c := range cids {
+			blobs = append(blobs, lexutil.LexLink(c))
 		}
 	}
 
