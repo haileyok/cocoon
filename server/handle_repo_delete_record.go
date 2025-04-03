@@ -9,7 +9,7 @@ import (
 type ComAtprotoRepoDeleteRecordRequest struct {
 	Repo       string  `json:"repo" validate:"required,atproto-did"`
 	Collection string  `json:"collection" validate:"required,atproto-nsid"`
-	Rkey       *string `json:"rkey,omitempty" validate:"required,atproto-rkey"`
+	Rkey       string  `json:"rkey" validate:"required,atproto-rkey"`
 	SwapRecord *string `json:"swapRecord"`
 	SwapCommit *string `json:"swapCommit"`
 }
@@ -33,13 +33,11 @@ func (s *Server) handleDeleteRecord(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
-	optype := OpTypeDelete
-
 	results, err := s.repoman.applyWrites(repo.Repo, []Op{
 		{
-			Type:       optype,
+			Type:       OpTypeDelete,
 			Collection: req.Collection,
-			Rkey:       req.Rkey,
+			Rkey:       &req.Rkey,
 			SwapRecord: req.SwapRecord,
 		},
 	}, req.SwapCommit)
