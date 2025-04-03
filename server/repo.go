@@ -209,6 +209,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 	ops := make([]*atproto.SyncSubscribeRepos_RepoOp, 0, len(diffops))
 
 	for _, op := range diffops {
+		var c cid.Cid
 		switch op.Op {
 		case "add", "mut":
 			kind := "create"
@@ -216,6 +217,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 				kind = "update"
 			}
 
+			c = op.NewCid
 			ll := lexutil.LexLink(op.NewCid)
 			ops = append(ops, &atproto.SyncSubscribeRepos_RepoOp{
 				Action: kind,
@@ -224,6 +226,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 			})
 
 		case "del":
+			c = op.OldCid
 			ll := lexutil.LexLink(op.OldCid)
 			ops = append(ops, &atproto.SyncSubscribeRepos_RepoOp{
 				Action: "delete",
@@ -233,7 +236,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 			})
 		}
 
-		blk, err := dbs.Get(context.TODO(), op.NewCid)
+		blk, err := dbs.Get(context.TODO(), c)
 		if err != nil {
 			return nil, err
 		}
