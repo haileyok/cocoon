@@ -84,10 +84,10 @@ func (mm *MarshalableMap) MarshalCBOR(w io.Writer) error {
 
 type ApplyWriteResult struct {
 	Type             *string     `json:"$type,omitempty"`
-	Uri              string      `json:"uri"`
-	Cid              string      `json:"cid"`
+	Uri              *string     `json:"uri,omitempty"`
+	Cid              *string     `json:"cid,omitempty"`
 	Commit           *RepoCommit `json:"commit,omitempty"`
-	ValidationStatus *string     `json:"validationStatus"`
+	ValidationStatus *string     `json:"validationStatus,omitempty"`
 }
 
 type RepoCommit struct {
@@ -139,15 +139,28 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 			})
 			results = append(results, ApplyWriteResult{
 				Type:             to.StringPtr(OpTypeCreate.String()),
-				Uri:              "at://" + urepo.Did + "/" + op.Collection + "/" + *op.Rkey,
-				Cid:              nc.String(),
+				Uri:              to.StringPtr("at://" + urepo.Did + "/" + op.Collection + "/" + *op.Rkey),
+				Cid:              to.StringPtr(nc.String()),
 				ValidationStatus: to.StringPtr("valid"), // TODO: obviously this might not be true atm lol
 			})
 		case OpTypeDelete:
+			var old models.Record
+			if err := rm.db.Raw("SELECT value FROM records WHERE did = ? AND nsid = ? AND rkey = ?", urepo.Did, op.Collection, op.Rkey).Scan(&old).Error; err != nil {
+				return nil, err
+			}
+			entries = append(entries, models.Record{
+				Did:   urepo.Did,
+				Nsid:  op.Collection,
+				Rkey:  *op.Rkey,
+				Value: old.Value,
+			})
 			err := r.DeleteRecord(context.TODO(), op.Collection+"/"+*op.Rkey)
 			if err != nil {
 				return nil, err
 			}
+			results = append(results, ApplyWriteResult{
+				Type: to.StringPtr(OpTypeDelete.String()),
+			})
 		case OpTypeUpdate:
 			nc, err := r.UpdateRecord(context.TODO(), op.Collection+"/"+*op.Rkey, op.Record)
 			if err != nil {
@@ -165,8 +178,8 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 			})
 			results = append(results, ApplyWriteResult{
 				Type:             to.StringPtr(OpTypeUpdate.String()),
-				Uri:              "at://" + urepo.Did + "/" + op.Collection + "/" + *op.Rkey,
-				Cid:              nc.String(),
+				Uri:              to.StringPtr("at://" + urepo.Did + "/" + op.Collection + "/" + *op.Rkey),
+				Cid:              to.StringPtr(nc.String()),
 				ValidationStatus: to.StringPtr("valid"), // TODO: obviously this might not be true atm lol
 			})
 		}
@@ -211,10 +224,12 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 			})
 
 		case "del":
+			ll := lexutil.LexLink(op.OldCid)
 			ops = append(ops, &atproto.SyncSubscribeRepos_RepoOp{
 				Action: "delete",
 				Path:   op.Rpath,
 				Cid:    nil,
+				Prev:   &ll,
 			})
 		}
 
@@ -236,21 +251,34 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 
 	var blobs []lexutil.LexLink
 	for _, entry := range entries {
-		if err := rm.s.db.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "did"}, {Name: "nsid"}, {Name: "rkey"}},
-			UpdateAll: true,
-		}).Create(&entry).Error; err != nil {
-			return nil, err
-		}
+		if entry.Cid != "" {
+			if err := rm.s.db.Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "did"}, {Name: "nsid"}, {Name: "rkey"}},
+				UpdateAll: true,
+			}).Create(&entry).Error; err != nil {
+				return nil, err
+			}
 
-		// we should actually check the type (i.e. delete, create,., update) here but we'll do it later
-		cids, err := rm.incrementBlobRefs(urepo, entry.Value)
-		if err != nil {
-			return nil, err
-		}
+			cids, err := rm.incrementBlobRefs(urepo, entry.Value)
+			if err != nil {
+				return nil, err
+			}
 
-		for _, c := range cids {
-			blobs = append(blobs, lexutil.LexLink(c))
+			for _, c := range cids {
+				blobs = append(blobs, lexutil.LexLink(c))
+			}
+		} else {
+			if err := rm.s.db.Delete(&entry).Error; err != nil {
+				return nil, err
+			}
+			cids, err := rm.decrementBlobRefs(urepo, entry.Value)
+			if err != nil {
+				return nil, err
+			}
+
+			for _, c := range cids {
+				blobs = append(blobs, lexutil.LexLink(c))
+			}
 		}
 	}
 
@@ -314,6 +342,34 @@ func (rm *RepoMan) incrementBlobRefs(urepo models.Repo, cbor []byte) ([]cid.Cid,
 	for _, c := range cids {
 		if err := rm.db.Exec("UPDATE blobs SET ref_count = ref_count + 1 WHERE did = ? AND cid = ?", urepo.Did, c.Bytes()).Error; err != nil {
 			return nil, err
+		}
+	}
+
+	return cids, nil
+}
+
+func (rm *RepoMan) decrementBlobRefs(urepo models.Repo, cbor []byte) ([]cid.Cid, error) {
+	cids, err := getBlobCidsFromCbor(cbor)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, c := range cids {
+		var res struct {
+			ID    uint
+			Count int
+		}
+		if err := rm.db.Raw("UPDATE blobs SET ref_count = ref_count - 1 WHERE did = ? AND cid = ? RETURNING id, ref_count", urepo.Did, c.Bytes()).Scan(&res).Error; err != nil {
+			return nil, err
+		}
+
+		if res.Count == 0 {
+			if err := rm.db.Exec("DELETE FROM blobs WHERE id = ?", res.ID).Error; err != nil {
+				return nil, err
+			}
+			if err := rm.db.Exec("DELETE FROM blob_parts WHERE blob_id = ?", res.ID).Error; err != nil {
+				return nil, err
+			}
 		}
 	}
 
