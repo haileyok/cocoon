@@ -132,7 +132,8 @@ func (s *Server) handleSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc
 		})
 		if err != nil {
 			s.logger.Error("error parsing jwt", "error", err)
-			return helpers.InputError(e, to.StringPtr("InvalidToken"))
+			// NOTE: https://github.com/bluesky-social/atproto/discussions/3319
+			return e.JSON(400, map[string]string{"error": "ExpiredToken", "message": "token has expired"})
 		}
 
 		claims, ok := token.Claims.(jwt.MapClaims)
