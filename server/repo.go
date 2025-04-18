@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"time"
@@ -123,12 +124,23 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 
 		switch op.Type {
 		case OpTypeCreate:
-			nc, err := r.PutRecord(context.TODO(), op.Collection+"/"+*op.Rkey, op.Record)
+			j, err := json.Marshal(*op.Record)
 			if err != nil {
 				return nil, err
 			}
-
-			d, _ := data.MarshalCBOR(*op.Record)
+			out, err := data.UnmarshalJSON(j)
+			if err != nil {
+				return nil, err
+			}
+			mm := MarshalableMap(out)
+			nc, err := r.PutRecord(context.TODO(), op.Collection+"/"+*op.Rkey, &mm)
+			if err != nil {
+				return nil, err
+			}
+			d, err := data.MarshalCBOR(mm)
+			if err != nil {
+				return nil, err
+			}
 			entries = append(entries, models.Record{
 				Did:       urepo.Did,
 				CreatedAt: rm.clock.Next().String(),
@@ -162,12 +174,23 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 				Type: to.StringPtr(OpTypeDelete.String()),
 			})
 		case OpTypeUpdate:
-			nc, err := r.UpdateRecord(context.TODO(), op.Collection+"/"+*op.Rkey, op.Record)
+			j, err := json.Marshal(*op.Record)
 			if err != nil {
 				return nil, err
 			}
-
-			d, _ := data.MarshalCBOR(*op.Record)
+			out, err := data.UnmarshalJSON(j)
+			if err != nil {
+				return nil, err
+			}
+			mm := MarshalableMap(out)
+			nc, err := r.UpdateRecord(context.TODO(), op.Collection+"/"+*op.Rkey, &mm)
+			if err != nil {
+				return nil, err
+			}
+			d, err := data.MarshalCBOR(mm)
+			if err != nil {
+				return nil, err
+			}
 			entries = append(entries, models.Record{
 				Did:       urepo.Did,
 				CreatedAt: rm.clock.Next().String(),
