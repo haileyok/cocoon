@@ -69,7 +69,7 @@ func (s *Server) handleDescribeRepo(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	var collections []string = make([]string, 0)
+	var collections []string = make([]string, 0, len(records))
 	for _, r := range records {
 		collections = append(collections, r.Nsid)
 	}

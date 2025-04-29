@@ -14,7 +14,7 @@ func (s *Server) handleActorGetPreferences(e echo.Context) error {
 
 	var prefs map[string]any
 	err := json.Unmarshal(repo.Preferences, &prefs)
-	if err != nil || prefs == nil {
+	if err != nil || prefs["preferences"] == nil {
 		prefs = map[string]any{
 			"preferences": map[string]any{},
 		}
