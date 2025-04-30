@@ -81,6 +81,10 @@ func (s *Server) handleIdentityUpdateHandle(e echo.Context) error {
 		}
 	}
 
+	if err := s.passport.BustDoc(context.TODO(), repo.Repo.Did); err != nil {
+		s.logger.Warn("error busting did doc", "error", err)
+	}
+
 	s.evtman.AddEvent(context.TODO(), &events.XRPCStreamEvent{
 		RepoHandle: &atproto.SyncSubscribeRepos_Handle{
 			Did:    repo.Repo.Did,
