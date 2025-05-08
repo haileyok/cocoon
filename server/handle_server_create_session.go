@@ -69,7 +69,7 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 	case "handle":
 		err = s.db.Raw("SELECT r.*, a.* FROM actors a LEFT JOIN repos r ON a.did = r.did WHERE a.handle = ?", req.Identifier).Scan(&repo).Error
 	case "email":
-		err = s.db.Raw("SELECT r.*, a.* FROM repos r LEFT JOIN actors a ON r.did = a.did WHERE a.email = ?", req.Identifier).Scan(&repo).Error
+		err = s.db.Raw("SELECT r.*, a.* FROM repos r LEFT JOIN actors a ON r.did = a.did WHERE r.email = ?", req.Identifier).Scan(&repo).Error
 	}
 
 	if err != nil {
