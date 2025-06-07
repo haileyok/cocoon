@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"time"
 
 	"github.com/bluesky-social/indigo/repo"
 	"github.com/haileyok/cocoon/blockstore"
@@ -36,8 +37,11 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		s.logger.Error("could not get first block from car", "error", err)
 		return helpers.ServerError(e, nil)
 	}
+	currBlockCt := 1
 
 	for len(currBlock.RawData()) != 0 {
+		s.logger.Info("someone is importing their repo", "block", currBlockCt)
+
 		bs.Put(context.TODO(), currBlock)
 
 		next, err := cs.Next()
@@ -47,6 +51,8 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		}
 
 		currBlock = next
+		currBlockCt++
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	root, rev, err := r.Commit(context.TODO(), urepo.SignFor)

@@ -293,6 +293,10 @@ func New(args *Args) (*Server, error) {
 	httpd := &http.Server{
 		Addr:    args.Addr,
 		Handler: e,
+		// shitty defaults but okay for now, needed for import repo
+		ReadTimeout:  5 * time.Minute,
+		WriteTimeout: 5 * time.Minute,
+		IdleTimeout:  5 * time.Minute,
 	}
 
 	db, err := gorm.Open(sqlite.Open("cocoon.db"), &gorm.Config{})
