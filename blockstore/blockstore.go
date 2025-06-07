@@ -87,8 +87,35 @@ func (bs *SqliteBlockstore) GetSize(context.Context, cid.Cid) (int, error) {
 	panic("not implemented")
 }
 
-func (bs *SqliteBlockstore) PutMany(context.Context, []blocks.Block) error {
-	panic("not implemented")
+func (bs *SqliteBlockstore) PutMany(ctx context.Context, blocks []blocks.Block) error {
+	tx := bs.db.Begin()
+
+	if bs.readonly {
+		bs.inserts = append(bs.inserts, blocks...)
+		return nil
+	}
+
+	for _, block := range blocks {
+		bs.inserts = append(bs.inserts, block)
+
+		b := models.Block{
+			Did:   bs.did,
+			Cid:   block.Cid().Bytes(),
+			Rev:   syntax.NewTIDNow(0).String(), // TODO: WARN, this is bad. don't do this
+			Value: block.RawData(),
+		}
+
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "did"}, {Name: "cid"}},
+			UpdateAll: true,
+		}).Create(&b).Error; err != nil {
+			return err
+		}
+	}
+
+	tx.Commit()
+
+	return nil
 }
 
 func (bs *SqliteBlockstore) AllKeysChan(ctx context.Context) (<-chan cid.Cid, error) {

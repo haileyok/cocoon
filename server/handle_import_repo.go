@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"slices"
 
 	"github.com/bluesky-social/indigo/repo"
 	"github.com/haileyok/cocoon/blockstore"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
+	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipld/go-car"
 	"github.com/labstack/echo/v4"
 )
@@ -30,6 +32,7 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
+	orderedBlocks := []blocks.Block{}
 	currBlock, err := cs.Next()
 	if err != nil {
 		s.logger.Error("could not get first block from car", "error", err)
@@ -39,12 +42,17 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 
 	for len(currBlock.RawData()) != 0 {
 		s.logger.Info("someone is importing their repo", "block", currBlockCt)
-
-		bs.Put(context.TODO(), currBlock)
-
+		orderedBlocks = append(orderedBlocks, currBlock)
 		next, _ := cs.Next()
 		currBlock = next
 		currBlockCt++
+	}
+
+	slices.Reverse(orderedBlocks)
+
+	if err := bs.PutMany(context.TODO(), orderedBlocks); err != nil {
+		s.logger.Error("could not insert blocks", "error", err)
+		return helpers.ServerError(e, nil)
 	}
 
 	r, err := repo.OpenRepo(context.TODO(), bs, cs.Header.Roots[0])
