@@ -40,7 +40,7 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 	}
 	currBlockCt := 1
 
-	for len(currBlock.RawData()) != 0 {
+	for currBlock != nil {
 		s.logger.Info("someone is importing their repo", "block", currBlockCt)
 		orderedBlocks = append(orderedBlocks, currBlock)
 		next, _ := cs.Next()
