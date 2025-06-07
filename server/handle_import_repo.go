@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"time"
 
 	"github.com/bluesky-social/indigo/repo"
 	"github.com/haileyok/cocoon/blockstore"
@@ -24,7 +23,6 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 	}
 
 	bs := blockstore.New(urepo.Repo.Did, s.db)
-	r := repo.NewRepo(context.TODO(), urepo.Repo.Did, bs)
 
 	cs, err := car.NewCarReader(bytes.NewReader(b))
 	if err != nil {
@@ -44,15 +42,15 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 
 		bs.Put(context.TODO(), currBlock)
 
-		next, err := cs.Next()
-		if err != nil {
-			s.logger.Error("could not get nexte block from car", "error", err)
-			return helpers.ServerError(e, nil)
-		}
-
+		next, _ := cs.Next()
 		currBlock = next
 		currBlockCt++
-		time.Sleep(5 * time.Millisecond)
+	}
+
+	r, err := repo.OpenRepo(context.TODO(), bs, cs.Header.Roots[0])
+	if err != nil {
+		s.logger.Error("could not open repo", "error", err)
+		return helpers.ServerError(e, nil)
 	}
 
 	root, rev, err := r.Commit(context.TODO(), urepo.SignFor)
