@@ -16,7 +16,7 @@ type SqliteBlockstore struct {
 	db       *gorm.DB
 	did      string
 	readonly bool
-	inserts  []blocks.Block
+	inserts  map[cid.Cid]blocks.Block
 }
 
 func New(did string, db *gorm.DB) *SqliteBlockstore {
@@ -24,7 +24,7 @@ func New(did string, db *gorm.DB) *SqliteBlockstore {
 		did:      did,
 		db:       db,
 		readonly: false,
-		inserts:  []blocks.Block{},
+		inserts:  map[cid.Cid]blocks.Block{},
 	}
 }
 
@@ -33,12 +33,18 @@ func NewReadOnly(did string, db *gorm.DB) *SqliteBlockstore {
 		did:      did,
 		db:       db,
 		readonly: true,
-		inserts:  []blocks.Block{},
+		inserts:  map[cid.Cid]blocks.Block{},
 	}
 }
 
 func (bs *SqliteBlockstore) Get(ctx context.Context, cid cid.Cid) (blocks.Block, error) {
 	var block models.Block
+
+	maybeBlock, ok := bs.inserts[cid]
+	if ok {
+		return maybeBlock, nil
+	}
+
 	if err := bs.db.Raw("SELECT * FROM blocks WHERE did = ? AND cid = ?", bs.did, cid.Bytes()).Scan(&block).Error; err != nil {
 		return nil, err
 	}
@@ -52,7 +58,7 @@ func (bs *SqliteBlockstore) Get(ctx context.Context, cid cid.Cid) (blocks.Block,
 }
 
 func (bs *SqliteBlockstore) Put(ctx context.Context, block blocks.Block) error {
-	bs.inserts = append(bs.inserts, block)
+	bs.inserts[block.Cid()] = block
 
 	if bs.readonly {
 		return nil
@@ -90,13 +96,12 @@ func (bs *SqliteBlockstore) GetSize(context.Context, cid.Cid) (int, error) {
 func (bs *SqliteBlockstore) PutMany(ctx context.Context, blocks []blocks.Block) error {
 	tx := bs.db.Begin()
 
-	if bs.readonly {
-		bs.inserts = append(bs.inserts, blocks...)
-		return nil
-	}
-
 	for _, block := range blocks {
-		bs.inserts = append(bs.inserts, block)
+		bs.inserts[block.Cid()] = block
+
+		if bs.readonly {
+			continue
+		}
 
 		b := models.Block{
 			Did:   bs.did,
@@ -109,8 +114,13 @@ func (bs *SqliteBlockstore) PutMany(ctx context.Context, blocks []blocks.Block) 
 			Columns:   []clause.Column{{Name: "did"}, {Name: "cid"}},
 			UpdateAll: true,
 		}).Create(&b).Error; err != nil {
+			tx.Rollback()
 			return err
 		}
+	}
+
+	if bs.readonly {
+		return nil
 	}
 
 	tx.Commit()
@@ -148,6 +158,6 @@ func (bs *SqliteBlockstore) Execute(ctx context.Context) error {
 	return nil
 }
 
-func (bs *SqliteBlockstore) GetLog() []blocks.Block {
+func (bs *SqliteBlockstore) GetLog() map[cid.Cid]blocks.Block {
 	return bs.inserts
 }

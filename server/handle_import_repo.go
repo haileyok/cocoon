@@ -5,12 +5,15 @@ import (
 	"context"
 	"io"
 	"slices"
+	"strings"
 
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/bluesky-social/indigo/repo"
 	"github.com/haileyok/cocoon/blockstore"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	blocks "github.com/ipfs/go-block-format"
+	"github.com/ipfs/go-cid"
 	"github.com/ipld/go-car"
 	"github.com/labstack/echo/v4"
 )
@@ -60,6 +63,43 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		s.logger.Error("could not open repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}
+
+	tx := s.db.Begin()
+
+	clock := syntax.NewTIDClock(0)
+
+	if err := r.ForEach(context.TODO(), "", func(key string, cid cid.Cid) error {
+		pts := strings.Split(key, "/")
+		nsid := pts[0]
+		rkey := pts[1]
+		cidStr := cid.String()
+		b, err := bs.Get(context.TODO(), cid)
+		if err != nil {
+			s.logger.Error("record bytes don't exist in blockstore", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+
+		rec := models.Record{
+			Did:       urepo.Repo.Did,
+			CreatedAt: clock.Next().String(),
+			Nsid:      nsid,
+			Rkey:      rkey,
+			Cid:       cidStr,
+			Value:     b.RawData(),
+		}
+
+		if err := tx.Create(rec).Error; err != nil {
+			return err
+		}
+
+		return nil
+	}); err != nil {
+		tx.Rollback()
+		s.logger.Error("record bytes don't exist in blockstore", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+
+	tx.Commit()
 
 	root, rev, err := r.Commit(context.TODO(), urepo.SignFor)
 	if err != nil {
