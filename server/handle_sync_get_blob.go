@@ -44,5 +44,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 		buf.Write(p.Data)
 	}
 
+	e.Response().Header().Set(echo.HeaderContentDisposition, "attachment; filename=" + c.String())
+
 	return e.Stream(200, "application/octet-stream", buf)
 }
