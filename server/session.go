@@ -55,7 +55,7 @@ func (s *Server) createSession(repo *models.Repo) (*Session, error) {
 		RefreshToken: refreshString,
 		CreatedAt:    now,
 		ExpiresAt:    accexp,
-	}).Error; err != nil {
+	}, nil).Error; err != nil {
 		return nil, err
 	}
 
@@ -64,7 +64,7 @@ func (s *Server) createSession(repo *models.Repo) (*Session, error) {
 		Did:       repo.Did,
 		CreatedAt: now,
 		ExpiresAt: refexp,
-	}).Error; err != nil {
+	}, nil).Error; err != nil {
 		return nil, err
 	}
 

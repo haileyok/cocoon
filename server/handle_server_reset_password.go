@@ -46,7 +46,7 @@ func (s *Server) handleServerResetPassword(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.db.Exec("UPDATE repos SET password_reset_code = NULL, password_reset_code_expires_at = NULL, password = ? WHERE did = ?", hash, urepo.Repo.Did).Error; err != nil {
+	if err := s.db.Exec("UPDATE repos SET password_reset_code = NULL, password_reset_code_expires_at = NULL, password = ? WHERE did = ?", nil, hash, urepo.Repo.Did).Error; err != nil {
 		s.logger.Error("error updating repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}

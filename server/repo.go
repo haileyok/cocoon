@@ -18,17 +18,17 @@ import (
 	"github.com/bluesky-social/indigo/repo"
 	"github.com/bluesky-social/indigo/util"
 	"github.com/haileyok/cocoon/blockstore"
+	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/models"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	cbor "github.com/ipfs/go-ipld-cbor"
 	"github.com/ipld/go-car"
-	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 type RepoMan struct {
-	db    *gorm.DB
+	db    *db.DB
 	s     *Server
 	clock *syntax.TIDClock
 }
@@ -162,7 +162,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 			})
 		case OpTypeDelete:
 			var old models.Record
-			if err := rm.db.Raw("SELECT value FROM records WHERE did = ? AND nsid = ? AND rkey = ?", urepo.Did, op.Collection, op.Rkey).Scan(&old).Error; err != nil {
+			if err := rm.db.Raw("SELECT value FROM records WHERE did = ? AND nsid = ? AND rkey = ?", nil, urepo.Did, op.Collection, op.Rkey).Scan(&old).Error; err != nil {
 				return nil, err
 			}
 			entries = append(entries, models.Record{
@@ -284,10 +284,10 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 	for _, entry := range entries {
 		var cids []cid.Cid
 		if entry.Cid != "" {
-			if err := rm.s.db.Clauses(clause.OnConflict{
+			if err := rm.s.db.Create(&entry, []clause.Expression{clause.OnConflict{
 				Columns:   []clause.Column{{Name: "did"}, {Name: "nsid"}, {Name: "rkey"}},
 				UpdateAll: true,
-			}).Create(&entry).Error; err != nil {
+			}}).Error; err != nil {
 				return nil, err
 			}
 
@@ -296,7 +296,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 				return nil, err
 			}
 		} else {
-			if err := rm.s.db.Delete(&entry).Error; err != nil {
+			if err := rm.s.db.Delete(&entry, nil).Error; err != nil {
 				return nil, err
 			}
 			cids, err = rm.decrementBlobRefs(urepo, entry.Value)
@@ -368,7 +368,7 @@ func (rm *RepoMan) incrementBlobRefs(urepo models.Repo, cbor []byte) ([]cid.Cid,
 	}
 
 	for _, c := range cids {
-		if err := rm.db.Exec("UPDATE blobs SET ref_count = ref_count + 1 WHERE did = ? AND cid = ?", urepo.Did, c.Bytes()).Error; err != nil {
+		if err := rm.db.Exec("UPDATE blobs SET ref_count = ref_count + 1 WHERE did = ? AND cid = ?", nil, urepo.Did, c.Bytes()).Error; err != nil {
 			return nil, err
 		}
 	}
@@ -387,15 +387,15 @@ func (rm *RepoMan) decrementBlobRefs(urepo models.Repo, cbor []byte) ([]cid.Cid,
 			ID    uint
 			Count int
 		}
-		if err := rm.db.Raw("UPDATE blobs SET ref_count = ref_count - 1 WHERE did = ? AND cid = ? RETURNING id, ref_count", urepo.Did, c.Bytes()).Scan(&res).Error; err != nil {
+		if err := rm.db.Raw("UPDATE blobs SET ref_count = ref_count - 1 WHERE did = ? AND cid = ? RETURNING id, ref_count", nil, urepo.Did, c.Bytes()).Scan(&res).Error; err != nil {
 			return nil, err
 		}
 
 		if res.Count == 0 {
-			if err := rm.db.Exec("DELETE FROM blobs WHERE id = ?", res.ID).Error; err != nil {
+			if err := rm.db.Exec("DELETE FROM blobs WHERE id = ?", nil, res.ID).Error; err != nil {
 				return nil, err
 			}
-			if err := rm.db.Exec("DELETE FROM blob_parts WHERE blob_id = ?", res.ID).Error; err != nil {
+			if err := rm.db.Exec("DELETE FROM blob_parts WHERE blob_id = ?", nil, res.ID).Error; err != nil {
 				return nil, err
 			}
 		}

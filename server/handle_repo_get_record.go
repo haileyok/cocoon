@@ -32,7 +32,7 @@ func (s *Server) handleRepoGetRecord(e echo.Context) error {
 	}
 
 	var record models.Record
-	if err := s.db.Raw("SELECT * FROM records WHERE did = ? AND nsid = ? AND rkey = ?"+cidquery, params...).Scan(&record).Error; err != nil {
+	if err := s.db.Raw("SELECT * FROM records WHERE did = ? AND nsid = ? AND rkey = ?"+cidquery, nil, params...).Scan(&record).Error; err != nil {
 		// TODO: handle error nicely
 		return err
 	}

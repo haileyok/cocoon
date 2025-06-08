@@ -85,7 +85,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 	}
 
 	var ic models.InviteCode
-	if err := s.db.Raw("SELECT * FROM invite_codes WHERE code = ?", request.InviteCode).Scan(&ic).Error; err != nil {
+	if err := s.db.Raw("SELECT * FROM invite_codes WHERE code = ?", nil, request.InviteCode).Scan(&ic).Error; err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return helpers.InputError(e, to.StringPtr("InvalidInviteCode"))
 		}
@@ -148,7 +148,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		Handle: request.Handle,
 	}
 
-	if err := s.db.Create(&urepo).Error; err != nil {
+	if err := s.db.Create(&urepo, nil).Error; err != nil {
 		s.logger.Error("error inserting new repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}
@@ -185,12 +185,12 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		},
 	})
 
-	if err := s.db.Create(&actor).Error; err != nil {
+	if err := s.db.Create(&actor, nil).Error; err != nil {
 		s.logger.Error("error inserting new actor", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.db.Raw("UPDATE invite_codes SET remaining_use_count = remaining_use_count - 1 WHERE code = ?", request.InviteCode).Scan(&ic).Error; err != nil {
+	if err := s.db.Raw("UPDATE invite_codes SET remaining_use_count = remaining_use_count - 1 WHERE code = ?", nil, request.InviteCode).Scan(&ic).Error; err != nil {
 		s.logger.Error("error decrementing use count", "error", err)
 		return helpers.ServerError(e, nil)
 	}

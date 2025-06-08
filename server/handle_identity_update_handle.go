@@ -103,7 +103,7 @@ func (s *Server) handleIdentityUpdateHandle(e echo.Context) error {
 		},
 	})
 
-	if err := s.db.Exec("UPDATE actors SET handle = ? WHERE did = ?", req.Handle, repo.Repo.Did).Error; err != nil {
+	if err := s.db.Exec("UPDATE actors SET handle = ? WHERE did = ?", nil, req.Handle, repo.Repo.Did).Error; err != nil {
 		s.logger.Error("error updating handle in db", "error", err)
 		return helpers.ServerError(e, nil)
 	}

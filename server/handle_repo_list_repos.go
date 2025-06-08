@@ -22,7 +22,7 @@ type ComAtprotoSyncListReposRepoItem struct {
 // TODO: paginate this bitch
 func (s *Server) handleListRepos(e echo.Context) error {
 	var repos []models.Repo
-	if err := s.db.Raw("SELECT * FROM repos ORDER BY created_at DESC LIMIT 500").Scan(&repos).Error; err != nil {
+	if err := s.db.Raw("SELECT * FROM repos ORDER BY created_at DESC LIMIT 500", nil).Scan(&repos).Error; err != nil {
 		return err
 	}
 

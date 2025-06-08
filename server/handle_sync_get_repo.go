@@ -41,7 +41,7 @@ func (s *Server) handleSyncGetRepo(e echo.Context) error {
 	}
 
 	var blocks []models.Block
-	if err := s.db.Raw("SELECT * FROM blocks WHERE did = ? ORDER BY rev ASC", urepo.Repo.Did).Scan(&blocks).Error; err != nil {
+	if err := s.db.Raw("SELECT * FROM blocks WHERE did = ? ORDER BY rev ASC", nil, urepo.Repo.Did).Scan(&blocks).Error; err != nil {
 		return err
 	}
 

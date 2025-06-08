@@ -40,7 +40,7 @@ func (s *Server) handleServerUpdateEmail(e echo.Context) error {
 		return helpers.InputError(e, to.StringPtr("ExpiredToken"))
 	}
 
-	if err := s.db.Exec("UPDATE repos SET email_update_code = NULL, email_update_code_expires_at = NULL, email_confirmed_at = NULL,  email = ? WHERE did = ?", req.Email, urepo.Repo.Did).Error; err != nil {
+	if err := s.db.Exec("UPDATE repos SET email_update_code = NULL, email_update_code_expires_at = NULL, email_confirmed_at = NULL,  email = ? WHERE did = ?", nil, req.Email, urepo.Repo.Did).Error; err != nil {
 		s.logger.Error("error updating repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}

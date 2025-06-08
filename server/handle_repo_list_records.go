@@ -64,7 +64,7 @@ func (s *Server) handleListRecords(e echo.Context) error {
 	params = append(params, limit)
 
 	var records []models.Record
-	if err := s.db.Raw("SELECT * FROM records WHERE did = ? AND nsid = ? "+cursorquery+" ORDER BY created_at "+sort+" limit ?", params...).Scan(&records).Error; err != nil {
+	if err := s.db.Raw("SELECT * FROM records WHERE did = ? AND nsid = ? "+cursorquery+" ORDER BY created_at "+sort+" limit ?", nil, params...).Scan(&records).Error; err != nil {
 		s.logger.Error("error getting records", "error", err)
 		return helpers.ServerError(e, nil)
 	}

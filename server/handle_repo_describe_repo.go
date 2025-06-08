@@ -64,7 +64,7 @@ func (s *Server) handleDescribeRepo(e echo.Context) error {
 	}
 
 	var records []models.Record
-	if err := s.db.Raw("SELECT DISTINCT(nsid) FROM records WHERE did = ?", repo.Repo.Did).Scan(&records).Error; err != nil {
+	if err := s.db.Raw("SELECT DISTINCT(nsid) FROM records WHERE did = ?", nil, repo.Repo.Did).Scan(&records).Error; err != nil {
 		s.logger.Error("error getting collections", "error", err)
 		return helpers.ServerError(e, nil)
 	}

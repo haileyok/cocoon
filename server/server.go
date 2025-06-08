@@ -23,6 +23,7 @@ import (
 	"github.com/go-playground/validator"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/haileyok/cocoon/identity"
+	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/plc"
@@ -40,7 +41,7 @@ type Server struct {
 	mail       *mailyak.MailYak
 	mailLk     *sync.Mutex
 	echo       *echo.Echo
-	db         *gorm.DB
+	db         *db.DB
 	plcClient  *plc.Client
 	logger     *slog.Logger
 	config     *config
@@ -121,7 +122,7 @@ func (s *Server) handleAdminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		if err := next(e); err != nil {
 			e.Error(err)
 		}
-		
+
 		return nil
 	}
 }
@@ -176,7 +177,7 @@ func (s *Server) handleSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc
 			Found bool
 		}
 		var result Result
-		if err := s.db.Raw("SELECT EXISTS(SELECT 1 FROM "+table+" WHERE token = ?) AS found", tokenstr).Scan(&result).Error; err != nil {
+		if err := s.db.Raw("SELECT EXISTS(SELECT 1 FROM "+table+" WHERE token = ?) AS found", nil, tokenstr).Scan(&result).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
 				return helpers.InputError(e, to.StringPtr("InvalidToken"))
 			}
@@ -295,10 +296,11 @@ func New(args *Args) (*Server, error) {
 		Handler: e,
 	}
 
-	db, err := gorm.Open(sqlite.Open("cocoon.db"), &gorm.Config{})
+	gdb, err := gorm.Open(sqlite.Open("cocoon.db"), &gorm.Config{})
 	if err != nil {
 		return nil, err
 	}
+	dbw := db.NewDB(gdb)
 
 	rkbytes, err := os.ReadFile(args.RotationKeyPath)
 	if err != nil {
@@ -337,7 +339,7 @@ func New(args *Args) (*Server, error) {
 		httpd:      httpd,
 		echo:       e,
 		logger:     args.Logger,
-		db:         db,
+		db:         dbw,
 		plcClient:  plcClient,
 		privateKey: &pkey,
 		config: &config{
@@ -425,7 +427,7 @@ func (s *Server) addRoutes() {
 	// are there any routes that we should be allowing without auth? i dont think so but idk
 	s.echo.GET("/xrpc/*", s.handleProxy, s.handleSessionMiddleware)
 	s.echo.POST("/xrpc/*", s.handleProxy, s.handleSessionMiddleware)
-	
+
 	// admin routes
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCode", s.handleCreateInviteCode, s.handleAdminMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCodes", s.handleCreateInviteCodes, s.handleAdminMiddleware)

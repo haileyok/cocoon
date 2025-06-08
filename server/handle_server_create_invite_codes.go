@@ -54,7 +54,7 @@ func (s *Server) handleCreateInviteCodes(e echo.Context) error {
 				Code:              ic,
 				Did:               did,
 				RemainingUseCount: req.UseCount,
-			}).Error; err != nil {
+			}, nil).Error; err != nil {
 				s.logger.Error("error creating invite code", "error", err)
 				return helpers.ServerError(e, nil)
 			}

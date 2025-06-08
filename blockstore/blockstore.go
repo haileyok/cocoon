@@ -5,21 +5,21 @@ import (
 	"fmt"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/models"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
-	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 type SqliteBlockstore struct {
-	db       *gorm.DB
+	db       *db.DB
 	did      string
 	readonly bool
 	inserts  []blocks.Block
 }
 
-func New(did string, db *gorm.DB) *SqliteBlockstore {
+func New(did string, db *db.DB) *SqliteBlockstore {
 	return &SqliteBlockstore{
 		did:      did,
 		db:       db,
@@ -28,7 +28,7 @@ func New(did string, db *gorm.DB) *SqliteBlockstore {
 	}
 }
 
-func NewReadOnly(did string, db *gorm.DB) *SqliteBlockstore {
+func NewReadOnly(did string, db *db.DB) *SqliteBlockstore {
 	return &SqliteBlockstore{
 		did:      did,
 		db:       db,
@@ -39,7 +39,7 @@ func NewReadOnly(did string, db *gorm.DB) *SqliteBlockstore {
 
 func (bs *SqliteBlockstore) Get(ctx context.Context, cid cid.Cid) (blocks.Block, error) {
 	var block models.Block
-	if err := bs.db.Raw("SELECT * FROM blocks WHERE did = ? AND cid = ?", bs.did, cid.Bytes()).Scan(&block).Error; err != nil {
+	if err := bs.db.Raw("SELECT * FROM blocks WHERE did = ? AND cid = ?", nil, bs.did, cid.Bytes()).Scan(&block).Error; err != nil {
 		return nil, err
 	}
 
@@ -65,10 +65,10 @@ func (bs *SqliteBlockstore) Put(ctx context.Context, block blocks.Block) error {
 		Value: block.RawData(),
 	}
 
-	if err := bs.db.Clauses(clause.OnConflict{
+	if err := bs.db.Create(&b, []clause.Expression{clause.OnConflict{
 		Columns:   []clause.Column{{Name: "did"}, {Name: "cid"}},
 		UpdateAll: true,
-	}).Create(&b).Error; err != nil {
+	}}).Error; err != nil {
 		return err
 	}
 
@@ -100,7 +100,7 @@ func (bs *SqliteBlockstore) HashOnRead(enabled bool) {
 }
 
 func (bs *SqliteBlockstore) UpdateRepo(ctx context.Context, root cid.Cid, rev string) error {
-	if err := bs.db.Exec("UPDATE repos SET root = ?, rev = ? WHERE did = ?", root.Bytes(), rev, bs.did).Error; err != nil {
+	if err := bs.db.Exec("UPDATE repos SET root = ?, rev = ? WHERE did = ?", nil, root.Bytes(), rev, bs.did).Error; err != nil {
 		return err
 	}
 
