@@ -532,8 +532,7 @@ func (s *Server) doBackup() {
 	if err := func() error {
 		s.logger.Info("sending to s3...")
 
-		currTime := time.Now().String()
-		strings.ReplaceAll(currTime, " ", "_")
+		currTime := time.Now().Format("2006-01-02_15-04-05")
 		key := "cocoon-backup-" + currTime + ".db"
 
 		config := &aws.Config{
