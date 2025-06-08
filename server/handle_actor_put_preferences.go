@@ -22,7 +22,7 @@ func (s *Server) handleActorPutPreferences(e echo.Context) error {
 		return err
 	}
 
-	if err := s.db.Exec("UPDATE repos SET preferences = ? WHERE did = ?", b, repo.Repo.Did).Error; err != nil {
+	if err := s.db.Exec("UPDATE repos SET preferences = ? WHERE did = ?", nil, b, repo.Repo.Did).Error; err != nil {
 		return err
 	}
 

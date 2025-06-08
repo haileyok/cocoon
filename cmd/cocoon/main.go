@@ -91,6 +91,30 @@ func main() {
 				Required: false,
 				EnvVars:  []string{"COCOON_SMTP_NAME"},
 			},
+			&cli.BoolFlag{
+				Name:    "s3-backups-enabled",
+				EnvVars: []string{"COCOON_S3_BACKUPS_ENABLED"},
+			},
+			&cli.StringFlag{
+				Name:    "s3-region",
+				EnvVars: []string{"COCOON_S3_REGION"},
+			},
+			&cli.StringFlag{
+				Name:    "s3-bucket",
+				EnvVars: []string{"COCOON_S3_BUCKET"},
+			},
+			&cli.StringFlag{
+				Name:    "s3-endpoint",
+				EnvVars: []string{"COCOON_S3_ENDPOINT"},
+			},
+			&cli.StringFlag{
+				Name:    "s3-access-key",
+				EnvVars: []string{"COCOON_S3_ACCESS_KEY"},
+			},
+			&cli.StringFlag{
+				Name:    "s3-secret-key",
+				EnvVars: []string{"COCOON_S3_SECRET_KEY"},
+			},
 		},
 		Commands: []*cli.Command{
 			run,
@@ -126,6 +150,14 @@ var run = &cli.Command{
 			SmtpPort:        cmd.String("smtp-port"),
 			SmtpEmail:       cmd.String("smtp-email"),
 			SmtpName:        cmd.String("smtp-name"),
+			S3Config: &server.S3Config{
+				BackupsEnabled: cmd.Bool("s3-backups-enabled"),
+				Region:         cmd.String("s3-region"),
+				Bucket:         cmd.String("s3-bucket"),
+				Endpoint:       cmd.String("s3-endpoint"),
+				AccessKey:      cmd.String("s3-access-key"),
+				SecretKey:      cmd.String("s3-secret-key"),
+			},
 		})
 		if err != nil {
 			fmt.Printf("error creating cocoon: %v", err)

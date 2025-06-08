@@ -18,7 +18,7 @@ func (s *Server) handleSyncGetRecord(e echo.Context) error {
 	rkey := e.QueryParam("rkey")
 
 	var urepo models.Repo
-	if err := s.db.Raw("SELECT * FROM repos WHERE did = ?", did).Scan(&urepo).Error; err != nil {
+	if err := s.db.Raw("SELECT * FROM repos WHERE did = ?", nil, did).Scan(&urepo).Error; err != nil {
 		s.logger.Error("error getting repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}

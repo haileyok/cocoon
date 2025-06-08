@@ -40,7 +40,7 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 		CreatedAt: s.repoman.clock.Next().String(),
 	}
 
-	if err := s.db.Create(&blob).Error; err != nil {
+	if err := s.db.Create(&blob, nil).Error; err != nil {
 		s.logger.Error("error creating new blob in db", "error", err)
 		return helpers.ServerError(e, nil)
 	}
@@ -72,7 +72,7 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 			Data:   data,
 		}
 
-		if err := s.db.Create(&blobPart).Error; err != nil {
+		if err := s.db.Create(&blobPart, nil).Error; err != nil {
 			s.logger.Error("error adding blob part to db", "error", err)
 			return helpers.ServerError(e, nil)
 		}
@@ -89,7 +89,7 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.db.Exec("UPDATE blobs SET cid = ? WHERE id = ?", c.Bytes(), blob.ID).Error; err != nil {
+	if err := s.db.Exec("UPDATE blobs SET cid = ? WHERE id = ?", nil, c.Bytes(), blob.ID).Error; err != nil {
 		// there should probably be somme handling here if this fails...
 		s.logger.Error("error updating blob", "error", err)
 		return helpers.ServerError(e, nil)

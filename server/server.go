@@ -1,10 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/smtp"
@@ -14,6 +16,10 @@ import (
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/bluesky-social/indigo/events"
@@ -23,6 +29,7 @@ import (
 	"github.com/go-playground/validator"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/haileyok/cocoon/identity"
+	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/plc"
@@ -34,13 +41,22 @@ import (
 	"gorm.io/gorm"
 )
 
+type S3Config struct {
+	BackupsEnabled bool
+	Endpoint       string
+	Region         string
+	Bucket         string
+	AccessKey      string
+	SecretKey      string
+}
+
 type Server struct {
 	http       *http.Client
 	httpd      *http.Server
 	mail       *mailyak.MailYak
 	mailLk     *sync.Mutex
 	echo       *echo.Echo
-	db         *gorm.DB
+	db         *db.DB
 	plcClient  *plc.Client
 	logger     *slog.Logger
 	config     *config
@@ -48,6 +64,9 @@ type Server struct {
 	repoman    *RepoMan
 	evtman     *events.EventManager
 	passport   *identity.Passport
+
+	dbName   string
+	s3Config *S3Config
 }
 
 type Args struct {
@@ -69,6 +88,8 @@ type Args struct {
 	SmtpPort  string
 	SmtpEmail string
 	SmtpName  string
+
+	S3Config *S3Config
 }
 
 type config struct {
@@ -176,7 +197,7 @@ func (s *Server) handleSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc
 			Found bool
 		}
 		var result Result
-		if err := s.db.Raw("SELECT EXISTS(SELECT 1 FROM "+table+" WHERE token = ?) AS found", tokenstr).Scan(&result).Error; err != nil {
+		if err := s.db.Raw("SELECT EXISTS(SELECT 1 FROM "+table+" WHERE token = ?) AS found", nil, tokenstr).Scan(&result).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
 				return helpers.InputError(e, to.StringPtr("InvalidToken"))
 			}
@@ -299,10 +320,11 @@ func New(args *Args) (*Server, error) {
 		IdleTimeout:  5 * time.Minute,
 	}
 
-	db, err := gorm.Open(sqlite.Open("cocoon.db"), &gorm.Config{})
+	gdb, err := gorm.Open(sqlite.Open("cocoon.db"), &gorm.Config{})
 	if err != nil {
 		return nil, err
 	}
+	dbw := db.NewDB(gdb)
 
 	rkbytes, err := os.ReadFile(args.RotationKeyPath)
 	if err != nil {
@@ -341,7 +363,7 @@ func New(args *Args) (*Server, error) {
 		httpd:      httpd,
 		echo:       e,
 		logger:     args.Logger,
-		db:         db,
+		db:         dbw,
 		plcClient:  plcClient,
 		privateKey: &pkey,
 		config: &config{
@@ -357,6 +379,9 @@ func New(args *Args) (*Server, error) {
 		},
 		evtman:   events.NewEventManager(events.NewMemPersister()),
 		passport: identity.NewPassport(h, identity.NewMemCache(10_000)),
+
+		dbName:   args.DbName,
+		s3Config: args.S3Config,
 	}
 
 	s.repoman = NewRepoMan(s) // TODO: this is way too lazy, stop it
@@ -461,6 +486,8 @@ func (s *Server) Serve(ctx context.Context) error {
 		}
 	}()
 
+	go s.backupRoutine()
+
 	for _, relay := range s.config.Relays {
 		cli := xrpc.Client{Host: relay}
 		atproto.SyncRequestCrawl(ctx, &cli, &atproto.SyncRequestCrawl_Input{
@@ -473,4 +500,121 @@ func (s *Server) Serve(ctx context.Context) error {
 	fmt.Println("shut down")
 
 	return nil
+}
+
+func (s *Server) doBackup() {
+	start := time.Now()
+
+	s.logger.Info("beginning backup to s3...")
+
+	var buf bytes.Buffer
+	if err := func() error {
+		s.logger.Info("reading database bytes...")
+		s.db.Lock()
+		defer s.db.Unlock()
+
+		sf, err := os.Open(s.dbName)
+		if err != nil {
+			return fmt.Errorf("error opening database for backup: %w", err)
+		}
+		defer sf.Close()
+
+		if _, err := io.Copy(&buf, sf); err != nil {
+			return fmt.Errorf("error reading bytes of backup db: %w", err)
+		}
+
+		return nil
+	}(); err != nil {
+		s.logger.Error("error backing up database", "error", err)
+		return
+	}
+
+	if err := func() error {
+		s.logger.Info("sending to s3...")
+
+		currTime := time.Now().Format("2006-01-02_15-04-05")
+		key := "cocoon-backup-" + currTime + ".db"
+
+		config := &aws.Config{
+			Region:      aws.String(s.s3Config.Region),
+			Credentials: credentials.NewStaticCredentials(s.s3Config.AccessKey, s.s3Config.SecretKey, ""),
+		}
+
+		if s.s3Config.Endpoint != "" {
+			config.Endpoint = aws.String(s.s3Config.Endpoint)
+			config.S3ForcePathStyle = aws.Bool(true)
+		}
+
+		sess, err := session.NewSession(config)
+		if err != nil {
+			return err
+		}
+
+		svc := s3.New(sess)
+
+		if _, err := svc.PutObject(&s3.PutObjectInput{
+			Bucket: aws.String(s.s3Config.Bucket),
+			Key:    aws.String(key),
+			Body:   bytes.NewReader(buf.Bytes()),
+		}); err != nil {
+			return fmt.Errorf("error uploading file to s3: %w", err)
+		}
+
+		s.logger.Info("finished uploading backup to s3", "key", key, "duration", time.Now().Sub(start).Seconds())
+
+		return nil
+	}(); err != nil {
+		s.logger.Error("error uploading database backup", "error", err)
+		return
+	}
+
+	os.WriteFile("last-backup.txt", []byte(time.Now().String()), 0644)
+}
+
+func (s *Server) backupRoutine() {
+	if s.s3Config == nil || !s.s3Config.BackupsEnabled {
+		return
+	}
+
+	if s.s3Config.Region == "" {
+		s.logger.Warn("no s3 region configured but backups are enabled. backups will not run.")
+		return
+	}
+
+	if s.s3Config.Bucket == "" {
+		s.logger.Warn("no s3 bucket configured but backups are enabled. backups will not run.")
+		return
+	}
+
+	if s.s3Config.AccessKey == "" {
+		s.logger.Warn("no s3 access key configured but backups are enabled. backups will not run.")
+		return
+	}
+
+	if s.s3Config.SecretKey == "" {
+		s.logger.Warn("no s3 secret key configured but backups are enabled. backups will not run.")
+		return
+	}
+
+	shouldBackupNow := false
+	lastBackupStr, err := os.ReadFile("last-backup.txt")
+	if err != nil {
+		shouldBackupNow = true
+	} else {
+		lastBackup, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", string(lastBackupStr))
+		if err != nil {
+			shouldBackupNow = true
+		} else if time.Now().Sub(lastBackup).Seconds() > 3600 {
+			shouldBackupNow = true
+		}
+	}
+
+	if shouldBackupNow {
+		go s.doBackup()
+	}
+
+	ticker := time.NewTicker(time.Hour)
+	for range ticker.C {
+		go s.doBackup()
+	}
 }

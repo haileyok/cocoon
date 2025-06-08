@@ -41,7 +41,7 @@ func (s *Server) handleServerConfirmEmail(e echo.Context) error {
 
 	now := time.Now().UTC()
 
-	if err := s.db.Exec("UPDATE repos SET email_verification_code = NULL, email_verification_code_expires_at = NULL, email_confirmed_at = ? WHERE did = ?", now, urepo.Repo.Did).Error; err != nil {
+	if err := s.db.Exec("UPDATE repos SET email_verification_code = NULL, email_verification_code_expires_at = NULL, email_confirmed_at = ? WHERE did = ?", nil, now, urepo.Repo.Did).Error; err != nil {
 		s.logger.Error("error updating user", "error", err)
 		return helpers.ServerError(e, nil)
 	}

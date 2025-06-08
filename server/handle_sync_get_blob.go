@@ -26,7 +26,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 	}
 
 	var blob models.Blob
-	if err := s.db.Raw("SELECT * FROM blobs WHERE did = ? AND cid = ?", did, c.Bytes()).Scan(&blob).Error; err != nil {
+	if err := s.db.Raw("SELECT * FROM blobs WHERE did = ? AND cid = ?", nil, did, c.Bytes()).Scan(&blob).Error; err != nil {
 		s.logger.Error("error looking up blob", "error", err)
 		return helpers.ServerError(e, nil)
 	}
@@ -34,7 +34,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 	buf := new(bytes.Buffer)
 
 	var parts []models.BlobPart
-	if err := s.db.Raw("SELECT * FROM blob_parts WHERE blob_id = ? ORDER BY idx", blob.ID).Scan(&parts).Error; err != nil {
+	if err := s.db.Raw("SELECT * FROM blob_parts WHERE blob_id = ? ORDER BY idx", nil, blob.ID).Scan(&parts).Error; err != nil {
 		s.logger.Error("error getting blob parts", "error", err)
 		return helpers.ServerError(e, nil)
 	}
@@ -44,7 +44,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 		buf.Write(p.Data)
 	}
 
-	e.Response().Header().Set(echo.HeaderContentDisposition, "attachment; filename=" + c.String())
+	e.Response().Header().Set(echo.HeaderContentDisposition, "attachment; filename="+c.String())
 
 	return e.Stream(200, "application/octet-stream", buf)
 }

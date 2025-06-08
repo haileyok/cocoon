@@ -10,12 +10,12 @@ func (s *Server) handleDeleteSession(e echo.Context) error {
 	token := e.Get("token").(string)
 
 	var acctok models.Token
-	if err := s.db.Raw("DELETE FROM tokens WHERE token = ? RETURNING *", token).Scan(&acctok).Error; err != nil {
+	if err := s.db.Raw("DELETE FROM tokens WHERE token = ? RETURNING *", nil, token).Scan(&acctok).Error; err != nil {
 		s.logger.Error("error deleting access token from db", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.db.Exec("DELETE FROM refresh_tokens WHERE token = ?", acctok.RefreshToken).Error; err != nil {
+	if err := s.db.Exec("DELETE FROM refresh_tokens WHERE token = ?", nil, acctok.RefreshToken).Error; err != nil {
 		s.logger.Error("error deleting refresh token from db", "error", err)
 		return helpers.ServerError(e, nil)
 	}
