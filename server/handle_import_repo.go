@@ -64,7 +64,7 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	tx := s.db.Begin()
+	tx := s.db.BeginDangerously()
 
 	clock := syntax.NewTIDClock(0)
 

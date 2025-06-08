@@ -94,7 +94,7 @@ func (bs *SqliteBlockstore) GetSize(context.Context, cid.Cid) (int, error) {
 }
 
 func (bs *SqliteBlockstore) PutMany(ctx context.Context, blocks []blocks.Block) error {
-	tx := bs.db.Begin()
+	tx := bs.db.BeginDangerously()
 
 	for _, block := range blocks {
 		bs.inserts[block.Cid()] = block
