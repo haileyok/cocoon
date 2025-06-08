@@ -112,6 +112,11 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 	for i, op := range writes {
 		if op.Type != OpTypeCreate && op.Rkey == nil {
 			return nil, fmt.Errorf("invalid rkey")
+		} else if op.Type == OpTypeCreate && op.Rkey != nil {
+			_, _, err := r.GetRecord(context.TODO(), op.Collection+"/"+*op.Rkey)
+			if err == nil {
+				op.Type = OpTypeUpdate
+			}
 		} else if op.Rkey == nil {
 			op.Rkey = to.StringPtr(rm.clock.Next().String())
 			writes[i].Rkey = op.Rkey
