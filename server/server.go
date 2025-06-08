@@ -121,7 +121,7 @@ func (s *Server) handleAdminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 		if err := next(e); err != nil {
 			e.Error(err)
 		}
-		
+
 		return nil
 	}
 }
@@ -293,6 +293,10 @@ func New(args *Args) (*Server, error) {
 	httpd := &http.Server{
 		Addr:    args.Addr,
 		Handler: e,
+		// shitty defaults but okay for now, needed for import repo
+		ReadTimeout:  5 * time.Minute,
+		WriteTimeout: 5 * time.Minute,
+		IdleTimeout:  5 * time.Minute,
 	}
 
 	db, err := gorm.Open(sqlite.Open("cocoon.db"), &gorm.Config{})
@@ -417,6 +421,7 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/xrpc/com.atproto.repo.deleteRecord", s.handleDeleteRecord, s.handleSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.applyWrites", s.handleApplyWrites, s.handleSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.uploadBlob", s.handleRepoUploadBlob, s.handleSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.repo.importRepo", s.handleRepoImportRepo, s.handleSessionMiddleware)
 
 	// stupid silly endpoints
 	s.echo.GET("/xrpc/app.bsky.actor.getPreferences", s.handleActorGetPreferences, s.handleSessionMiddleware)
@@ -425,7 +430,7 @@ func (s *Server) addRoutes() {
 	// are there any routes that we should be allowing without auth? i dont think so but idk
 	s.echo.GET("/xrpc/*", s.handleProxy, s.handleSessionMiddleware)
 	s.echo.POST("/xrpc/*", s.handleProxy, s.handleSessionMiddleware)
-	
+
 	// admin routes
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCode", s.handleCreateInviteCode, s.handleAdminMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCodes", s.handleCreateInviteCodes, s.handleAdminMiddleware)
