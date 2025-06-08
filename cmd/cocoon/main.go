@@ -91,7 +91,7 @@ func main() {
 				Required: false,
 				EnvVars:  []string{"COCOON_SMTP_NAME"},
 			},
-			&cli.StringFlag{
+			&cli.BoolFlag{
 				Name:    "s3-backups-enabled",
 				EnvVars: []string{"COCOON_S3_BACKUPS_ENABLED"},
 			},
