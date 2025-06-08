@@ -1,10 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/smtp"
@@ -14,6 +16,9 @@ import (
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/bluesky-social/indigo/events"
@@ -49,6 +54,10 @@ type Server struct {
 	repoman    *RepoMan
 	evtman     *events.EventManager
 	passport   *identity.Passport
+
+	dbName   string
+	s3Region string
+	s3Bucket string
 }
 
 type Args struct {
@@ -463,6 +472,8 @@ func (s *Server) Serve(ctx context.Context) error {
 		}
 	}()
 
+	go s.backupRoutine()
+
 	for _, relay := range s.config.Relays {
 		cli := xrpc.Client{Host: relay}
 		atproto.SyncRequestCrawl(ctx, &cli, &atproto.SyncRequestCrawl_Input{
@@ -475,4 +486,90 @@ func (s *Server) Serve(ctx context.Context) error {
 	fmt.Println("shut down")
 
 	return nil
+}
+
+func (s *Server) doBackup() {
+	start := time.Now()
+
+	s.logger.Info("beginning backup to s3...")
+
+	var buf bytes.Buffer
+	if err := func() error {
+		s.logger.Info("reading database bytes...")
+		s.db.Lock()
+		defer s.db.Unlock()
+
+		sf, err := os.Open(s.dbName)
+		if err != nil {
+			return fmt.Errorf("error opening database for backup: %w", err)
+		}
+		defer sf.Close()
+
+		if _, err := io.Copy(&buf, sf); err != nil {
+			return fmt.Errorf("error reading bytes of backup db: %w", err)
+		}
+
+		return nil
+	}(); err != nil {
+		s.logger.Error("error backing up database", "error", err)
+		return
+	}
+
+	if err := func() error {
+		s.logger.Info("sending to s3...")
+
+		currTime := time.Now().String()
+		strings.ReplaceAll(" ", "_", currTime)
+		key := "cocoon-backup-" + currTime + ".db"
+
+		sess, err := session.NewSession(&aws.Config{
+			Region: aws.String(s.s3Region),
+		})
+		if err != nil {
+			return err
+		}
+
+		svc := s3.New(sess)
+
+		if _, err := svc.PutObject(&s3.PutObjectInput{
+			Bucket: aws.String(s.s3Bucket),
+			Key:    aws.String(key),
+			Body:   bytes.NewReader(buf.Bytes()),
+		}); err != nil {
+			return fmt.Errorf("error uploading file to s3: %w", err)
+		}
+
+		s.logger.Info("finished uploading backup to s3", "key", key, "duration", time.Now().Sub(start).Seconds())
+
+		return nil
+	}(); err != nil {
+		s.logger.Error("error uploading database backup", "error", err)
+		return
+	}
+
+	os.WriteFile("last-backup.txt", []byte(time.Now().String()), 0644)
+}
+
+func (s *Server) backupRoutine() {
+	shouldBackupNow := false
+	lastBackupStr, err := os.ReadFile("last-backup.txt")
+	if err != nil {
+		shouldBackupNow = true
+	} else {
+		lastBackup, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", string(lastBackupStr))
+		if err != nil {
+			shouldBackupNow = true
+		} else if time.Now().Sub(lastBackup).Seconds() > 3600 {
+			shouldBackupNow = true
+		}
+	}
+
+	if shouldBackupNow {
+		go s.doBackup()
+	}
+
+	ticker := time.NewTicker(time.Hour)
+	for range ticker.C {
+		go s.doBackup()
+	}
 }

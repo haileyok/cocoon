@@ -53,3 +53,11 @@ func (db *DB) First(dest any, conds ...any) *gorm.DB {
 func (db *DB) BeginDangerously() *gorm.DB {
 	return db.cli.Begin()
 }
+
+func (db *DB) Lock() {
+	db.mu.Lock()
+}
+
+func (db *DB) Unlock() {
+	db.mu.Unlock()
+}
