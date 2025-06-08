@@ -57,6 +57,7 @@ type Server struct {
 
 	dbName           string
 	s3BackupsEnabled bool
+	s3Endpoint       string
 	s3Region         string
 	s3Bucket         string
 }
@@ -82,6 +83,7 @@ type Args struct {
 	SmtpName  string
 
 	S3BackupsEnabled bool
+	S3Endpoint       string
 	S3Region         string
 	S3Bucket         string
 }
@@ -376,6 +378,7 @@ func New(args *Args) (*Server, error) {
 
 		dbName:           args.DbName,
 		s3BackupsEnabled: args.S3BackupsEnabled,
+		s3Endpoint:       args.S3Endpoint,
 		s3Region:         args.S3Region,
 		s3Bucket:         args.S3Bucket,
 	}
@@ -529,12 +532,19 @@ func (s *Server) doBackup() {
 		s.logger.Info("sending to s3...")
 
 		currTime := time.Now().String()
-		strings.ReplaceAll(" ", "_", currTime)
+		strings.ReplaceAll(currTime, " ", "_")
 		key := "cocoon-backup-" + currTime + ".db"
 
-		sess, err := session.NewSession(&aws.Config{
+		config := &aws.Config{
 			Region: aws.String(s.s3Region),
-		})
+		}
+
+		if s.s3Endpoint != "" {
+			config.Endpoint = aws.String(s.s3Endpoint)
+			config.S3ForcePathStyle = aws.Bool(true)
+		}
+
+		sess, err := session.NewSession(config)
 		if err != nil {
 			return err
 		}

@@ -103,6 +103,10 @@ func main() {
 				Name:    "s3-bucket",
 				EnvVars: []string{"COCOON_S3_BUCKET"},
 			},
+			&cli.StringFlag{
+				Name:    "s3-endpoint",
+				EnvVars: []string{"COCOON_S3_ENDPOINT"},
+			},
 		},
 		Commands: []*cli.Command{
 			run,
@@ -141,6 +145,7 @@ var run = &cli.Command{
 			S3BackupsEnabled: cmd.Bool("s3-backups-enabled"),
 			S3Region:         cmd.String("s3-region"),
 			S3Bucket:         cmd.String("s3-bucket"),
+			S3Endpoint:       cmd.String("s3-endpoint"),
 		})
 		if err != nil {
 			fmt.Printf("error creating cocoon: %v", err)
