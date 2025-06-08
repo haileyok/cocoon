@@ -20,16 +20,18 @@ func NewDB(cli *gorm.DB) *DB {
 }
 
 func (db *DB) Create(value any, clauses []clause.Expression) *gorm.DB {
+	db.mu.Lock()
+	defer db.mu.Unlock()
 	return db.cli.Clauses(clauses...).Create(&db)
 }
 
 func (db *DB) Exec(sql string, clauses []clause.Expression, values ...any) *gorm.DB {
+	db.mu.Lock()
+	defer db.mu.Unlock()
 	return db.cli.Clauses(clauses...).Exec(sql, values)
 }
 
 func (db *DB) Raw(sql string, clauses []clause.Expression, values ...any) *gorm.DB {
-	db.mu.Lock()
-	defer db.mu.Unlock()
 	return db.cli.Clauses(clauses...).Raw(sql, values)
 }
 
