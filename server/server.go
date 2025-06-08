@@ -561,6 +561,20 @@ func (s *Server) doBackup() {
 }
 
 func (s *Server) backupRoutine() {
+	if !s.s3BackupsEnabled {
+		return
+	}
+
+	if s.s3Region == "" {
+		s.logger.Warn("no s3 region configured but backups are enabled. backups will not run.")
+		return
+	}
+
+	if s.s3Bucket == "" {
+		s.logger.Warn("no s3 bucket configured but backups are enabled. backups will not run.")
+		return
+	}
+
 	shouldBackupNow := false
 	lastBackupStr, err := os.ReadFile("last-backup.txt")
 	if err != nil {
