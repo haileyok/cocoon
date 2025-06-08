@@ -17,6 +17,7 @@ import (
 
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/bluesky-social/indigo/api/atproto"
@@ -40,6 +41,15 @@ import (
 	"gorm.io/gorm"
 )
 
+type S3Config struct {
+	BackupsEnabled bool
+	Endpoint       string
+	Region         string
+	Bucket         string
+	AccessKey      string
+	SecretKey      string
+}
+
 type Server struct {
 	http       *http.Client
 	httpd      *http.Server
@@ -55,11 +65,8 @@ type Server struct {
 	evtman     *events.EventManager
 	passport   *identity.Passport
 
-	dbName           string
-	s3BackupsEnabled bool
-	s3Endpoint       string
-	s3Region         string
-	s3Bucket         string
+	dbName   string
+	s3Config *S3Config
 }
 
 type Args struct {
@@ -82,10 +89,7 @@ type Args struct {
 	SmtpEmail string
 	SmtpName  string
 
-	S3BackupsEnabled bool
-	S3Endpoint       string
-	S3Region         string
-	S3Bucket         string
+	S3Config *S3Config
 }
 
 type config struct {
@@ -376,11 +380,8 @@ func New(args *Args) (*Server, error) {
 		evtman:   events.NewEventManager(events.NewMemPersister()),
 		passport: identity.NewPassport(h, identity.NewMemCache(10_000)),
 
-		dbName:           args.DbName,
-		s3BackupsEnabled: args.S3BackupsEnabled,
-		s3Endpoint:       args.S3Endpoint,
-		s3Region:         args.S3Region,
-		s3Bucket:         args.S3Bucket,
+		dbName:   args.DbName,
+		s3Config: args.S3Config,
 	}
 
 	s.repoman = NewRepoMan(s) // TODO: this is way too lazy, stop it
@@ -536,11 +537,12 @@ func (s *Server) doBackup() {
 		key := "cocoon-backup-" + currTime + ".db"
 
 		config := &aws.Config{
-			Region: aws.String(s.s3Region),
+			Region:      aws.String(s.s3Config.Region),
+			Credentials: credentials.NewStaticCredentials(s.s3Config.AccessKey, s.s3Config.SecretKey, ""),
 		}
 
-		if s.s3Endpoint != "" {
-			config.Endpoint = aws.String(s.s3Endpoint)
+		if s.s3Config.Endpoint != "" {
+			config.Endpoint = aws.String(s.s3Config.Endpoint)
 			config.S3ForcePathStyle = aws.Bool(true)
 		}
 
@@ -552,7 +554,7 @@ func (s *Server) doBackup() {
 		svc := s3.New(sess)
 
 		if _, err := svc.PutObject(&s3.PutObjectInput{
-			Bucket: aws.String(s.s3Bucket),
+			Bucket: aws.String(s.s3Config.Bucket),
 			Key:    aws.String(key),
 			Body:   bytes.NewReader(buf.Bytes()),
 		}); err != nil {
@@ -571,17 +573,27 @@ func (s *Server) doBackup() {
 }
 
 func (s *Server) backupRoutine() {
-	if !s.s3BackupsEnabled {
+	if s.s3Config == nil || !s.s3Config.BackupsEnabled {
 		return
 	}
 
-	if s.s3Region == "" {
+	if s.s3Config.Region == "" {
 		s.logger.Warn("no s3 region configured but backups are enabled. backups will not run.")
 		return
 	}
 
-	if s.s3Bucket == "" {
+	if s.s3Config.Bucket == "" {
 		s.logger.Warn("no s3 bucket configured but backups are enabled. backups will not run.")
+		return
+	}
+
+	if s.s3Config.AccessKey == "" {
+		s.logger.Warn("no s3 access key configured but backups are enabled. backups will not run.")
+		return
+	}
+
+	if s.s3Config.SecretKey == "" {
+		s.logger.Warn("no s3 secret key configured but backups are enabled. backups will not run.")
 		return
 	}
 
