@@ -28,11 +28,11 @@ func (db *DB) Create(value any, clauses []clause.Expression) *gorm.DB {
 func (db *DB) Exec(sql string, clauses []clause.Expression, values ...any) *gorm.DB {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.cli.Clauses(clauses...).Exec(sql, values)
+	return db.cli.Clauses(clauses...).Exec(sql, values...)
 }
 
 func (db *DB) Raw(sql string, clauses []clause.Expression, values ...any) *gorm.DB {
-	return db.cli.Clauses(clauses...).Raw(sql, values)
+	return db.cli.Clauses(clauses...).Raw(sql, values...)
 }
 
 func (db *DB) AutoMigrate(models ...any) error {
@@ -46,7 +46,7 @@ func (db *DB) Delete(value any, clauses []clause.Expression) *gorm.DB {
 }
 
 func (db *DB) First(dest any, conds ...any) *gorm.DB {
-	return db.cli.First(dest, conds)
+	return db.cli.First(dest, conds...)
 }
 
 // TODO: this isn't actually good. we can commit even if the db is locked here. this is probably okay for the time being, but need to figure
