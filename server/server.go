@@ -294,6 +294,10 @@ func New(args *Args) (*Server, error) {
 	httpd := &http.Server{
 		Addr:    args.Addr,
 		Handler: e,
+		// shitty defaults but okay for now, needed for import repo
+		ReadTimeout:  5 * time.Minute,
+		WriteTimeout: 5 * time.Minute,
+		IdleTimeout:  5 * time.Minute,
 	}
 
 	gdb, err := gorm.Open(sqlite.Open("cocoon.db"), &gorm.Config{})
@@ -419,6 +423,7 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/xrpc/com.atproto.repo.deleteRecord", s.handleDeleteRecord, s.handleSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.applyWrites", s.handleApplyWrites, s.handleSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.uploadBlob", s.handleRepoUploadBlob, s.handleSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.repo.importRepo", s.handleRepoImportRepo, s.handleSessionMiddleware)
 
 	// stupid silly endpoints
 	s.echo.GET("/xrpc/app.bsky.actor.getPreferences", s.handleActorGetPreferences, s.handleSessionMiddleware)

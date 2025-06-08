@@ -10,6 +10,7 @@ import (
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/atproto/crypto"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/bluesky-social/indigo/events"
 	"github.com/bluesky-social/indigo/repo"
 	"github.com/bluesky-social/indigo/util"
@@ -38,6 +39,22 @@ type ComAtprotoServerCreateAccountResponse struct {
 
 func (s *Server) handleCreateAccount(e echo.Context) error {
 	var request ComAtprotoServerCreateAccountRequest
+
+	var signupDid string
+	customDidHeader := e.Request().Header.Get("authorization")
+	if customDidHeader != "" {
+		pts := strings.Split(customDidHeader, " ")
+		if len(pts) != 2 {
+			return helpers.InputError(e, to.StringPtr("InvalidDid"))
+		}
+
+		_, err := syntax.ParseDID(pts[1])
+		if err != nil {
+			return helpers.InputError(e, to.StringPtr("InvalidDid"))
+		}
+
+		signupDid = pts[1]
+	}
 
 	if err := e.Bind(&request); err != nil {
 		s.logger.Error("error receiving request", "endpoint", "com.atproto.server.createAccount", "error", err)
@@ -109,23 +126,24 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 
 	// TODO: unsupported domains
 
-	// TODO: did stuff
-
 	k, err := crypto.GeneratePrivateKeyK256()
 	if err != nil {
 		s.logger.Error("error creating signing key", "endpoint", "com.atproto.server.createAccount", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	did, op, err := s.plcClient.CreateDID(k, "", request.Handle)
-	if err != nil {
-		s.logger.Error("error creating operation", "endpoint", "com.atproto.server.createAccount", "error", err)
-		return helpers.ServerError(e, nil)
-	}
+	if signupDid == "" {
+		did, op, err := s.plcClient.CreateDID(k, "", request.Handle)
+		if err != nil {
+			s.logger.Error("error creating operation", "endpoint", "com.atproto.server.createAccount", "error", err)
+			return helpers.ServerError(e, nil)
+		}
 
-	if err := s.plcClient.SendOperation(e.Request().Context(), did, op); err != nil {
-		s.logger.Error("error sending plc op", "endpoint", "com.atproto.server.createAccount", "error", err)
-		return helpers.ServerError(e, nil)
+		if err := s.plcClient.SendOperation(e.Request().Context(), did, op); err != nil {
+			s.logger.Error("error sending plc op", "endpoint", "com.atproto.server.createAccount", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+		signupDid = did
 	}
 
 	hashed, err := bcrypt.GenerateFromPassword([]byte(request.Password), 10)
@@ -135,7 +153,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 	}
 
 	urepo := models.Repo{
-		Did:                   did,
+		Did:                   signupDid,
 		CreatedAt:             time.Now(),
 		Email:                 request.Email,
 		EmailVerificationCode: to.StringPtr(fmt.Sprintf("%s-%s", helpers.RandomVarchar(6), helpers.RandomVarchar(6))),
@@ -144,7 +162,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 	}
 
 	actor := models.Actor{
-		Did:    did,
+		Did:    signupDid,
 		Handle: request.Handle,
 	}
 
@@ -153,41 +171,43 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	bs := blockstore.New(did, s.db)
-	r := repo.NewRepo(context.TODO(), did, bs)
-
-	root, rev, err := r.Commit(context.TODO(), urepo.SignFor)
-	if err != nil {
-		s.logger.Error("error committing", "error", err)
-		return helpers.ServerError(e, nil)
-	}
-
-	if err := bs.UpdateRepo(context.TODO(), root, rev); err != nil {
-		s.logger.Error("error updating repo after commit", "error", err)
-		return helpers.ServerError(e, nil)
-	}
-
-	s.evtman.AddEvent(context.TODO(), &events.XRPCStreamEvent{
-		RepoHandle: &atproto.SyncSubscribeRepos_Handle{
-			Did:    urepo.Did,
-			Handle: request.Handle,
-			Seq:    time.Now().UnixMicro(), // TODO: no
-			Time:   time.Now().Format(util.ISO8601),
-		},
-	})
-
-	s.evtman.AddEvent(context.TODO(), &events.XRPCStreamEvent{
-		RepoIdentity: &atproto.SyncSubscribeRepos_Identity{
-			Did:    urepo.Did,
-			Handle: to.StringPtr(request.Handle),
-			Seq:    time.Now().UnixMicro(), // TODO: no
-			Time:   time.Now().Format(util.ISO8601),
-		},
-	})
-
 	if err := s.db.Create(&actor, nil).Error; err != nil {
 		s.logger.Error("error inserting new actor", "error", err)
 		return helpers.ServerError(e, nil)
+	}
+
+	if customDidHeader == "" {
+		bs := blockstore.New(signupDid, s.db)
+		r := repo.NewRepo(context.TODO(), signupDid, bs)
+
+		root, rev, err := r.Commit(context.TODO(), urepo.SignFor)
+		if err != nil {
+			s.logger.Error("error committing", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+
+		if err := bs.UpdateRepo(context.TODO(), root, rev); err != nil {
+			s.logger.Error("error updating repo after commit", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+
+		s.evtman.AddEvent(context.TODO(), &events.XRPCStreamEvent{
+			RepoHandle: &atproto.SyncSubscribeRepos_Handle{
+				Did:    urepo.Did,
+				Handle: request.Handle,
+				Seq:    time.Now().UnixMicro(), // TODO: no
+				Time:   time.Now().Format(util.ISO8601),
+			},
+		})
+
+		s.evtman.AddEvent(context.TODO(), &events.XRPCStreamEvent{
+			RepoIdentity: &atproto.SyncSubscribeRepos_Identity{
+				Did:    urepo.Did,
+				Handle: to.StringPtr(request.Handle),
+				Seq:    time.Now().UnixMicro(), // TODO: no
+				Time:   time.Now().Format(util.ISO8601),
+			},
+		})
 	}
 
 	if err := s.db.Raw("UPDATE invite_codes SET remaining_use_count = remaining_use_count - 1 WHERE code = ?", nil, request.InviteCode).Scan(&ic).Error; err != nil {
@@ -214,6 +234,6 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		AccessJwt:  sess.AccessToken,
 		RefreshJwt: sess.RefreshToken,
 		Handle:     request.Handle,
-		Did:        did,
+		Did:        signupDid,
 	})
 }
