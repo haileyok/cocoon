@@ -55,9 +55,10 @@ type Server struct {
 	evtman     *events.EventManager
 	passport   *identity.Passport
 
-	dbName   string
-	s3Region string
-	s3Bucket string
+	dbName           string
+	s3BackupsEnabled bool
+	s3Region         string
+	s3Bucket         string
 }
 
 type Args struct {
@@ -79,6 +80,10 @@ type Args struct {
 	SmtpPort  string
 	SmtpEmail string
 	SmtpName  string
+
+	S3BackupsEnabled bool
+	S3Region         string
+	S3Bucket         string
 }
 
 type config struct {
@@ -368,6 +373,11 @@ func New(args *Args) (*Server, error) {
 		},
 		evtman:   events.NewEventManager(events.NewMemPersister()),
 		passport: identity.NewPassport(h, identity.NewMemCache(10_000)),
+
+		dbName:           args.DbName,
+		s3BackupsEnabled: args.S3BackupsEnabled,
+		s3Region:         args.S3Region,
+		s3Bucket:         args.S3Bucket,
 	}
 
 	s.repoman = NewRepoMan(s) // TODO: this is way too lazy, stop it
