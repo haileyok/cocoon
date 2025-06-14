@@ -407,6 +407,7 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/xrpc/_health", s.handleHealth)
 	s.echo.GET("/.well-known/did.json", s.handleWellKnown)
 	s.echo.GET("/.well-known/oauth-protected-resource", s.handleProtectedResource)
+	s.echo.GET("/.well-known/oauth-authorization-server", s.handleOauthAuthorizationServer)
 	s.echo.GET("/robots.txt", s.handleRobots)
 
 	// public
