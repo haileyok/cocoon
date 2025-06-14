@@ -19,3 +19,17 @@ func (s *Server) handleWellKnown(e echo.Context) error {
 		},
 	})
 }
+
+func (s *Server) handleProtectedResource(e echo.Context) error {
+	return e.JSON(200, map[string]any{
+		"resource": "https://" + s.config.Hostname,
+		"authorization_servers": []string{
+			"https://" + s.config.Hostname,
+		},
+		"scopes_supported": []string{},
+		"bearer_methods_supported": []string{
+			"header",
+		},
+		"resource_documentation": "https://atproto.com",
+	})
+}
