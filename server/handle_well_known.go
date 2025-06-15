@@ -63,7 +63,7 @@ func (s *Server) handleWellKnown(e echo.Context) error {
 	})
 }
 
-func (s *Server) handleProtectedResource(e echo.Context) error {
+func (s *Server) handleOauthProtectedResource(e echo.Context) error {
 	return e.JSON(200, map[string]any{
 		"resource": "https://" + s.config.Hostname,
 		"authorization_servers": []string{

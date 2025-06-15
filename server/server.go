@@ -406,7 +406,7 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/", s.handleRoot)
 	s.echo.GET("/xrpc/_health", s.handleHealth)
 	s.echo.GET("/.well-known/did.json", s.handleWellKnown)
-	s.echo.GET("/.well-known/oauth-protected-resource", s.handleProtectedResource)
+	s.echo.GET("/.well-known/oauth-protected-resource", s.handleOauthProtectedResource)
 	s.echo.GET("/.well-known/oauth-authorization-server", s.handleOauthAuthorizationServer)
 	s.echo.GET("/robots.txt", s.handleRobots)
 
@@ -429,6 +429,9 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/xrpc/com.atproto.sync.subscribeRepos", s.handleSyncSubscribeRepos)
 	s.echo.GET("/xrpc/com.atproto.sync.listBlobs", s.handleSyncListBlobs)
 	s.echo.GET("/xrpc/com.atproto.sync.getBlob", s.handleSyncGetBlob)
+
+	// oauth
+	s.echo.POST("/oauth/par", s.handleOauthPar)
 
 	// authed
 	s.echo.GET("/xrpc/com.atproto.server.getSession", s.handleGetSession, s.handleSessionMiddleware)
