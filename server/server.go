@@ -35,7 +35,6 @@ import (
 	"github.com/haileyok/cocoon/plc"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/lestrrat-go/jwx/v2/jwk"
 	slogecho "github.com/samber/slog-echo"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -348,7 +347,7 @@ func New(args *Args) (*Server, error) {
 		return nil, err
 	}
 
-	key, err := jwk.ParseKey(jwkbytes)
+	key, err := helpers.ParseJWKFromBytes(jwkbytes)
 	if err != nil {
 		return nil, err
 	}

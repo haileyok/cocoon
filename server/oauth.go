@@ -11,7 +11,7 @@ import (
 	"net/url"
 
 	"github.com/golang-jwt/jwt/v4"
-	"github.com/lestrrat-go/jwx/v2/jwk"
+	"github.com/haileyok/cocoon/internal/helpers"
 )
 
 type DpopProof struct {
@@ -130,7 +130,7 @@ func (s *Server) oauthCheckDpopProof(reqMethod, reqUrl string, headers http.Head
 		return nil, fmt.Errorf("failed to marshal jwk: %w", err)
 	}
 
-	key, err := jwk.ParseKey(jwkb)
+	key, err := helpers.ParseJWKFromBytes(jwkb)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse jwk: %w", err)
 	}
@@ -180,5 +180,5 @@ func oauthParseHtu(htu string) (string, error) {
 }
 
 func oauthNormalizeHtu(u *url.URL) string {
-	return u.Host + u.RawPath
+	return u.Scheme + "://" + u.Host + u.RawPath
 }
