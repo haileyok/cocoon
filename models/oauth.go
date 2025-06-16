@@ -63,5 +63,5 @@ type OauthAuthorizationRequest struct {
 	DeviceId   *string
 	Sub        *string
 	Code       *string
-	Approved   *bool
+	Accepted   *bool
 }
