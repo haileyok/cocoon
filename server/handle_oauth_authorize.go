@@ -133,9 +133,11 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	u.Query().Set("state", authReq.Parameters.State)
-	u.Query().Set("iss", "https://"+s.config.Hostname)
-	u.Query().Set("code", code)
+	q := u.Query()
+	q.Set("state", authReq.Parameters.State)
+	q.Set("iss", "https://"+s.config.Hostname)
+	q.Set("code", code)
+	u.RawQuery = q.Encode()
 
 	return e.Redirect(303, u.String())
 }
