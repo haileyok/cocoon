@@ -80,7 +80,7 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 	uri := encodeRequestUri(id)
 
 	return e.JSON(201, OauthParResponse{
-		ExpiresIn:  int64(time.Now().Sub(eat).Seconds()),
+		ExpiresIn:  -int64(time.Now().Sub(eat).Seconds()),
 		RequestURI: uri,
 	})
 }
