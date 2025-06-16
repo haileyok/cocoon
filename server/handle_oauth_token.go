@@ -88,7 +88,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 				return helpers.InputError(e, to.StringPtr(`"code_verifier" is too short`))
 			}
 
-			switch *authReq.Parameters.CodeChallenge {
+			switch *&authReq.Parameters.CodeChallengeMethod {
 			case "", "plain":
 				if authReq.Parameters.CodeChallenge != req.CodeVerifier {
 					return helpers.InputError(e, to.StringPtr("invalid code_verifier"))
@@ -108,7 +108,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 					return helpers.InputError(e, to.StringPtr("invalid code_verifier"))
 				}
 			default:
-				return helpers.InputError(e, to.StringPtr("unsupported code_challenge_method "+*authReq.Parameters.CodeChallenge))
+				return helpers.InputError(e, to.StringPtr("unsupported code_challenge_method "+*&authReq.Parameters.CodeChallengeMethod))
 			}
 		} else if req.CodeVerifier != nil {
 			return helpers.InputError(e, to.StringPtr("code_challenge parameter wasn't provided"))
