@@ -46,7 +46,7 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 	data := map[string]any{
 		"Scopes":     scopes,
 		"AppName":    appName,
-		"RequestURI": reqUri,
+		"RequestUri": reqUri,
 	}
 
 	return e.Render(200, "signin.html", data)
@@ -55,7 +55,7 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 type OauthAuthorizePostRequest struct {
 	Username   string `form:"username"`
 	Password   string `form:"password"`
-	RequestURI string `form:"request_uri"`
+	RequestUri string `form:"request_uri"`
 }
 
 func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
@@ -65,7 +65,7 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
-	reqId, err := decodeRequestUri(req.RequestURI)
+	reqId, err := decodeRequestUri(req.RequestUri)
 	if err != nil {
 		return helpers.InputError(e, to.StringPtr(err.Error()))
 	}

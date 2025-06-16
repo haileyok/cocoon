@@ -19,6 +19,12 @@
       type="password"
       placeholder="Password"
     />
+    <input
+      name="request_uri"
+      id="request_uri"
+      type="hidden"
+      value="{{ .RequestUri }}"
+    />
     <button type="submit" value="Login">Login</button>
   </form>
 </html>
