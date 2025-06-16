@@ -240,11 +240,6 @@ func generateCode() string {
 	return OauthCodePrefix + h
 }
 
-func generateToken() string {
-	h, _ := helpers.RandomHex(OauthRefreshTokenBytesLength)
-	return OauthRefreshTokenPrefix + h
-}
-
 func generateTokenId() string {
 	h, _ := helpers.RandomHex(OauthTokenIdBytesLength)
 	return OauthTokenIdPrefix + h
