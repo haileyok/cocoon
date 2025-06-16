@@ -7,9 +7,9 @@
       scopes:
     </p>
     <ul>
-      {{ range .Scopes
+      {{ range .Scopes }}
       <li>{{.}}</li>
-      }}
+      {{ end }}
     </ul>
     <input name="username" id="username" placeholder="Username" />
     <br />
