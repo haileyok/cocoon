@@ -10,8 +10,8 @@ import (
 )
 
 type OauthParResponse struct {
-	ExpiresIn  float64 `json:"expires_in"`
-	RequestURI string  `json:"request_uri"`
+	ExpiresIn  int64  `json:"expires_in"`
+	RequestURI string `json:"request_uri"`
 }
 
 func (s *Server) handleOauthPar(e echo.Context) error {
@@ -80,7 +80,7 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 	uri := encodeRequestUri(id)
 
 	return e.JSON(201, OauthParResponse{
-		ExpiresIn:  float64(time.Now().Sub(eat).Seconds()),
+		ExpiresIn:  int64(time.Now().Sub(eat).Seconds()),
 		RequestURI: uri,
 	})
 }
