@@ -459,7 +459,8 @@ func (s *Server) addRoutes() {
 
 	// oauth basic
 	s.echo.GET("/oauth/jwks", s.handleOauthJwks)
-	s.echo.GET("/oauth/authorize", s.handleOauthAuthorize)
+	s.echo.GET("/oauth/authorize", s.handleOauthAuthorizeGet)
+	s.echo.POST("/oauth/authorize", s.handleOauthAuthorizePost)
 
 	// oauth routes
 	s.echo.POST("/oauth/par", s.handleOauthPar, s.handleOauthMiddleware)

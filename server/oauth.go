@@ -219,3 +219,8 @@ func decodeRequestUri(reqUri string) (string, error) {
 
 	return reqId, nil
 }
+
+func generateCode() string {
+	h, _ := helpers.RandomHex(OauthCodeBytesLength)
+	return OauthRequestUriPrefix + h
+}
