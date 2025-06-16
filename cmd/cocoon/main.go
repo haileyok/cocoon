@@ -115,6 +115,11 @@ func main() {
 				Name:    "s3-secret-key",
 				EnvVars: []string{"COCOON_S3_SECRET_KEY"},
 			},
+			&cli.StringFlag{
+				Name:    "static-file-path",
+				EnvVars: []string{"COCOON_STATIC_FILE_PATH"},
+				Value:   "./html",
+			},
 		},
 		Commands: []*cli.Command{
 			run,
@@ -150,6 +155,7 @@ var run = &cli.Command{
 			SmtpPort:        cmd.String("smtp-port"),
 			SmtpEmail:       cmd.String("smtp-email"),
 			SmtpName:        cmd.String("smtp-name"),
+			StaticFilePath:  cmd.String("static-file-path"),
 			S3Config: &server.S3Config{
 				BackupsEnabled: cmd.Bool("s3-backups-enabled"),
 				Region:         cmd.String("s3-region"),

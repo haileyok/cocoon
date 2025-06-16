@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/to"
@@ -91,6 +92,8 @@ type Args struct {
 	SmtpEmail string
 	SmtpName  string
 
+	StaticFilePath string
+
 	S3Config *S3Config
 }
 
@@ -104,6 +107,7 @@ type config struct {
 	AdminPassword  string
 	SmtpEmail      string
 	SmtpName       string
+	StaticFilePath string
 }
 
 type CustomValidator struct {
@@ -132,6 +136,18 @@ func (cv *CustomValidator) Validate(i any) error {
 	}
 
 	return nil
+}
+
+type TemplateRenderer struct {
+	templates *template.Template
+}
+
+func (t *TemplateRenderer) Render(w io.Writer, name string, data interface{}, c echo.Context) error {
+	if viewContext, isMap := data.(map[string]interface{}); isMap {
+		viewContext["reverse"] = c.Echo().Reverse
+	}
+
+	return t.templates.ExecuteTemplate(w, name, data)
 }
 
 func (s *Server) handleAdminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
@@ -378,6 +394,7 @@ func New(args *Args) (*Server, error) {
 			AdminPassword:  args.AdminPassword,
 			SmtpName:       args.SmtpName,
 			SmtpEmail:      args.SmtpEmail,
+			StaticFilePath: args.StaticFilePath,
 		},
 		evtman:   events.NewEventManager(events.NewMemPersister()),
 		passport: identity.NewPassport(h, identity.NewMemCache(10_000)),
@@ -388,6 +405,11 @@ func New(args *Args) (*Server, error) {
 		oauthClientMan: NewOauthClientManager(),
 		oauthDpopMan:   NewOauthDpopManager(),
 	}
+
+	renderer := &TemplateRenderer{
+		templates: template.Must(template.ParseGlob(s.getFilePath("*.html"))),
+	}
+	e.Renderer = renderer
 
 	s.repoman = NewRepoMan(s) // TODO: this is way too lazy, stop it
 
@@ -437,6 +459,7 @@ func (s *Server) addRoutes() {
 
 	// oauth basic
 	s.echo.GET("/oauth/jwks", s.handleOauthJwks)
+	s.echo.GET("/oauth/authorize", s.handleOauthAuthorize)
 
 	// oauth routes
 	s.echo.POST("/oauth/par", s.handleOauthPar, s.handleOauthMiddleware)
@@ -631,4 +654,8 @@ func (s *Server) backupRoutine() {
 	for range ticker.C {
 		go s.doBackup()
 	}
+}
+
+func (s *Server) getFilePath(file string) string {
+	return fmt.Sprintf("%s/%s", s.config.StaticFilePath, file)
 }
