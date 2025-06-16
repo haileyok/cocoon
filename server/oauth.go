@@ -37,11 +37,20 @@ const (
 	OauthCodePrefix      = "cod-"
 	OauthCodeBytesLength = 32
 
+	OauthTokenIdPrefix      = "tok-"
+	OauthTokenIdBytesLength = 16
+
 	OauthTokenMaxAge = 60 * time.Minute
 
 	OauthAuthorizationInactivityTimeout = 5 * time.Minute
 
 	OauthDpopNonceMaxAge = 3 * time.Minute
+
+	OauthConfidentialClientSessionLifetime = 2 * 365 * 24 * time.Hour // 2 years
+	OauthConfidentialClientRefreshLifetime = 3 * 30 * 24 * time.Hour  // 3 months
+
+	OauthPublicClientSessionLifetime = 2 * 7 * 24 * time.Hour // 2 weeks
+	OauthPublicClientRefreshLifetime = OauthPublicClientSessionLifetime
 )
 
 type DpopProof struct {
@@ -70,7 +79,13 @@ type OauthAuthenticateClientOptions struct {
 	AllowMissingDpopProof bool
 }
 
-func (s *Server) oauthAuthenticateClient(ctx context.Context, req models.OauthParRequest, dpopProof *DpopProof, opts *OauthAuthenticateClientOptions) (*OauthClient, *models.OauthClientAuth, error) {
+type OauthAuthenticateClientRequestBase struct {
+	ClientID            string  `form:"client_id" json:"client_id" validate:"required"`
+	ClientAssertionType *string `form:"client_assertion_type" json:"client_assertion_type,omitempty"`
+	ClientAssertion     *string `form:"client_assertion" json:"client_assertion,omitempty"`
+}
+
+func (s *Server) oauthAuthenticateClient(ctx context.Context, req models.OauthAuthenticateClientRequestBase, dpopProof *DpopProof, opts *OauthAuthenticateClientOptions) (*OauthClient, *models.OauthClientAuth, error) {
 	client, err := s.oauthClientMan.GetClient(ctx, req.ClientID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get client: %w", err)
@@ -92,7 +107,7 @@ func (s *Server) oauthAuthenticateClient(ctx context.Context, req models.OauthPa
 	return client, clientAuth, nil
 }
 
-func (s *Server) oauthAuthenticate(_ context.Context, req models.OauthParRequest, client *OauthClient) (*models.OauthClientAuth, error) {
+func (s *Server) oauthAuthenticate(_ context.Context, req models.OauthAuthenticateClientRequestBase, client *OauthClient) (*models.OauthClientAuth, error) {
 	metadata := client.Metadata
 
 	if metadata.TokenEndpointAuthMethod == "none" {
@@ -223,4 +238,19 @@ func decodeRequestUri(reqUri string) (string, error) {
 func generateCode() string {
 	h, _ := helpers.RandomHex(OauthCodeBytesLength)
 	return OauthRequestUriPrefix + h
+}
+
+func generateToken() string {
+	h, _ := helpers.RandomHex(OauthRefreshTokenBytesLength)
+	return OauthRefreshTokenPrefix + h
+}
+
+func generateTokenId() string {
+	h, _ := helpers.RandomHex(OauthTokenIdBytesLength)
+	return OauthTokenIdPrefix + h
+}
+
+func generateRefreshToken() string {
+	h, _ := helpers.RandomHex(OauthRefreshTokenBytesLength)
+	return OauthRefreshTokenPrefix + h
 }

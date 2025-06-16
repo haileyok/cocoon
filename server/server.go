@@ -464,6 +464,7 @@ func (s *Server) addRoutes() {
 
 	// oauth routes
 	s.echo.POST("/oauth/par", s.handleOauthPar, s.handleOauthMiddleware)
+	s.echo.POST("/oauth/token", s.handleOauthToken, s.handleOauthMiddleware)
 
 	// authed
 	s.echo.GET("/xrpc/com.atproto.server.getSession", s.handleGetSession, s.handleSessionMiddleware)
@@ -514,6 +515,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		&models.Blob{},
 		&models.BlobPart{},
 		&models.OauthAuthorizationRequest{},
+		&models.OauthToken{},
 	)
 
 	s.logger.Info("starting cocoon")

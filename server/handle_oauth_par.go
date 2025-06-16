@@ -33,7 +33,7 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 		return helpers.InputError(e, to.StringPtr(err.Error()))
 	}
 
-	client, clientAuth, err := s.oauthAuthenticateClient(e.Request().Context(), parRequest, dpopProof, &OauthAuthenticateClientOptions{
+	client, clientAuth, err := s.oauthAuthenticateClient(e.Request().Context(), parRequest.OauthAuthenticateClientRequestBase, dpopProof, &OauthAuthenticateClientOptions{
 		// rfc9449
 		// https://github.com/bluesky-social/atproto/blob/main/packages/oauth/oauth-provider/src/oauth-provider.ts#L473
 		AllowMissingDpopProof: true,
