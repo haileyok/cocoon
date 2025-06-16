@@ -35,7 +35,6 @@ import (
 	"github.com/haileyok/cocoon/plc"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/lestrrat-go/jwx/v2/jwk"
 	slogecho "github.com/samber/slog-echo"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -67,6 +66,9 @@ type Server struct {
 
 	dbName   string
 	s3Config *S3Config
+
+	oauthClientMan *OauthClientManager
+	oauthDpopMan   *OauthDpopManager
 }
 
 type Args struct {
@@ -348,7 +350,7 @@ func New(args *Args) (*Server, error) {
 		return nil, err
 	}
 
-	key, err := jwk.ParseKey(jwkbytes)
+	key, err := helpers.ParseJWKFromBytes(jwkbytes)
 	if err != nil {
 		return nil, err
 	}
@@ -382,6 +384,9 @@ func New(args *Args) (*Server, error) {
 
 		dbName:   args.DbName,
 		s3Config: args.S3Config,
+
+		oauthClientMan: NewOauthClientManager(),
+		oauthDpopMan:   NewOauthDpopManager(),
 	}
 
 	s.repoman = NewRepoMan(s) // TODO: this is way too lazy, stop it
@@ -406,6 +411,8 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/", s.handleRoot)
 	s.echo.GET("/xrpc/_health", s.handleHealth)
 	s.echo.GET("/.well-known/did.json", s.handleWellKnown)
+	s.echo.GET("/.well-known/oauth-protected-resource", s.handleOauthProtectedResource)
+	s.echo.GET("/.well-known/oauth-authorization-server", s.handleOauthAuthorizationServer)
 	s.echo.GET("/robots.txt", s.handleRobots)
 
 	// public
@@ -427,6 +434,12 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/xrpc/com.atproto.sync.subscribeRepos", s.handleSyncSubscribeRepos)
 	s.echo.GET("/xrpc/com.atproto.sync.listBlobs", s.handleSyncListBlobs)
 	s.echo.GET("/xrpc/com.atproto.sync.getBlob", s.handleSyncGetBlob)
+
+	// oauth basic
+	s.echo.GET("/oauth/jwks", s.handleOauthJwks)
+
+	// oauth routes
+	s.echo.POST("/oauth/par", s.handleOauthPar, s.handleOauthMiddleware)
 
 	// authed
 	s.echo.GET("/xrpc/com.atproto.server.getSession", s.handleGetSession, s.handleSessionMiddleware)
@@ -476,6 +489,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		&models.Record{},
 		&models.Blob{},
 		&models.BlobPart{},
+		&models.OauthAuthorizationRequest{},
 	)
 
 	s.logger.Info("starting cocoon")
