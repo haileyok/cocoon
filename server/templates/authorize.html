@@ -25,7 +25,7 @@
         these scopes with your account <b>{{ .Handle }}</b>. If you reject, you
         will be sent back to the application.
       </p>
-      <form action="/oauth/authorize/accept" method="post">
+      <form action="/oauth/authorize" method="post">
         <div class="button-row">
           <input type="hidden" name="request_id" value="{{ .RequestUri }}" />
           <button class="secondary" name="accept_or_reject" value="reject">
