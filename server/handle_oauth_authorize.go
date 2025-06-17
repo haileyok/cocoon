@@ -127,17 +127,10 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	u, err := url.Parse(authReq.Parameters.RedirectURI)
-	if err != nil {
-		s.logger.Error("error parsing redirect uri", "error", err)
-		return helpers.ServerError(e, nil)
-	}
-
-	q := u.Query()
+	q := url.Values{}
 	q.Set("state", authReq.Parameters.State)
 	q.Set("iss", "https://"+s.config.Hostname)
 	q.Set("code", code)
-	u.RawQuery = q.Encode()
 
-	return e.Redirect(303, u.String())
+	return e.Redirect(303, authReq.Parameters.RedirectURI+"#"+q.Encode())
 }
