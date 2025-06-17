@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/smtp"
@@ -502,11 +501,7 @@ func New(args *Args) (*Server, error) {
 
 func (s *Server) addRoutes() {
 	// static
-	staticContent, err := fs.Sub(staticFS, "static")
-	if err != nil {
-		s.logger.Error("could not load static assets", "error", err)
-	}
-	s.echo.GET("/static/*", echo.WrapHandler(http.FileServer(http.FS(staticContent))))
+	s.echo.GET("/static/*", echo.WrapHandler(http.FileServer(http.FS(staticFS))))
 
 	// random stuff
 	s.echo.GET("/", s.handleRoot)
