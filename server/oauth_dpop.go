@@ -137,7 +137,6 @@ func (on *OauthNonce) Next() string {
 func (on *OauthNonce) Check(nonce string) bool {
 	on.mu.RLock()
 	defer on.mu.RUnlock()
-	on.rotate()
 	return nonce == on.prev || nonce == on.curr || nonce == on.next
 }
 

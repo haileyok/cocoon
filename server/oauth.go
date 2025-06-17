@@ -60,7 +60,7 @@ type DpopProof struct {
 	HTU string
 }
 
-func (s *Server) handleOauthMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+func (s *Server) handleOauthBaseMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(e echo.Context) error {
 		e.Response().Header().Set("cache-control", "no-store")
 		e.Response().Header().Set("pragma", "no-cache")

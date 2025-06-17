@@ -309,6 +309,12 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 			return helpers.ServerError(e, nil)
 		}
 
+		nonce := s.oauthDpopMan.nonce.Next()
+		if nonce != "" {
+			e.Response().Header().Set("DPoP-Nonce", nonce)
+			e.Response().Header().Add("access-control-expose-headers", "DPoP-Nonce")
+		}
+
 		e.Set("repo", repo)
 		e.Set("did", repo.Repo.Did)
 		e.Set("token", accessToken)
@@ -525,12 +531,10 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/oauth/authorize", s.handleOauthAuthorizePost)
 
 	// oauth routes
-	s.echo.POST("/oauth/par", s.handleOauthPar, s.handleOauthMiddleware)
-	s.echo.POST("/oauth/token", s.handleOauthToken, s.handleOauthMiddleware)
+	s.echo.POST("/oauth/par", s.handleOauthPar, s.handleOauthBaseMiddleware)
+	s.echo.POST("/oauth/token", s.handleOauthToken, s.handleOauthBaseMiddleware)
 
 	// authed
-	s.echo.GET("/xrpc/com.atproto.server.getSession", s.handleGetSession, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.server.refreshSession", s.handleRefreshSession, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.deleteSession", s.handleDeleteSession, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.identity.updateHandle", s.handleIdentityUpdateHandle, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.confirmEmail", s.handleServerConfirmEmail, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
