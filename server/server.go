@@ -137,7 +137,10 @@ func (cv *CustomValidator) Validate(i any) error {
 	return nil
 }
 
+//go:embed templates/*
 var templateFS embed.FS
+
+//go:embed static/*
 var staticFS embed.FS
 
 type TemplateRenderer struct {
