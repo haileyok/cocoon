@@ -123,7 +123,7 @@ func (s *Server) handleOauthSigninPost(e echo.Context) error {
 	}
 
 	if req.RequestUri != "" {
-		return e.Redirect(303, "/oauth/authorize?req_uri="+req.RequestUri)
+		return e.Redirect(303, "/oauth/authorize?request_uri="+req.RequestUri)
 	} else {
 		return e.Redirect(303, "/account")
 	}
