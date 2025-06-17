@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -62,7 +63,15 @@ type OauthNonce struct {
 
 func NewOauthNonce(secret []byte, rotationInterval time.Duration) *OauthNonce {
 	if secret == nil {
-		secret = helpers.RandomBytes(SecretByteLength)
+		maybeSecret, err := os.ReadFile("./nonce.secret") // TODO: configurable path
+		if err == nil {
+			secret = maybeSecret
+		} else {
+			secret = helpers.RandomBytes(SecretByteLength)
+			if err := os.WriteFile("./nonce.secret", secret, 0644); err != nil {
+				fmt.Printf("error saving nonce secret...temporary error, remove please... %v", err)
+			}
+		}
 	}
 
 	if rotationInterval <= 0 || rotationInterval > MaxRotationInterval {
