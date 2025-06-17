@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="stylesheet" href="/static/pico.css" />
+    <link rel="stylesheet" href="/static/style.css" />
+    <title>Application Authorization</title>
+  </head>
+  <body class="centered-body">
+    <main
+      class="container base-container box-shadow-container authorizer-container"
+    >
+      <h2>Authorizing with {{ .AppName }}</h2>
+      <p>You are signed in as <b>{{ .Handle }}</b></p>
+      <p><b>{{ .AppName }}</b> is asking for you to grant it these scopes:</p>
+      <ul>
+        {{ range .Scopes }}
+        <li><b>{{.}}</b></li>
+        {{ end }}
+      </ul>
+      <p>
+        If you press Accept, the application will be granted permissions for
+        these scopes with your account <b>{{ .Handle }}</b>. If you reject, you
+        will be sent back to the application.
+      </p>
+      <form action="/oauth/authorize/accept" method="post">
+        <div class="button-row">
+          <input type="hidden" name="request_id" value="{{ .RequestUri }}" />
+          <button class="secondary" name="accept_or_reject" value="reject">
+            Reject
+          </button>
+          <button class="primary" name="accept_or_reject" value="accept">
+            Accept
+          </button>
+        </div>
+      </form>
+    </main>
+  </body>
+</html>

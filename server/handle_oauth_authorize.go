@@ -6,18 +6,29 @@ import (
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/to"
-	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/labstack/echo/v4"
-	"golang.org/x/crypto/bcrypt"
-	"gorm.io/gorm"
 )
 
 func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 	reqUri := e.QueryParam("request_uri")
 	if reqUri == "" {
+		// render page for logged out dev
+		if s.config.Version == "dev" {
+			return e.Render(200, "authorize.html", map[string]any{
+				"Scopes":     []string{"atproto", "transition:generic"},
+				"AppName":    "DEV MODE AUTHORIZATION PAGE",
+				"Handle":     "paula.cocoon.social",
+				"RequestUri": "",
+			})
+		}
 		return helpers.InputError(e, to.StringPtr("no request uri"))
+	}
+
+	repo, _, err := s.getSessionRepoOrErr(e)
+	if err != nil {
+		return e.Redirect(303, "/account/signin?request_uri="+reqUri)
 	}
 
 	reqId, err := decodeRequestUri(reqUri)
@@ -47,18 +58,23 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 		"Scopes":     scopes,
 		"AppName":    appName,
 		"RequestUri": reqUri,
+		"Did":        repo.Actor.Handle,
 	}
 
-	return e.Render(200, "signin.html", data)
+	return e.Render(200, "authorize.html", data)
 }
 
 type OauthAuthorizePostRequest struct {
-	Username   string `form:"username"`
-	Password   string `form:"password"`
-	RequestUri string `form:"request_uri"`
+	RequestUri    string `form:"request_uri"`
+	AcceptOrRejct string `form:"accept_or_reject"`
 }
 
 func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
+	repo, _, err := s.getSessionRepoOrErr(e)
+	if err != nil {
+		return e.Redirect(303, "/account/signin")
+	}
+
 	var req OauthAuthorizePostRequest
 	if err := e.Bind(&req); err != nil {
 		s.logger.Error("error binding authorize post request", "error", err)
@@ -75,41 +91,14 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 		return helpers.ServerError(e, to.StringPtr(err.Error()))
 	}
 
-	req.Username = strings.ToLower(req.Username)
-	var idtype string
-	if _, err := syntax.ParseDID(req.Username); err == nil {
-		idtype = "did"
-	} else if _, err := syntax.ParseHandle(req.Username); err == nil {
-		idtype = "handle"
-	} else {
-		idtype = "email"
-	}
-
-	// TODO: we should make this a helper since we do it for the base create_session as well
-	var repo models.RepoActor
-	switch idtype {
-	case "did":
-		err = s.db.Raw("SELECT r.*, a.* FROM repos r LEFT JOIN actors a ON r.did = a.did WHERE r.did = ?", nil, req.Username).Scan(&repo).Error
-	case "handle":
-		err = s.db.Raw("SELECT r.*, a.* FROM actors a LEFT JOIN repos r ON a.did = r.did WHERE a.handle = ?", nil, req.Username).Scan(&repo).Error
-	case "email":
-		err = s.db.Raw("SELECT r.*, a.* FROM repos r LEFT JOIN actors a ON r.did = a.did WHERE r.email = ?", nil, req.Username).Scan(&repo).Error
-	}
-
+	client, err := s.oauthClientMan.GetClient(e.Request().Context(), authReq.ClientId)
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return helpers.InputError(e, to.StringPtr("InvalidRequest"))
-		}
-
-		s.logger.Error("erorr looking up repo", "endpoint", "com.atproto.server.createSession", "error", err)
-		return helpers.ServerError(e, nil)
+		return helpers.ServerError(e, to.StringPtr(err.Error()))
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(repo.Password), []byte(req.Password)); err != nil {
-		if err != bcrypt.ErrMismatchedHashAndPassword {
-			s.logger.Error("erorr comparing hash and password", "error", err)
-		}
-		return helpers.InputError(e, to.StringPtr("incorrect username or password"))
+	// TODO: figure out how im supposed to actually redirect
+	if req.AcceptOrRejct == "reject" {
+		return e.Redirect(303, client.Metadata.ClientID)
 	}
 
 	if time.Now().After(authReq.ExpiresAt) {

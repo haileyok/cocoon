@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/smtp"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"text/template"
@@ -30,16 +31,22 @@ import (
 	"github.com/domodwyer/mailyak/v3"
 	"github.com/go-playground/validator"
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/gorilla/sessions"
 	"github.com/haileyok/cocoon/identity"
 	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/plc"
+	echo_session "github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	slogecho "github.com/samber/slog-echo"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+)
+
+const (
+	AccountSessionMaxAge = 30 * 24 * time.Hour // one week
 )
 
 type S3Config struct {
@@ -94,6 +101,8 @@ type Args struct {
 	SmtpName  string
 
 	S3Config *S3Config
+
+	SessionSecret string
 }
 
 type config struct {
@@ -143,10 +152,38 @@ var templateFS embed.FS
 var staticFS embed.FS
 
 type TemplateRenderer struct {
-	templates *template.Template
+	templates    *template.Template
+	isDev        bool
+	templatePath string
+}
+
+func (s *Server) loadTemplates() {
+	absPath, _ := filepath.Abs("server/templates/*.html")
+	if s.config.Version == "dev" {
+		tmpl := template.Must(template.ParseGlob(absPath))
+		s.echo.Renderer = &TemplateRenderer{
+			templates:    tmpl,
+			isDev:        true,
+			templatePath: absPath,
+		}
+	} else {
+		tmpl := template.Must(template.ParseFS(templateFS, "templates/*.html"))
+		s.echo.Renderer = &TemplateRenderer{
+			templates: tmpl,
+			isDev:     false,
+		}
+	}
 }
 
 func (t *TemplateRenderer) Render(w io.Writer, name string, data any, c echo.Context) error {
+	if t.isDev {
+		tmpl, err := template.ParseGlob(t.templatePath)
+		if err != nil {
+			return err
+		}
+		t.templates = tmpl
+	}
+
 	if viewContext, isMap := data.(map[string]any); isMap {
 		viewContext["reverse"] = c.Echo().Reverse
 	}
@@ -361,10 +398,15 @@ func New(args *Args) (*Server, error) {
 		args.Logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
 	}
 
+	if args.SessionSecret == "" {
+		panic("SESSION SECRET WAS NOT SET. THIS IS REQUIRED. ")
+	}
+
 	e := echo.New()
 
 	e.Pre(middleware.RemoveTrailingSlash())
 	e.Pre(slogecho.New(args.Logger))
+	e.Use(echo_session.Middleware(sessions.NewCookieStore([]byte(args.SessionSecret))))
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins:     []string{"*"},
 		AllowHeaders:     []string{"*"},
@@ -477,10 +519,7 @@ func New(args *Args) (*Server, error) {
 		oauthDpopMan:   NewOauthDpopManager(),
 	}
 
-	tmpl := template.Must(template.New("").ParseFS(templateFS, "templates/*.html"))
-	e.Renderer = &TemplateRenderer{
-		templates: tmpl,
-	}
+	s.loadTemplates()
 
 	s.repoman = NewRepoMan(s) // TODO: this is way too lazy, stop it
 
@@ -501,7 +540,11 @@ func New(args *Args) (*Server, error) {
 
 func (s *Server) addRoutes() {
 	// static
-	s.echo.GET("/static/*", echo.WrapHandler(http.FileServer(http.FS(staticFS))))
+	if s.config.Version == "dev" {
+		s.echo.Static("/static", "server/static")
+	} else {
+		s.echo.GET("/static/*", echo.WrapHandler(http.FileServer(http.FS(staticFS))))
+	}
 
 	// random stuff
 	s.echo.GET("/", s.handleRoot)
@@ -531,12 +574,17 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/xrpc/com.atproto.sync.listBlobs", s.handleSyncListBlobs)
 	s.echo.GET("/xrpc/com.atproto.sync.getBlob", s.handleSyncGetBlob)
 
-	// oauth basic
+	// account
+	s.echo.GET("/account/signin", s.handleOauthSigninGet)
+	s.echo.POST("/account/signin", s.handleOauthSigninPost)
+	s.echo.GET("/account/logout", s.handleOauthSignout)
+
+	// oauth account
 	s.echo.GET("/oauth/jwks", s.handleOauthJwks)
 	s.echo.GET("/oauth/authorize", s.handleOauthAuthorizeGet)
 	s.echo.POST("/oauth/authorize", s.handleOauthAuthorizePost)
 
-	// oauth routes
+	// oauth authorization
 	s.echo.POST("/oauth/par", s.handleOauthPar, s.handleOauthBaseMiddleware)
 	s.echo.POST("/oauth/token", s.handleOauthToken, s.handleOauthBaseMiddleware)
 

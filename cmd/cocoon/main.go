@@ -115,6 +115,10 @@ func main() {
 				Name:    "s3-secret-key",
 				EnvVars: []string{"COCOON_S3_SECRET_KEY"},
 			},
+			&cli.StringFlag{
+				Name:    "session-secret",
+				EnvVars: []string{"COCOON_SESSION_SECRET"},
+			},
 		},
 		Commands: []*cli.Command{
 			run,
@@ -158,6 +162,7 @@ var run = &cli.Command{
 				AccessKey:      cmd.String("s3-access-key"),
 				SecretKey:      cmd.String("s3-secret-key"),
 			},
+			SessionSecret: cmd.String("session-secret"),
 		})
 		if err != nil {
 			fmt.Printf("error creating cocoon: %v", err)

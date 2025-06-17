@@ -1,0 +1,51 @@
+:root {
+  --zinc-700: rgb(66, 71, 81);
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+main {
+}
+
+.centered-body {
+  min-height: 100vh;
+  justify-content: center;
+}
+
+.base-container {
+  border: 1px solid var(--zinc-700);
+  border-radius: 10px;
+}
+
+.box-shadow-container {
+  box-shadow: 1px 1px 52px 2px rgba(0, 0, 0, 0.42);
+  padding: 1.75em 1.2em;
+}
+
+.login-container {
+  max-width: 50ch;
+  form :last-child {
+    margin-bottom: 0;
+  }
+  form button {
+    float: right;
+  }
+}
+
+.authorize-container {
+  max-width: 100ch;
+}
+
+button {
+  width: unset;
+  min-width: 16ch;
+}
+
+.button-row {
+  display: flex;
+  gap: 1ch;
+  justify-content: end;
+}
