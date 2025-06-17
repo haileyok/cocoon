@@ -58,7 +58,7 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 		"Scopes":     scopes,
 		"AppName":    appName,
 		"RequestUri": reqUri,
-		"Did":        repo.Actor.Handle,
+		"Handle":     repo.Actor.Handle,
 	}
 
 	return e.Render(200, "authorize.html", data)
