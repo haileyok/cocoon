@@ -294,7 +294,8 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 			return helpers.InputError(e, to.StringPtr("InvalidToken"))
 		}
 
-		if oauthToken.ClientAuth.Jkt != proof.JKT {
+		if *oauthToken.Parameters.DpopJkt != proof.JKT {
+			s.logger.Error("jkt mismatch", "token", oauthToken.Parameters.DpopJkt, "proof", proof.JKT)
 			return helpers.InputError(e, to.StringPtr("dpop jkt mismatch"))
 		}
 
