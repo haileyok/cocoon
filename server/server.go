@@ -314,7 +314,7 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		e.Set("token", accessToken)
 		e.Set("scopes", strings.Split(oauthToken.Parameters.Scope, " "))
 
-		return nil
+		return next(e)
 	}
 }
 

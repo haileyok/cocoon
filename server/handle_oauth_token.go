@@ -166,6 +166,8 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			tokenType = "DPoP"
 		}
 
+		e.Response().Header().Set("content-type", "application/json")
+
 		return e.JSON(200, OauthTokenResponse{
 			AccessToken:  accessString,
 			RefreshToken: refreshToken,
