@@ -120,7 +120,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		now := time.Now()
-		eat := now.Add(10 * time.Second) // TODO: testing
+		eat := now.Add(OauthTokenMaxAge)
 		id := generateTokenId()
 
 		refreshToken := generateRefreshToken()
@@ -227,7 +227,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		nextRefreshToken := generateRefreshToken()
 
 		now := time.Now()
-		eat := now.Add(10 * time.Second) // TODO: just some testing
+		eat := now.Add(OauthTokenMaxAge)
 
 		accessClaims := jwt.MapClaims{
 			"scope":     oauthToken.Parameters.Scope,
