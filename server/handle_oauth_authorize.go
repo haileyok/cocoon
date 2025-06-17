@@ -98,7 +98,7 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 
 	// TODO: figure out how im supposed to actually redirect
 	if req.AcceptOrRejct == "reject" {
-		return e.Redirect(303, client.Metadata.ClientID)
+		return e.Redirect(303, client.Metadata.ClientURI)
 	}
 
 	if time.Now().After(authReq.ExpiresAt) {

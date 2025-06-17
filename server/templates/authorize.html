@@ -28,6 +28,12 @@
       <form action="/oauth/authorize" method="post">
         <div class="button-row">
           <input type="hidden" name="request_uri" value="{{ .RequestUri }}" />
+          <button
+            onclick="location.href='/account/signout?request_uri={{ .RequestUri }}'"
+            type="button"
+          >
+            Switch Account
+          </button>
           <button class="secondary" name="accept_or_reject" value="reject">
             Reject
           </button>
