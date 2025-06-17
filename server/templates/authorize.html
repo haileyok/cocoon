@@ -27,7 +27,7 @@
       </p>
       <form action="/oauth/authorize" method="post">
         <div class="button-row">
-          <input type="hidden" name="request_id" value="{{ .RequestUri }}" />
+          <input type="hidden" name="request_uri" value="{{ .RequestUri }}" />
           <button class="secondary" name="accept_or_reject" value="reject">
             Reject
           </button>
