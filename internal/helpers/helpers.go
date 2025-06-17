@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"math/rand"
-	"net/http"
 	"net/url"
 
 	"github.com/labstack/echo/v4"
@@ -62,15 +61,6 @@ func RandomBytes(n int) []byte {
 
 func ParseJWKFromBytes(b []byte) (jwk.Key, error) {
 	return jwk.ParseKey(b)
-}
-
-// gsnot quite sure if this is required. refrence impl (js) sees if the header is a string or an array (?)
-// if it's an array it will return the first item, and if the length is more than one will return an error
-// (header must contain one proof). im not certain what the purpose of this is right now, so might be
-// able to get rid of this little helper later
-func OauthExtractProof(headers http.Header) (string, error) {
-	dpopHeader := headers.Get("dpop")
-	return dpopHeader, nil
 }
 
 func OauthParseHtu(htu string) (string, error) {

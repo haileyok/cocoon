@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	cache "github.com/go-pkgz/expirable-cache/v3"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/lestrrat-go/jwx/v2/jwa"
@@ -22,10 +23,30 @@ import (
 )
 
 const (
-	MaxRotationInterval = OauthDpopNonceMaxAge / 3
-	MinRotationInterval = 1 * time.Second
-	SecretByteLength    = 32
+	DefaultMaxAge         = 10 * time.Second
+	DefaultCheckTolerance = 5 * time.Second
+	MaxRotationInterval   = OauthDpopNonceMaxAge / 3
+	MinRotationInterval   = 1 * time.Second
+	SecretByteLength      = 32
 )
+
+type jtiCache struct {
+	mu    sync.RWMutex
+	cache cache.Cache[string, bool]
+}
+
+func newJTICache(size int) *jtiCache {
+	cache := cache.NewCache[string, bool]().WithTTL(24 * time.Hour).WithLRU()
+	return &jtiCache{
+		cache: cache,
+	}
+}
+
+func (c *jtiCache) add(jti string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cache.Add(jti, true)
+}
 
 type OauthNonce struct {
 	rotationInterval time.Duration
@@ -85,6 +106,8 @@ func (on *OauthNonce) rotate() {
 		on.curr = on.compute(counter)
 		on.next = on.compute(counter + 1)
 	}
+
+	on.counter = counter
 }
 
 func (on *OauthNonce) compute(counter int64) string {
@@ -110,12 +133,14 @@ func (on *OauthNonce) Check(nonce string) bool {
 }
 
 type OauthDpopManager struct {
-	nonce OauthNonce
+	nonce    OauthNonce
+	jtiCache *jtiCache
 }
 
 func NewOauthDpopManager() *OauthDpopManager {
 	return &OauthDpopManager{
-		nonce: *NewOauthNonce(nil, 0), // use the default values in that guy for now
+		nonce:    *NewOauthNonce(nil, 0), // use the default values in that guy for now
+		jtiCache: newJTICache(100_000),
 	}
 }
 
@@ -124,10 +149,7 @@ func (odm *OauthDpopManager) CheckProof(reqMethod, reqUrl string, headers http.H
 		return nil, errors.New("HTTP method is required")
 	}
 
-	proof, err := helpers.OauthExtractProof(headers)
-	if err != nil {
-		return nil, err
-	}
+	proof := oauthExtractProof(headers)
 
 	if proof == "" {
 		return nil, nil
@@ -136,16 +158,12 @@ func (odm *OauthDpopManager) CheckProof(reqMethod, reqUrl string, headers http.H
 	parser := jwt.NewParser(jwt.WithoutClaimsValidation())
 	var token *jwt.Token
 
-	token, _, err = parser.ParseUnverified(proof, jwt.MapClaims{})
+	token, _, err := parser.ParseUnverified(proof, jwt.MapClaims{})
 	if err != nil {
 		return nil, fmt.Errorf("could not parse dpop proof jwt: %w", err)
 	}
 
 	typ, _ := token.Header["typ"].(string)
-	if typ == "" {
-		return nil, errors.New(`invalid dpop proof jwt: "typ" is missing in header`)
-	}
-
 	if typ != "dpop+jwt" {
 		return nil, errors.New(`invalid dpop proof jwt: "typ" must be 'dpop+jwt'`)
 	}
@@ -170,12 +188,9 @@ func (odm *OauthDpopManager) CheckProof(reqMethod, reqUrl string, headers http.H
 		return nil, fmt.Errorf("failed to get raw public key: %w", err)
 	}
 
-	// Now verify the JWT with the embedded public key
 	token, err = jwt.Parse(proof, func(t *jwt.Token) (any, error) {
-		// Verify the signing method matches what's in the JWK
 		alg := t.Header["alg"].(string)
 
-		// Check that the algorithm matches the key type
 		switch key.KeyType() {
 		case jwa.EC:
 			if !strings.HasPrefix(alg, "ES") {
@@ -206,20 +221,29 @@ func (odm *OauthDpopManager) CheckProof(reqMethod, reqUrl string, headers http.H
 		return nil, errors.New("no claims in dpop proof jwt")
 	}
 
-	// Validate iat with max age of 10 seconds
 	iat, iatOk := claims["iat"].(float64)
 	if !iatOk {
 		return nil, errors.New(`invalid dpop proof jwt: "iat" is missing`)
 	}
 
 	iatTime := time.Unix(int64(iat), 0)
-	if time.Since(iatTime) > 10*time.Second {
+	now := time.Now()
+
+	if now.Sub(iatTime) > DefaultMaxAge+DefaultCheckTolerance {
 		return nil, errors.New("dpop proof too old")
+	}
+
+	if iatTime.Sub(now) > DefaultCheckTolerance {
+		return nil, errors.New("dpop proof iat is in the future")
 	}
 
 	jti, _ := claims["jti"].(string)
 	if jti == "" {
 		return nil, errors.New(`invalid dpop proof jwt: "jti" is missing`)
+	}
+
+	if odm.jtiCache.add(jti) {
+		return nil, errors.New("dpop proof replay detected")
 	}
 
 	htm, _ := claims["htm"].(string)
@@ -253,7 +277,8 @@ func (odm *OauthDpopManager) CheckProof(reqMethod, reqUrl string, headers http.H
 	}
 
 	if nonce != "" && !odm.nonce.Check(nonce) {
-		return nil, errors.New(`dpop "nonce" mismatch`)
+		// WARN: this _must_ be `use_dpop_nonce` so that clients will fetch a new nonce
+		return nil, errors.New("use_dpop_nonce")
 	}
 
 	ath, _ := claims["ath"].(string)
@@ -284,4 +309,17 @@ func (odm *OauthDpopManager) CheckProof(reqMethod, reqUrl string, headers http.H
 		HTM: htm,
 		HTU: htu,
 	}, nil
+}
+
+// we must ensure that there is only a single dpop header. multiple headers is not allowed
+func oauthExtractProof(headers http.Header) string {
+	dpopHeaders := headers["Dpop"]
+	switch len(dpopHeaders) {
+	case 0:
+		return ""
+	case 1:
+		return dpopHeaders[0]
+	default:
+		return ""
+	}
 }
