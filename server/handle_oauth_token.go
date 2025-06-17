@@ -40,13 +40,13 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	dpopProof, err := s.oauthDpopMan.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, nil)
+	proof, err := s.oauthDpopMan.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, nil)
 	if err != nil {
 		s.logger.Error("error getting dpop proof", "error", err)
 		return helpers.InputError(e, to.StringPtr(err.Error()))
 	}
 
-	client, clientAuth, err := s.oauthAuthenticateClient(e.Request().Context(), req.OauthAuthenticateClientRequestBase, dpopProof, &OauthAuthenticateClientOptions{
+	client, clientAuth, err := s.oauthAuthenticateClient(e.Request().Context(), req.OauthAuthenticateClientRequestBase, proof, &OauthAuthenticateClientOptions{
 		AllowMissingDpopProof: true,
 	})
 	if err != nil {
@@ -197,7 +197,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr(`"client authentication method mismatch`))
 		}
 
-		if *oauthToken.Parameters.DpopJkt != dpopProof.JKT {
+		if *oauthToken.Parameters.DpopJkt != proof.JKT {
 			return helpers.InputError(e, to.StringPtr("dpop proof does not match expected jkt"))
 		}
 
@@ -227,9 +227,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		nextRefreshToken := generateRefreshToken()
 
 		now := time.Now()
-		eat := now.Add(OauthTokenMaxAge)
-
-		refreshToken := generateRefreshToken()
+		eat := now.Add(10 * time.Second) // TODO: just some testing
 
 		accessClaims := jwt.MapClaims{
 			"scope":     oauthToken.Parameters.Scope,
@@ -264,7 +262,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 
 		return e.JSON(200, OauthTokenResponse{
 			AccessToken:  accessString,
-			RefreshToken: refreshToken,
+			RefreshToken: nextRefreshToken,
 			TokenType:    tokenType,
 			Scope:        oauthToken.Parameters.Scope,
 			ExpiresIn:    int64(eat.Sub(time.Now()).Seconds()),
