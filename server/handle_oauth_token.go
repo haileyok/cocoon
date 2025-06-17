@@ -120,7 +120,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		now := time.Now()
-		eat := now.Add(OauthTokenMaxAge)
+		eat := now.Add(10 * time.Second) // TODO: testing
 		id := generateTokenId()
 
 		refreshToken := generateRefreshToken()
