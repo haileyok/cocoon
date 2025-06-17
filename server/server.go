@@ -165,7 +165,7 @@ func (s *Server) handleAdminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
-func (s *Server) handleSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(e echo.Context) error {
 		authheader := e.Request().Header.Get("authorization")
 		if authheader == "" {
@@ -175,6 +175,10 @@ func (s *Server) handleSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc
 		pts := strings.Split(authheader, " ")
 		if len(pts) != 2 {
 			return helpers.ServerError(e, nil)
+		}
+
+		if pts[0] == "DPoP" {
+			return next(e)
 		}
 
 		tokenstr := pts[1]
@@ -251,6 +255,63 @@ func (s *Server) handleSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc
 		if err := next(e); err != nil {
 			e.Error(err)
 		}
+
+		return nil
+	}
+}
+
+func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(e echo.Context) error {
+		authheader := e.Request().Header.Get("authorization")
+		if authheader == "" {
+			return e.JSON(401, map[string]string{"error": "Unauthorized"})
+		}
+
+		pts := strings.Split(authheader, " ")
+		if len(pts) != 2 {
+			return helpers.ServerError(e, nil)
+		}
+
+		if pts[0] != "DPoP" {
+			return next(e)
+		}
+
+		accessToken := pts[1]
+
+		dpopProof, err := s.oauthDpopMan.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, to.StringPtr(accessToken))
+		if err != nil {
+			s.logger.Error("invalid dpop proof", "error", err)
+			return helpers.InputError(e, to.StringPtr(err.Error()))
+		}
+
+		var oauthToken models.OauthToken
+		if err := s.db.Raw("SELECT * FROM oauth_tokens WHERE token = ?", nil, accessToken).Scan(&oauthToken).Error; err != nil {
+			s.logger.Error("error finding access token in db", "error", err)
+			return helpers.InputError(e, nil)
+		}
+
+		if oauthToken.Token == "" {
+			return helpers.InputError(e, to.StringPtr("InvalidToken"))
+		}
+
+		if oauthToken.ClientAuth.Jkt != dpopProof.JKT {
+			return helpers.InputError(e, to.StringPtr("dpop jkt mismatch"))
+		}
+
+		if time.Now().After(oauthToken.ExpiresAt) {
+			return e.JSON(400, map[string]string{"error": "ExpiredToken", "message": "token has expired"})
+		}
+
+		repo, err := s.getRepoActorByDid(oauthToken.Sub)
+		if err != nil {
+			s.logger.Error("could not find actor in db", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+
+		e.Set("repo", repo)
+		e.Set("did", repo.Repo.Did)
+		e.Set("token", accessToken)
+		e.Set("scopes", strings.Split(oauthToken.Parameters.Scope, " "))
 
 		return nil
 	}
@@ -467,32 +528,32 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/oauth/token", s.handleOauthToken, s.handleOauthMiddleware)
 
 	// authed
-	s.echo.GET("/xrpc/com.atproto.server.getSession", s.handleGetSession, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.server.refreshSession", s.handleRefreshSession, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.server.deleteSession", s.handleDeleteSession, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.identity.updateHandle", s.handleIdentityUpdateHandle, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.server.confirmEmail", s.handleServerConfirmEmail, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.server.requestEmailConfirmation", s.handleServerRequestEmailConfirmation, s.handleSessionMiddleware)
+	s.echo.GET("/xrpc/com.atproto.server.getSession", s.handleGetSession, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.refreshSession", s.handleRefreshSession, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.deleteSession", s.handleDeleteSession, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.identity.updateHandle", s.handleIdentityUpdateHandle, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.confirmEmail", s.handleServerConfirmEmail, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.requestEmailConfirmation", s.handleServerRequestEmailConfirmation, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.requestPasswordReset", s.handleServerRequestPasswordReset) // AUTH NOT REQUIRED FOR THIS ONE
-	s.echo.POST("/xrpc/com.atproto.server.requestEmailUpdate", s.handleServerRequestEmailUpdate, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.server.resetPassword", s.handleServerResetPassword, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.server.updateEmail", s.handleServerUpdateEmail, s.handleSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.requestEmailUpdate", s.handleServerRequestEmailUpdate, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.resetPassword", s.handleServerResetPassword, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.updateEmail", s.handleServerUpdateEmail, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 
 	// repo
-	s.echo.POST("/xrpc/com.atproto.repo.createRecord", s.handleCreateRecord, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.repo.putRecord", s.handlePutRecord, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.repo.deleteRecord", s.handleDeleteRecord, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.repo.applyWrites", s.handleApplyWrites, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.repo.uploadBlob", s.handleRepoUploadBlob, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.repo.importRepo", s.handleRepoImportRepo, s.handleSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.repo.createRecord", s.handleCreateRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.repo.putRecord", s.handlePutRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.repo.deleteRecord", s.handleDeleteRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.repo.applyWrites", s.handleApplyWrites, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.repo.uploadBlob", s.handleRepoUploadBlob, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.repo.importRepo", s.handleRepoImportRepo, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 
 	// stupid silly endpoints
-	s.echo.GET("/xrpc/app.bsky.actor.getPreferences", s.handleActorGetPreferences, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/app.bsky.actor.putPreferences", s.handleActorPutPreferences, s.handleSessionMiddleware)
+	s.echo.GET("/xrpc/app.bsky.actor.getPreferences", s.handleActorGetPreferences, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/app.bsky.actor.putPreferences", s.handleActorPutPreferences, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 
 	// are there any routes that we should be allowing without auth? i dont think so but idk
-	s.echo.GET("/xrpc/*", s.handleProxy, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/*", s.handleProxy, s.handleSessionMiddleware)
+	s.echo.GET("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 
 	// admin routes
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCode", s.handleCreateInviteCode, s.handleAdminMiddleware)

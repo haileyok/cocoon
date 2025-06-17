@@ -94,8 +94,6 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 					return helpers.InputError(e, to.StringPtr("invalid code_verifier"))
 				}
 			case "S256":
-				fmt.Println("codechal:", *&authReq.Parameters.CodeChallenge)
-
 				inputChal, err := base64.RawURLEncoding.DecodeString(*authReq.Parameters.CodeChallenge)
 				if err != nil {
 					s.logger.Error("error decoding code challenge", "error", err)
