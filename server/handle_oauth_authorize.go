@@ -132,5 +132,10 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 	q.Set("iss", "https://"+s.config.Hostname)
 	q.Set("code", code)
 
-	return e.Redirect(303, authReq.Parameters.RedirectURI+"#"+q.Encode())
+	hashOrQuestion := "?"
+	if authReq.ClientAuth.Method != "private_key_jwt" {
+		hashOrQuestion = "#"
+	}
+
+	return e.Redirect(303, authReq.Parameters.RedirectURI+hashOrQuestion+q.Encode())
 }
