@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"embed"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/smtp"
@@ -92,8 +94,6 @@ type Args struct {
 	SmtpEmail string
 	SmtpName  string
 
-	StaticFilePath string
-
 	S3Config *S3Config
 }
 
@@ -107,7 +107,6 @@ type config struct {
 	AdminPassword  string
 	SmtpEmail      string
 	SmtpName       string
-	StaticFilePath string
 }
 
 type CustomValidator struct {
@@ -138,12 +137,15 @@ func (cv *CustomValidator) Validate(i any) error {
 	return nil
 }
 
+var templateFS embed.FS
+var staticFS embed.FS
+
 type TemplateRenderer struct {
 	templates *template.Template
 }
 
-func (t *TemplateRenderer) Render(w io.Writer, name string, data interface{}, c echo.Context) error {
-	if viewContext, isMap := data.(map[string]interface{}); isMap {
+func (t *TemplateRenderer) Render(w io.Writer, name string, data any, c echo.Context) error {
+	if viewContext, isMap := data.(map[string]any); isMap {
 		viewContext["reverse"] = c.Echo().Reverse
 	}
 
@@ -462,7 +464,6 @@ func New(args *Args) (*Server, error) {
 			AdminPassword:  args.AdminPassword,
 			SmtpName:       args.SmtpName,
 			SmtpEmail:      args.SmtpEmail,
-			StaticFilePath: args.StaticFilePath,
 		},
 		evtman:   events.NewEventManager(events.NewMemPersister()),
 		passport: identity.NewPassport(h, identity.NewMemCache(10_000)),
@@ -474,10 +475,10 @@ func New(args *Args) (*Server, error) {
 		oauthDpopMan:   NewOauthDpopManager(),
 	}
 
-	renderer := &TemplateRenderer{
-		templates: template.Must(template.ParseGlob(s.getFilePath("*.html"))),
+	tmpl := template.Must(template.New("").ParseFS(templateFS, "templates/*.html"))
+	e.Renderer = &TemplateRenderer{
+		templates: tmpl,
 	}
-	e.Renderer = renderer
 
 	s.repoman = NewRepoMan(s) // TODO: this is way too lazy, stop it
 
@@ -497,6 +498,13 @@ func New(args *Args) (*Server, error) {
 }
 
 func (s *Server) addRoutes() {
+	// static
+	staticContent, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		s.logger.Error("could not load static assets", "error", err)
+	}
+	s.echo.GET("/static/*", echo.WrapHandler(http.FileServer(http.FS(staticContent))))
+
 	// random stuff
 	s.echo.GET("/", s.handleRoot)
 	s.echo.GET("/xrpc/_health", s.handleHealth)
@@ -725,8 +733,4 @@ func (s *Server) backupRoutine() {
 	for range ticker.C {
 		go s.doBackup()
 	}
-}
-
-func (s *Server) getFilePath(file string) string {
-	return fmt.Sprintf("%s/%s", s.config.StaticFilePath, file)
 }
