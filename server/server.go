@@ -278,7 +278,7 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 
 		accessToken := pts[1]
 
-		_, err := s.oauthDpopMan.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, to.StringPtr(accessToken))
+		proof, err := s.oauthDpopMan.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, to.StringPtr(accessToken))
 		if err != nil {
 			s.logger.Error("invalid dpop proof", "error", err)
 			return helpers.InputError(e, to.StringPtr(err.Error()))
@@ -294,10 +294,9 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 			return helpers.InputError(e, to.StringPtr("InvalidToken"))
 		}
 
-		// TODO: DONT IGNORE THIS!!!
-		// if oauthToken.ClientAuth.Jkt != dpopProof.JKT {
-		// 	return helpers.InputError(e, to.StringPtr("dpop jkt mismatch"))
-		// }
+		if oauthToken.ClientAuth.Jkt != proof.JKT {
+			return helpers.InputError(e, to.StringPtr("dpop jkt mismatch"))
+		}
 
 		if time.Now().After(oauthToken.ExpiresAt) {
 			return e.JSON(400, map[string]string{"error": "ExpiredToken", "message": "token has expired"})
