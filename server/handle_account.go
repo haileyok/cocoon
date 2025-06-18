@@ -16,7 +16,7 @@ func (s *Server) handleAccount(e echo.Context) error {
 	now := time.Now()
 
 	var tokens []provider.OauthToken
-	if err := s.db.Raw("SELECT * FROM oauth_tokens WHERE sub = ? AND expires_at <= ? ORDER BY created_at ASC", nil, repo.Repo.Did, now).Scan(&tokens).Error; err != nil {
+	if err := s.db.Raw("SELECT * FROM oauth_tokens WHERE sub = ? AND expires_at >= ? ORDER BY created_at ASC", nil, repo.Repo.Did, now).Scan(&tokens).Error; err != nil {
 		s.logger.Error("couldnt fetch oauth sessions for account", "did", repo.Repo.Did, "error", err)
 		sess.AddFlash("Unable to fetch sessions. See server logs for more details.", "error")
 		sess.Save(e.Request(), e.Response())
