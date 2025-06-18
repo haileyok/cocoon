@@ -25,6 +25,15 @@ func (s *Server) handleAccount(e echo.Context) error {
 		})
 	}
 
+	tokenInfo := []map[string]string{}
+	for _, t := range tokens {
+		tokenInfo = append(tokenInfo, map[string]string{
+			"CreatedAt": t.CreatedAt.Format("02 Jan 06 15:04 MST"),
+			"UpdatedAt": t.CreatedAt.Format("02 Jan 06 15:04 MST"),
+			"ExpiresAt": t.CreatedAt.Format("02 Jan 06 15:04 MST"),
+		})
+	}
+
 	return e.Render(200, "account.html", map[string]any{
 		"Repo":    repo,
 		"Tokens":  tokens,

@@ -21,10 +21,9 @@
       {{ else }} {{ range .Tokens }}
       <div class="base-container">
         <h4>{{ .ClientId }}</h4>
-        <p>
-          Created: {{ .CreatedAt }}, Updated: {{ .UpdatedAt }}, Expires: {{
-          .ExpiresAt }}
-        </p>
+        <p>Created: {{ .CreatedAt }}</p>
+        <p>Updated: {{ .UpdatedAt }}</p>
+        <p>Expires: {{ .ExpiresAt }}</p>
         <form action="/account/revoke" method="post">
           <input type="hidden" name="token" value="{{ .Token }}" />
           <button type="submit" value="">Revoke</button>
