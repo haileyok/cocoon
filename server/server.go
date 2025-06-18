@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"embed"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -45,6 +47,8 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	slogecho "github.com/samber/slog-echo"
+	"gitlab.com/yawning/secp256k1-voi"
+	secp256k1secec "gitlab.com/yawning/secp256k1-voi/secec"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -220,36 +224,106 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 			return helpers.ServerError(e, nil)
 		}
 
+		// move on to oauth session middleware if this is a dpop token
 		if pts[0] == "DPoP" {
 			return next(e)
 		}
 
 		tokenstr := pts[1]
-
-		token, err := new(jwt.Parser).Parse(tokenstr, func(t *jwt.Token) (any, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodECDSA); !ok {
-				return nil, fmt.Errorf("unsupported signing method: %v", t.Header["alg"])
-			}
-
-			return s.privateKey.Public(), nil
-		})
-		if err != nil {
-			s.logger.Error("error parsing jwt", "error", err)
-			// NOTE: https://github.com/bluesky-social/atproto/discussions/3319
-			return e.JSON(400, map[string]string{"error": "ExpiredToken", "message": "token has expired"})
+		token, _, err := new(jwt.Parser).ParseUnverified(tokenstr, jwt.MapClaims{})
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			return helpers.InputError(e, to.StringPtr("InvalidToken"))
 		}
 
-		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok || !token.Valid {
-			return helpers.InputError(e, to.StringPtr("InvalidToken"))
+		var did string
+		var repo *models.RepoActor
+
+		// service auth tokens
+		lxm, hasLxm := claims["lxm"]
+		if hasLxm {
+			pts := strings.Split(e.Request().URL.String(), "/")
+			if lxm != pts[len(pts)-1] {
+				s.logger.Error("service auth lxm incorrect", "lxm", lxm, "expected", pts[len(pts)-1], "error", err)
+				return helpers.InputError(e, nil)
+			}
+
+			maybeDid, ok := claims["iss"].(string)
+			if !ok {
+				s.logger.Error("no iss in service auth token", "error", err)
+				return helpers.InputError(e, nil)
+			}
+			did = maybeDid
+
+			maybeRepo, err := s.getRepoActorByDid(did)
+			if err != nil {
+				s.logger.Error("error fetching repo", "error", err)
+				return helpers.ServerError(e, nil)
+			}
+			repo = maybeRepo
+		}
+
+		if token.Header["alg"] != "ES256K" {
+			token, err = new(jwt.Parser).Parse(tokenstr, func(t *jwt.Token) (any, error) {
+				if _, ok := t.Method.(*jwt.SigningMethodECDSA); !ok {
+					return nil, fmt.Errorf("unsupported signing method: %v", t.Header["alg"])
+				}
+				return s.privateKey.Public(), nil
+			})
+			if err != nil {
+				s.logger.Error("error parsing jwt", "error", err)
+				// NOTE: https://github.com/bluesky-social/atproto/discussions/3319
+				return e.JSON(400, map[string]string{"error": "ExpiredToken", "message": "token has expired"})
+			}
+
+			if !token.Valid {
+				return helpers.InputError(e, to.StringPtr("InvalidToken"))
+			}
+		} else {
+			kpts := strings.Split(tokenstr, ".")
+			signingInput := kpts[0] + "." + kpts[1]
+			hash := sha256.Sum256([]byte(signingInput))
+			sigBytes, err := base64.RawURLEncoding.DecodeString(kpts[2])
+			if err != nil {
+				s.logger.Error("error decoding signature bytes", "error", err)
+				return helpers.ServerError(e, nil)
+			}
+
+			if len(sigBytes) != 64 {
+				s.logger.Error("incorrect sigbytes length", "length", len(sigBytes))
+				return helpers.ServerError(e, nil)
+			}
+
+			rBytes := sigBytes[:32]
+			sBytes := sigBytes[32:]
+			rr, _ := secp256k1.NewScalarFromBytes((*[32]byte)(rBytes))
+			ss, _ := secp256k1.NewScalarFromBytes((*[32]byte)(sBytes))
+
+			sk, err := secp256k1secec.NewPrivateKey(repo.SigningKey)
+			if err != nil {
+				s.logger.Error("can't load private key", "error", err)
+				return err
+			}
+
+			pubKey, ok := sk.Public().(*secp256k1secec.PublicKey)
+			if !ok {
+				s.logger.Error("error getting public key from sk")
+				return helpers.ServerError(e, nil)
+			}
+
+			verified := pubKey.VerifyRaw(hash[:], rr, ss)
+			if !verified {
+				s.logger.Error("error verifying", "error", err)
+				return helpers.ServerError(e, nil)
+			}
 		}
 
 		isRefresh := e.Request().URL.Path == "/xrpc/com.atproto.server.refreshSession"
-		scope := claims["scope"].(string)
+		scope, _ := claims["scope"].(string)
 
 		if isRefresh && scope != "com.atproto.refresh" {
 			return helpers.InputError(e, to.StringPtr("InvalidToken"))
-		} else if !isRefresh && scope != "com.atproto.access" {
+		} else if !hasLxm && !isRefresh && scope != "com.atproto.access" {
 			return helpers.InputError(e, to.StringPtr("InvalidToken"))
 		}
 
@@ -258,21 +332,23 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 			table = "refresh_tokens"
 		}
 
-		type Result struct {
-			Found bool
-		}
-		var result Result
-		if err := s.db.Raw("SELECT EXISTS(SELECT 1 FROM "+table+" WHERE token = ?) AS found", nil, tokenstr).Scan(&result).Error; err != nil {
-			if err == gorm.ErrRecordNotFound {
-				return helpers.InputError(e, to.StringPtr("InvalidToken"))
+		if isRefresh {
+			type Result struct {
+				Found bool
+			}
+			var result Result
+			if err := s.db.Raw("SELECT EXISTS(SELECT 1 FROM "+table+" WHERE token = ?) AS found", nil, tokenstr).Scan(&result).Error; err != nil {
+				if err == gorm.ErrRecordNotFound {
+					return helpers.InputError(e, to.StringPtr("InvalidToken"))
+				}
+
+				s.logger.Error("error getting token from db", "error", err)
+				return helpers.ServerError(e, nil)
 			}
 
-			s.logger.Error("error getting token from db", "error", err)
-			return helpers.ServerError(e, nil)
-		}
-
-		if !result.Found {
-			return helpers.InputError(e, to.StringPtr("InvalidToken"))
+			if !result.Found {
+				return helpers.InputError(e, to.StringPtr("InvalidToken"))
+			}
 		}
 
 		exp, ok := claims["exp"].(float64)
@@ -285,14 +361,18 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 			return helpers.InputError(e, to.StringPtr("ExpiredToken"))
 		}
 
-		repo, err := s.getRepoActorByDid(claims["sub"].(string))
-		if err != nil {
-			s.logger.Error("error fetching repo", "error", err)
-			return helpers.ServerError(e, nil)
+		if repo == nil {
+			maybeRepo, err := s.getRepoActorByDid(claims["sub"].(string))
+			if err != nil {
+				s.logger.Error("error fetching repo", "error", err)
+				return helpers.ServerError(e, nil)
+			}
+			repo = maybeRepo
+			did = repo.Repo.Did
 		}
 
 		e.Set("repo", repo)
-		e.Set("did", claims["sub"])
+		e.Set("did", did)
 		e.Set("token", tokenstr)
 
 		if err := next(e); err != nil {
