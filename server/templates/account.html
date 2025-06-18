@@ -14,7 +14,11 @@
       <ul>
         <li><a href="/account/signout">Sign Out</a></li>
       </ul>
-      {{ if eq (len .Tokens) 0 }}
+      {{ if .flashes.successes }}
+      <div class="alert alert-success margin-bottom-xs">
+        <p>{{ index .flashes.successes 0 }}</p>
+      </div>
+      {{ end }} {{ if eq (len .Tokens) 0 }}
       <div class="alert alert-success" role="alert">
         <p class="alert-message">You do not have any active OAuth sessions!</p>
       </div>
