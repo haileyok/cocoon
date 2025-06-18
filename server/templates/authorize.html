@@ -13,7 +13,12 @@
       class="container base-container box-shadow-container authorizer-container"
     >
       <h2>Authorizing with {{ .AppName }}</h2>
-      <p>You are signed in as <b>{{ .Handle }}</b></p>
+      <p>
+        You are signed in as <b>{{ .Handle }}</b>.
+        <a href="/account/signout?request_uri={{ .RequestUri }}"
+          >Switch Account</a
+        >
+      </p>
       <p><b>{{ .AppName }}</b> is asking for you to grant it these scopes:</p>
       <ul>
         {{ range .Scopes }}
@@ -28,12 +33,6 @@
       <form action="/oauth/authorize" method="post">
         <div class="button-row">
           <input type="hidden" name="request_uri" value="{{ .RequestUri }}" />
-          <button
-            onclick="location.href='/account/signout?request_uri={{ .RequestUri }}'"
-            type="button"
-          >
-            Switch Account
-          </button>
           <button class="secondary" name="accept_or_reject" value="reject">
             Reject
           </button>
