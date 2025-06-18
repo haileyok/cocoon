@@ -3,7 +3,9 @@ package provider
 import (
 	"context"
 	"crypto"
+	"database/sql/driver"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -21,6 +23,18 @@ type ClientAuth struct {
 	Jkt    string
 	Jti    string
 	Exp    *float64
+}
+
+func (ca *ClientAuth) Scan(value any) error {
+	b, ok := value.([]byte)
+	if !ok {
+		return fmt.Errorf("failed to unmarshal OauthParRequest value")
+	}
+	return json.Unmarshal(b, ca)
+}
+
+func (ca ClientAuth) Value() (driver.Value, error) {
+	return json.Marshal(ca)
 }
 
 type AuthenticateClientOptions struct {
