@@ -36,7 +36,7 @@ func (s *Server) handleAccount(e echo.Context) error {
 
 	return e.Render(200, "account.html", map[string]any{
 		"Repo":    repo,
-		"Tokens":  tokens,
+		"Tokens":  tokenInfo,
 		"flashes": getFlashesFromSession(e, sess),
 	})
 }
