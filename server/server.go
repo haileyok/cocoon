@@ -577,7 +577,7 @@ func (s *Server) addRoutes() {
 	// account
 	s.echo.GET("/account/signin", s.handleOauthSigninGet)
 	s.echo.POST("/account/signin", s.handleOauthSigninPost)
-	s.echo.GET("/account/logout", s.handleOauthSignout)
+	s.echo.GET("/account/signout", s.handleOauthSignout)
 
 	// oauth account
 	s.echo.GET("/oauth/jwks", s.handleOauthJwks)
