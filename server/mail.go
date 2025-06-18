@@ -3,6 +3,10 @@ package server
 import "fmt"
 
 func (s *Server) sendWelcomeMail(email, handle string) error {
+	if s.mail == nil {
+		return nil
+	}
+
 	s.mailLk.Lock()
 	defer s.mailLk.Unlock()
 
@@ -18,6 +22,10 @@ func (s *Server) sendWelcomeMail(email, handle string) error {
 }
 
 func (s *Server) sendPasswordReset(email, handle, code string) error {
+	if s.mail == nil {
+		return nil
+	}
+
 	s.mailLk.Lock()
 	defer s.mailLk.Unlock()
 
@@ -33,6 +41,10 @@ func (s *Server) sendPasswordReset(email, handle, code string) error {
 }
 
 func (s *Server) sendEmailUpdate(email, handle, code string) error {
+	if s.mail == nil {
+		return nil
+	}
+
 	s.mailLk.Lock()
 	defer s.mailLk.Unlock()
 
@@ -48,6 +60,10 @@ func (s *Server) sendEmailUpdate(email, handle, code string) error {
 }
 
 func (s *Server) sendEmailVerification(email, handle, code string) error {
+	if s.mail == nil {
+		return nil
+	}
+
 	s.mailLk.Lock()
 	defer s.mailLk.Unlock()
 

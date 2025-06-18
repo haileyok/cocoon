@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"embed"
 	"errors"
 	"fmt"
 	"io"
@@ -11,8 +12,10 @@ import (
 	"net/http"
 	"net/smtp"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/to"
@@ -28,17 +31,26 @@ import (
 	"github.com/domodwyer/mailyak/v3"
 	"github.com/go-playground/validator"
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/gorilla/sessions"
 	"github.com/haileyok/cocoon/identity"
 	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/oauth/client_manager"
+	"github.com/haileyok/cocoon/oauth/constants"
+	"github.com/haileyok/cocoon/oauth/dpop/dpop_manager"
+	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/haileyok/cocoon/plc"
+	echo_session "github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/lestrrat-go/jwx/v2/jwk"
 	slogecho "github.com/samber/slog-echo"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+)
+
+const (
+	AccountSessionMaxAge = 30 * 24 * time.Hour // one week
 )
 
 type S3Config struct {
@@ -51,19 +63,20 @@ type S3Config struct {
 }
 
 type Server struct {
-	http       *http.Client
-	httpd      *http.Server
-	mail       *mailyak.MailYak
-	mailLk     *sync.Mutex
-	echo       *echo.Echo
-	db         *db.DB
-	plcClient  *plc.Client
-	logger     *slog.Logger
-	config     *config
-	privateKey *ecdsa.PrivateKey
-	repoman    *RepoMan
-	evtman     *events.EventManager
-	passport   *identity.Passport
+	http          *http.Client
+	httpd         *http.Server
+	mail          *mailyak.MailYak
+	mailLk        *sync.Mutex
+	echo          *echo.Echo
+	db            *db.DB
+	plcClient     *plc.Client
+	logger        *slog.Logger
+	config        *config
+	privateKey    *ecdsa.PrivateKey
+	repoman       *RepoMan
+	oauthProvider *provider.Provider
+	evtman        *events.EventManager
+	passport      *identity.Passport
 
 	dbName   string
 	s3Config *S3Config
@@ -90,6 +103,8 @@ type Args struct {
 	SmtpName  string
 
 	S3Config *S3Config
+
+	SessionSecret string
 }
 
 type config struct {
@@ -132,6 +147,52 @@ func (cv *CustomValidator) Validate(i any) error {
 	return nil
 }
 
+//go:embed templates/*
+var templateFS embed.FS
+
+//go:embed static/*
+var staticFS embed.FS
+
+type TemplateRenderer struct {
+	templates    *template.Template
+	isDev        bool
+	templatePath string
+}
+
+func (s *Server) loadTemplates() {
+	absPath, _ := filepath.Abs("server/templates/*.html")
+	if s.config.Version == "dev" {
+		tmpl := template.Must(template.ParseGlob(absPath))
+		s.echo.Renderer = &TemplateRenderer{
+			templates:    tmpl,
+			isDev:        true,
+			templatePath: absPath,
+		}
+	} else {
+		tmpl := template.Must(template.ParseFS(templateFS, "templates/*.html"))
+		s.echo.Renderer = &TemplateRenderer{
+			templates: tmpl,
+			isDev:     false,
+		}
+	}
+}
+
+func (t *TemplateRenderer) Render(w io.Writer, name string, data any, c echo.Context) error {
+	if t.isDev {
+		tmpl, err := template.ParseGlob(t.templatePath)
+		if err != nil {
+			return err
+		}
+		t.templates = tmpl
+	}
+
+	if viewContext, isMap := data.(map[string]any); isMap {
+		viewContext["reverse"] = c.Echo().Reverse
+	}
+
+	return t.templates.ExecuteTemplate(w, name, data)
+}
+
 func (s *Server) handleAdminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(e echo.Context) error {
 		username, password, ok := e.Request().BasicAuth()
@@ -147,7 +208,7 @@ func (s *Server) handleAdminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
-func (s *Server) handleSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(e echo.Context) error {
 		authheader := e.Request().Header.Get("authorization")
 		if authheader == "" {
@@ -157,6 +218,10 @@ func (s *Server) handleSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc
 		pts := strings.Split(authheader, " ")
 		if len(pts) != 2 {
 			return helpers.ServerError(e, nil)
+		}
+
+		if pts[0] == "DPoP" {
+			return next(e)
 		}
 
 		tokenstr := pts[1]
@@ -238,6 +303,70 @@ func (s *Server) handleSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc
 	}
 }
 
+func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
+	return func(e echo.Context) error {
+		authheader := e.Request().Header.Get("authorization")
+		if authheader == "" {
+			return e.JSON(401, map[string]string{"error": "Unauthorized"})
+		}
+
+		pts := strings.Split(authheader, " ")
+		if len(pts) != 2 {
+			return helpers.ServerError(e, nil)
+		}
+
+		if pts[0] != "DPoP" {
+			return next(e)
+		}
+
+		accessToken := pts[1]
+
+		proof, err := s.oauthProvider.DpopManager.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, to.StringPtr(accessToken))
+		if err != nil {
+			s.logger.Error("invalid dpop proof", "error", err)
+			return helpers.InputError(e, to.StringPtr(err.Error()))
+		}
+
+		var oauthToken provider.OauthToken
+		if err := s.db.Raw("SELECT * FROM oauth_tokens WHERE token = ?", nil, accessToken).Scan(&oauthToken).Error; err != nil {
+			s.logger.Error("error finding access token in db", "error", err)
+			return helpers.InputError(e, nil)
+		}
+
+		if oauthToken.Token == "" {
+			return helpers.InputError(e, to.StringPtr("InvalidToken"))
+		}
+
+		if *oauthToken.Parameters.DpopJkt != proof.JKT {
+			s.logger.Error("jkt mismatch", "token", oauthToken.Parameters.DpopJkt, "proof", proof.JKT)
+			return helpers.InputError(e, to.StringPtr("dpop jkt mismatch"))
+		}
+
+		if time.Now().After(oauthToken.ExpiresAt) {
+			return e.JSON(400, map[string]string{"error": "ExpiredToken", "message": "token has expired"})
+		}
+
+		repo, err := s.getRepoActorByDid(oauthToken.Sub)
+		if err != nil {
+			s.logger.Error("could not find actor in db", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+
+		nonce := s.oauthProvider.NextNonce()
+		if nonce != "" {
+			e.Response().Header().Set("DPoP-Nonce", nonce)
+			e.Response().Header().Add("access-control-expose-headers", "DPoP-Nonce")
+		}
+
+		e.Set("repo", repo)
+		e.Set("did", repo.Repo.Did)
+		e.Set("token", accessToken)
+		e.Set("scopes", strings.Split(oauthToken.Parameters.Scope, " "))
+
+		return next(e)
+	}
+}
+
 func New(args *Args) (*Server, error) {
 	if args.Addr == "" {
 		return nil, fmt.Errorf("addr must be set")
@@ -271,10 +400,15 @@ func New(args *Args) (*Server, error) {
 		args.Logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
 	}
 
+	if args.SessionSecret == "" {
+		panic("SESSION SECRET WAS NOT SET. THIS IS REQUIRED. ")
+	}
+
 	e := echo.New()
 
 	e.Pre(middleware.RemoveTrailingSlash())
 	e.Pre(slogecho.New(args.Logger))
+	e.Use(echo_session.Middleware(sessions.NewCookieStore([]byte(args.SessionSecret))))
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins:     []string{"*"},
 		AllowHeaders:     []string{"*"},
@@ -348,7 +482,7 @@ func New(args *Args) (*Server, error) {
 		return nil, err
 	}
 
-	key, err := jwk.ParseKey(jwkbytes)
+	key, err := helpers.ParseJWKFromBytes(jwkbytes)
 	if err != nil {
 		return nil, err
 	}
@@ -356,6 +490,18 @@ func New(args *Args) (*Server, error) {
 	var pkey ecdsa.PrivateKey
 	if err := key.Raw(&pkey); err != nil {
 		return nil, err
+	}
+
+	oauthCli := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	var nonceSecret []byte
+	maybeSecret, err := os.ReadFile("nonce.secret")
+	if err != nil && !os.IsNotExist(err) {
+		args.Logger.Error("error attempting to read nonce secret", "error", err)
+	} else {
+		nonceSecret = maybeSecret
 	}
 
 	s := &Server{
@@ -382,7 +528,28 @@ func New(args *Args) (*Server, error) {
 
 		dbName:   args.DbName,
 		s3Config: args.S3Config,
+
+		oauthProvider: provider.NewProvider(provider.Args{
+			Hostname: args.Hostname,
+			ClientManagerArgs: client_manager.Args{
+				Cli:    oauthCli,
+				Logger: args.Logger,
+			},
+			DpopManagerArgs: dpop_manager.Args{
+				NonceSecret:           nonceSecret,
+				NonceRotationInterval: constants.NonceMaxRotationInterval / 3,
+				OnNonceSecretCreated: func(newNonce []byte) {
+					if err := os.WriteFile("nonce.secret", newNonce, 0644); err != nil {
+						args.Logger.Error("error writing new nonce secret", "error", err)
+					}
+				},
+				Logger:   args.Logger,
+				Hostname: args.Hostname,
+			},
+		}),
 	}
+
+	s.loadTemplates()
 
 	s.repoman = NewRepoMan(s) // TODO: this is way too lazy, stop it
 
@@ -402,10 +569,19 @@ func New(args *Args) (*Server, error) {
 }
 
 func (s *Server) addRoutes() {
+	// static
+	if s.config.Version == "dev" {
+		s.echo.Static("/static", "server/static")
+	} else {
+		s.echo.GET("/static/*", echo.WrapHandler(http.FileServer(http.FS(staticFS))))
+	}
+
 	// random stuff
 	s.echo.GET("/", s.handleRoot)
 	s.echo.GET("/xrpc/_health", s.handleHealth)
 	s.echo.GET("/.well-known/did.json", s.handleWellKnown)
+	s.echo.GET("/.well-known/oauth-protected-resource", s.handleOauthProtectedResource)
+	s.echo.GET("/.well-known/oauth-authorization-server", s.handleOauthAuthorizationServer)
 	s.echo.GET("/robots.txt", s.handleRobots)
 
 	// public
@@ -428,33 +604,50 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/xrpc/com.atproto.sync.listBlobs", s.handleSyncListBlobs)
 	s.echo.GET("/xrpc/com.atproto.sync.getBlob", s.handleSyncGetBlob)
 
+	// account
+	s.echo.GET("/account", s.handleAccount)
+	s.echo.POST("/account/revoke", s.handleAccountRevoke)
+	s.echo.GET("/account/signin", s.handleAccountSigninGet)
+	s.echo.POST("/account/signin", s.handleAccountSigninPost)
+	s.echo.GET("/account/signout", s.handleAccountSignout)
+
+	// oauth account
+	s.echo.GET("/oauth/jwks", s.handleOauthJwks)
+	s.echo.GET("/oauth/authorize", s.handleOauthAuthorizeGet)
+	s.echo.POST("/oauth/authorize", s.handleOauthAuthorizePost)
+
+	// oauth authorization
+	s.echo.POST("/oauth/par", s.handleOauthPar, s.oauthProvider.BaseMiddleware)
+	s.echo.POST("/oauth/token", s.handleOauthToken, s.oauthProvider.BaseMiddleware)
+
 	// authed
-	s.echo.GET("/xrpc/com.atproto.server.getSession", s.handleGetSession, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.server.refreshSession", s.handleRefreshSession, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.server.deleteSession", s.handleDeleteSession, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.identity.updateHandle", s.handleIdentityUpdateHandle, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.server.confirmEmail", s.handleServerConfirmEmail, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.server.requestEmailConfirmation", s.handleServerRequestEmailConfirmation, s.handleSessionMiddleware)
+	s.echo.GET("/xrpc/com.atproto.server.getSession", s.handleGetSession, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.refreshSession", s.handleRefreshSession, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.deleteSession", s.handleDeleteSession, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.identity.updateHandle", s.handleIdentityUpdateHandle, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.confirmEmail", s.handleServerConfirmEmail, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.requestEmailConfirmation", s.handleServerRequestEmailConfirmation, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.requestPasswordReset", s.handleServerRequestPasswordReset) // AUTH NOT REQUIRED FOR THIS ONE
-	s.echo.POST("/xrpc/com.atproto.server.requestEmailUpdate", s.handleServerRequestEmailUpdate, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.server.resetPassword", s.handleServerResetPassword, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.server.updateEmail", s.handleServerUpdateEmail, s.handleSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.requestEmailUpdate", s.handleServerRequestEmailUpdate, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.resetPassword", s.handleServerResetPassword, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.updateEmail", s.handleServerUpdateEmail, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.GET("/xrpc/com.atproto.server.getServiceAuth", s.handleServerGetServiceAuth, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 
 	// repo
-	s.echo.POST("/xrpc/com.atproto.repo.createRecord", s.handleCreateRecord, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.repo.putRecord", s.handlePutRecord, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.repo.deleteRecord", s.handleDeleteRecord, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.repo.applyWrites", s.handleApplyWrites, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.repo.uploadBlob", s.handleRepoUploadBlob, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/com.atproto.repo.importRepo", s.handleRepoImportRepo, s.handleSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.repo.createRecord", s.handleCreateRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.repo.putRecord", s.handlePutRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.repo.deleteRecord", s.handleDeleteRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.repo.applyWrites", s.handleApplyWrites, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.repo.uploadBlob", s.handleRepoUploadBlob, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.repo.importRepo", s.handleRepoImportRepo, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 
 	// stupid silly endpoints
-	s.echo.GET("/xrpc/app.bsky.actor.getPreferences", s.handleActorGetPreferences, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/app.bsky.actor.putPreferences", s.handleActorPutPreferences, s.handleSessionMiddleware)
+	s.echo.GET("/xrpc/app.bsky.actor.getPreferences", s.handleActorGetPreferences, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/app.bsky.actor.putPreferences", s.handleActorPutPreferences, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 
 	// are there any routes that we should be allowing without auth? i dont think so but idk
-	s.echo.GET("/xrpc/*", s.handleProxy, s.handleSessionMiddleware)
-	s.echo.POST("/xrpc/*", s.handleProxy, s.handleSessionMiddleware)
+	s.echo.GET("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 
 	// admin routes
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCode", s.handleCreateInviteCode, s.handleAdminMiddleware)
@@ -476,6 +669,8 @@ func (s *Server) Serve(ctx context.Context) error {
 		&models.Record{},
 		&models.Blob{},
 		&models.BlobPart{},
+		&provider.OauthToken{},
+		&provider.OauthAuthorizationRequest{},
 	)
 
 	s.logger.Info("starting cocoon")

@@ -71,3 +71,8 @@ Just because something is implemented doesn't mean it is finisehd. Tons of these
 - [ ] com.atproto.moderation.createReport
 - [x] app.bsky.actor.getPreferences
 - [x] app.bsky.actor.putPreferences
+
+
+## License
+
+This project is licensed under MIT license. `server/static/pico.css` is also licensed under MIT license, available at [https://github.com/picocss/pico/](https://github.com/picocss/pico/).

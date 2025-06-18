@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="stylesheet" href="/static/pico.css" />
+    <link rel="stylesheet" href="/static/style.css" />
+    <title>PDS Authentication</title>
+  </head>
+  <body class="centered-body">
+    <main class="container base-container box-shadow-container login-container">
+      <h2>Sign into your account</h2>
+      <p>Enter your handle and password below.</p>
+      {{ if .flashes.errors }}
+      <div class="alert alert-danger margin-bottom-xs">
+        <p>{{ index .flashes.errors 0 }}</p>
+      </div>
+      {{ end }}
+      <form action="/account/signin" method="post">
+        <input name="username" id="username" placeholder="Handle" />
+        <br />
+        <input
+          name="password"
+          id="password"
+          type="password"
+          placeholder="Password"
+        />
+        <input name="query_params" type="hidden" value="{{ .QueryParams }}" />
+        <button class="primary" type="submit" value="Login">Login</button>
+      </form>
+    </main>
+  </body>
+</html>

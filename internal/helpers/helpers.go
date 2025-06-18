@@ -1,9 +1,14 @@
 package helpers
 
 import (
+	crand "crypto/rand"
+	"encoding/hex"
+	"errors"
 	"math/rand"
+	"net/url"
 
 	"github.com/labstack/echo/v4"
+	"github.com/lestrrat-go/jwx/v2/jwk"
 )
 
 // This will confirm to the regex in the application if 5 chars are used for each side of the -
@@ -38,4 +43,46 @@ func RandomVarchar(length int) string {
 		b[i] = letters[rand.Intn(len(letters))]
 	}
 	return string(b)
+}
+
+func RandomHex(n int) (string, error) {
+	bytes := make([]byte, n)
+	if _, err := crand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
+func RandomBytes(n int) []byte {
+	bs := make([]byte, n)
+	crand.Read(bs)
+	return bs
+}
+
+func ParseJWKFromBytes(b []byte) (jwk.Key, error) {
+	return jwk.ParseKey(b)
+}
+
+func OauthParseHtu(htu string) (string, error) {
+	u, err := url.Parse(htu)
+	if err != nil {
+		return "", errors.New("`htu` is not a valid URL")
+	}
+
+	if u.User != nil {
+		_, containsPass := u.User.Password()
+		if u.User.Username() != "" || containsPass {
+			return "", errors.New("`htu` must not contain credentials")
+		}
+	}
+
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", errors.New("`htu` must be http or https")
+	}
+
+	return OauthNormalizeHtu(u), nil
+}
+
+func OauthNormalizeHtu(u *url.URL) string {
+	return u.Scheme + "://" + u.Host + u.RawPath
 }
