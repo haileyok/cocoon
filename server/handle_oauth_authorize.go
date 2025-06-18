@@ -28,7 +28,7 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 
 	repo, _, err := s.getSessionRepoOrErr(e)
 	if err != nil {
-		return e.Redirect(303, "/account/signin?request_uri="+reqUri)
+		return e.Redirect(303, "/account/signin?"+e.QueryParams().Encode())
 	}
 
 	reqId, err := decodeRequestUri(reqUri)
@@ -55,10 +55,11 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 	appName := client.Metadata.ClientName
 
 	data := map[string]any{
-		"Scopes":     scopes,
-		"AppName":    appName,
-		"RequestUri": reqUri,
-		"Handle":     repo.Actor.Handle,
+		"Scopes":      scopes,
+		"AppName":     appName,
+		"RequestUri":  reqUri,
+		"QueryParams": e.QueryParams().Encode(),
+		"Handle":      repo.Actor.Handle,
 	}
 
 	return e.Render(200, "authorize.html", data)

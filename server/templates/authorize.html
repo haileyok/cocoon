@@ -15,9 +15,7 @@
       <h2>Authorizing with {{ .AppName }}</h2>
       <p>
         You are signed in as <b>{{ .Handle }}</b>.
-        <a href="/account/signout?request_uri={{ .RequestUri }}"
-          >Switch Account</a
-        >
+        <a href="/account/signout?{{ .QueryParams }}">Switch Account</a>
       </p>
       <p><b>{{ .AppName }}</b> is asking for you to grant it these scopes:</p>
       <ul>
