@@ -25,7 +25,7 @@
           Created: {{ .CreatedAt }}, Updated: {{ .UpdatedAt }}, Expires: {{
           .ExpiresAt }}
         </p>
-        <form action="/account/revoke">
+        <form action="/account/revoke" method="post">
           <input type="hidden" name="token" value="{{ .Token }}" />
           <button type="submit" value="">Revoke</button>
         </form>
