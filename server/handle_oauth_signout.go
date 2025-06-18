@@ -28,7 +28,7 @@ func (s *Server) handleOauthSignout(e echo.Context) error {
 
 	redirect := "/account/signin"
 	if reqUri != "" {
-		redirect += "?request_uri=" + reqUri
+		redirect += "?" + e.QueryParams().Encode()
 	}
 
 	return e.Redirect(303, redirect)
