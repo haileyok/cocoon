@@ -26,6 +26,7 @@ type DpopManager struct {
 	nonce    *nonce.Nonce
 	jtiCache *jtiCache
 	logger   *slog.Logger
+	hostname string
 }
 
 type Args struct {
@@ -34,6 +35,7 @@ type Args struct {
 	OnNonceSecretCreated  func([]byte)
 	JTICacheSize          int
 	Logger                *slog.Logger
+	Hostname              string
 }
 
 func New(args Args) *DpopManager {
@@ -63,6 +65,10 @@ func New(args Args) *DpopManager {
 func (dm *DpopManager) CheckProof(reqMethod, reqUrl string, headers http.Header, accessToken *string) (*dpop.Proof, error) {
 	if reqMethod == "" {
 		return nil, errors.New("HTTP method is required")
+	}
+
+	if !strings.HasPrefix(reqUrl, "https://") {
+		reqUrl = "https://" + dm.hostname + reqUrl
 	}
 
 	proof := extractProof(headers)

@@ -543,7 +543,8 @@ func New(args *Args) (*Server, error) {
 						args.Logger.Error("error writing new nonce secret", "error", err)
 					}
 				},
-				Logger: args.Logger,
+				Logger:   args.Logger,
+				Hostname: args.Hostname,
 			},
 		}),
 	}
