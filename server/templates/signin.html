@@ -22,12 +22,7 @@
           type="password"
           placeholder="Password"
         />
-        <input
-          name="request_uri"
-          id="request_uri"
-          type="hidden"
-          value="{{ .RequestUri }}"
-        />
+        <input name="query_params" type="hidden" value="{{ .QueryParams }}" />
         <button class="primary" type="submit" value="Login">Login</button>
       </form>
     </main>

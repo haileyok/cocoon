@@ -15,9 +15,9 @@ import (
 )
 
 type OauthSigninRequest struct {
-	Username   string `form:"username"`
-	Password   string `form:"password"`
-	RequestUri string `form:"request_uri"`
+	Username    string `form:"username"`
+	Password    string `form:"password"`
+	QueryParams string `form:"query_params"`
 }
 
 func (s *Server) getSessionRepoOrErr(e echo.Context) (*models.RepoActor, *sessions.Session, error) {
@@ -54,8 +54,8 @@ func (s *Server) handleOauthSigninGet(e echo.Context) error {
 	}
 
 	return e.Render(200, "signin.html", map[string]any{
-		"flashes":    getFlashesFromSession(e, sess),
-		"RequestUri": e.QueryParam("request_uri"),
+		"flashes":     getFlashesFromSession(e, sess),
+		"QueryParams": e.QueryParams().Encode(),
 	})
 }
 
@@ -122,8 +122,8 @@ func (s *Server) handleOauthSigninPost(e echo.Context) error {
 		return err
 	}
 
-	if req.RequestUri != "" {
-		return e.Redirect(303, "/oauth/authorize?"+e.QueryParams().Encode())
+	if req.QueryParams != "" {
+		return e.Redirect(303, "/oauth/authorize?"+req.QueryParams)
 	} else {
 		return e.Redirect(303, "/account")
 	}
