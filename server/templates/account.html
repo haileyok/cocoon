@@ -20,7 +20,7 @@
       </div>
       {{ else }} {{ range .Tokens }}
       <div class="base-container">
-        <h4>{{ .ClientID }}</h4>
+        <h4>{{ .ClientId }}</h4>
         <form action="/account/revoke">
           <input name="token" value="{{ .Token }}" />
           <button type="submit" value="">Revoke</button>
