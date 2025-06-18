@@ -19,7 +19,7 @@ import (
 
 type ServerGetServiceAuthRequest struct {
 	Aud string `query:"aud" validate:"required,atproto-did"`
-	Exp int64  `query:"exp" validate:"required"`
+	Exp int64  `query:"exp"`
 	Lxm string `query:"lxm" validate:"required,atproto-nsid"`
 }
 
@@ -30,9 +30,13 @@ func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
+	if err := e.Validate(req); err != nil {
+		return helpers.InputError(e, nil)
+	}
+
 	now := time.Now().Unix()
 	if req.Exp == 0 {
-		req.Exp = 60 // default
+		req.Exp = now + 60 // default
 	}
 
 	if req.Lxm == "com.atproto.server.getServiceAuth" {
@@ -87,6 +91,7 @@ func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
 	R, S, _, err := sk.SignRaw(rand.Reader, hash[:])
 	if err != nil {
 		s.logger.Error("error signing", "error", err)
+		return helpers.ServerError(e, nil)
 	}
 
 	rBytes := R.Bytes()
