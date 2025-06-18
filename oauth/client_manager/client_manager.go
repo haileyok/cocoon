@@ -1,4 +1,4 @@
-package server
+package client_manager
 
 import (
 	"context"
@@ -15,56 +15,43 @@ import (
 
 	cache "github.com/go-pkgz/expirable-cache/v3"
 	"github.com/haileyok/cocoon/internal/helpers"
+	"github.com/haileyok/cocoon/oauth"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 )
 
-type OauthClientMetadata struct {
-	ClientID                    string    `json:"client_id"`
-	ClientName                  string    `json:"client_name"`
-	ClientURI                   string    `json:"client_uri"`
-	LogoURI                     string    `json:"logo_uri"`
-	TOSURI                      string    `json:"tos_uri"`
-	PolicyURI                   string    `json:"policy_uri"`
-	RedirectURIs                []string  `json:"redirect_uris"`
-	GrantTypes                  []string  `json:"grant_types"`
-	ResponseTypes               []string  `json:"response_types"`
-	ApplicationType             string    `json:"application_type"`
-	DpopBoundAccessTokens       bool      `json:"dpop_bound_access_tokens"`
-	JWKSURI                     *string   `json:"jwks_uri,omitempty"`
-	JWKS                        *[][]byte `json:"jwks,omitempty"`
-	Scope                       string    `json:"scope"`
-	TokenEndpointAuthMethod     string    `json:"token_endpoint_auth_method"`
-	TokenEndpointAuthSigningAlg string    `json:"token_endpoint_auth_signing_alg"`
-}
-
-type OauthClientManager struct {
+type ClientManager struct {
 	cli           *http.Client
 	logger        *slog.Logger
 	jwksCache     cache.Cache[string, jwk.Key]
-	metadataCache cache.Cache[string, OauthClientMetadata]
+	metadataCache cache.Cache[string, oauth.ClientMetadata]
 }
 
-type OauthClient struct {
-	Metadata *OauthClientMetadata
-	JWKS     jwk.Key
+type Args struct {
+	Cli    *http.Client
+	Logger *slog.Logger
 }
 
-func NewOauthClientManager() *OauthClientManager {
-	cli := &http.Client{
-		Timeout: 10 * time.Second,
+func New(args Args) *ClientManager {
+	if args.Logger == nil {
+		args.Logger = slog.Default()
+	}
+
+	if args.Cli == nil {
+		args.Cli = http.DefaultClient
 	}
 
 	jwksCache := cache.NewCache[string, jwk.Key]().WithLRU().WithMaxKeys(500).WithTTL(5 * time.Minute)
-	metadataCache := cache.NewCache[string, OauthClientMetadata]().WithLRU().WithMaxKeys(500).WithTTL(5 * time.Minute)
+	metadataCache := cache.NewCache[string, oauth.ClientMetadata]().WithLRU().WithMaxKeys(500).WithTTL(5 * time.Minute)
 
-	return &OauthClientManager{
-		cli:           cli,
+	return &ClientManager{
+		cli:           args.Cli,
+		logger:        args.Logger,
 		jwksCache:     jwksCache,
 		metadataCache: metadataCache,
 	}
 }
 
-func (cm *OauthClientManager) GetClient(ctx context.Context, clientId string) (*OauthClient, error) {
+func (cm *ClientManager) GetClient(ctx context.Context, clientId string) (*oauth.Client, error) {
 	metadata, err := cm.getClientMetadata(ctx, clientId)
 	if err != nil {
 		return nil, err
@@ -88,13 +75,13 @@ func (cm *OauthClientManager) GetClient(ctx context.Context, clientId string) (*
 		jwks = maybeJwks
 	}
 
-	return &OauthClient{
+	return &oauth.Client{
 		Metadata: metadata,
 		JWKS:     jwks,
 	}, nil
 }
 
-func (cm *OauthClientManager) getClientMetadata(ctx context.Context, clientId string) (*OauthClientMetadata, error) {
+func (cm *ClientManager) getClientMetadata(ctx context.Context, clientId string) (*oauth.ClientMetadata, error) {
 	metadataCached, ok := cm.metadataCache.Get(clientId)
 	if !ok {
 		req, err := http.NewRequestWithContext(ctx, "GET", clientId, nil)
@@ -118,7 +105,7 @@ func (cm *OauthClientManager) getClientMetadata(ctx context.Context, clientId st
 			return nil, fmt.Errorf("error reading bytes from client response: %w", err)
 		}
 
-		validated, err := oauthValidateAndParseMetadata(clientId, b)
+		validated, err := validateAndParseMetadata(clientId, b)
 		if err != nil {
 			return nil, err
 		}
@@ -129,7 +116,7 @@ func (cm *OauthClientManager) getClientMetadata(ctx context.Context, clientId st
 	}
 }
 
-func (cm *OauthClientManager) getClientJwks(ctx context.Context, clientId, jwksUri string) (jwk.Key, error) {
+func (cm *ClientManager) getClientJwks(ctx context.Context, clientId, jwksUri string) (jwk.Key, error) {
 	jwks, ok := cm.jwksCache.Get(clientId)
 	if !ok {
 		req, err := http.NewRequestWithContext(ctx, "GET", jwksUri, nil)
@@ -178,7 +165,7 @@ func (cm *OauthClientManager) getClientJwks(ctx context.Context, clientId, jwksU
 	return jwks, nil
 }
 
-func oauthValidateAndParseMetadata(clientId string, b []byte) (*OauthClientMetadata, error) {
+func validateAndParseMetadata(clientId string, b []byte) (*oauth.ClientMetadata, error) {
 	var metadataMap map[string]any
 	if err := json.Unmarshal(b, &metadataMap); err != nil {
 		return nil, fmt.Errorf("error unmarshaling metadata: %w", err)
@@ -205,7 +192,7 @@ func oauthValidateAndParseMetadata(clientId string, b []byte) (*OauthClientMetad
 		}
 	}
 
-	var metadata OauthClientMetadata
+	var metadata oauth.ClientMetadata
 	if err := json.Unmarshal(b, &metadata); err != nil {
 		return nil, fmt.Errorf("error unmarshaling metadata: %w", err)
 	}

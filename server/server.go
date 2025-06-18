@@ -36,6 +36,10 @@ import (
 	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/oauth/client_manager"
+	"github.com/haileyok/cocoon/oauth/constants"
+	"github.com/haileyok/cocoon/oauth/dpop/dpop_manager"
+	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/haileyok/cocoon/plc"
 	echo_session "github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/v4"
@@ -59,25 +63,23 @@ type S3Config struct {
 }
 
 type Server struct {
-	http       *http.Client
-	httpd      *http.Server
-	mail       *mailyak.MailYak
-	mailLk     *sync.Mutex
-	echo       *echo.Echo
-	db         *db.DB
-	plcClient  *plc.Client
-	logger     *slog.Logger
-	config     *config
-	privateKey *ecdsa.PrivateKey
-	repoman    *RepoMan
-	evtman     *events.EventManager
-	passport   *identity.Passport
+	http          *http.Client
+	httpd         *http.Server
+	mail          *mailyak.MailYak
+	mailLk        *sync.Mutex
+	echo          *echo.Echo
+	db            *db.DB
+	plcClient     *plc.Client
+	logger        *slog.Logger
+	config        *config
+	privateKey    *ecdsa.PrivateKey
+	repoman       *RepoMan
+	oauthProvider *provider.Provider
+	evtman        *events.EventManager
+	passport      *identity.Passport
 
 	dbName   string
 	s3Config *S3Config
-
-	oauthClientMan *OauthClientManager
-	oauthDpopMan   *OauthDpopManager
 }
 
 type Args struct {
@@ -319,13 +321,13 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 
 		accessToken := pts[1]
 
-		proof, err := s.oauthDpopMan.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, to.StringPtr(accessToken))
+		proof, err := s.oauthProvider.DpopManager.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, to.StringPtr(accessToken))
 		if err != nil {
 			s.logger.Error("invalid dpop proof", "error", err)
 			return helpers.InputError(e, to.StringPtr(err.Error()))
 		}
 
-		var oauthToken models.OauthToken
+		var oauthToken provider.OauthToken
 		if err := s.db.Raw("SELECT * FROM oauth_tokens WHERE token = ?", nil, accessToken).Scan(&oauthToken).Error; err != nil {
 			s.logger.Error("error finding access token in db", "error", err)
 			return helpers.InputError(e, nil)
@@ -350,7 +352,7 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 			return helpers.ServerError(e, nil)
 		}
 
-		nonce := s.oauthDpopMan.nonce.Next()
+		nonce := s.oauthProvider.NextNonce()
 		if nonce != "" {
 			e.Response().Header().Set("DPoP-Nonce", nonce)
 			e.Response().Header().Add("access-control-expose-headers", "DPoP-Nonce")
@@ -490,6 +492,18 @@ func New(args *Args) (*Server, error) {
 		return nil, err
 	}
 
+	oauthCli := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
+	var nonceSecret []byte
+	maybeSecret, err := os.ReadFile("nonce.secret")
+	if err != nil && !os.IsNotExist(err) {
+		args.Logger.Error("error attempting to read nonce secret", "error", err)
+	} else {
+		nonceSecret = maybeSecret
+	}
+
 	s := &Server{
 		http:       h,
 		httpd:      httpd,
@@ -515,8 +529,23 @@ func New(args *Args) (*Server, error) {
 		dbName:   args.DbName,
 		s3Config: args.S3Config,
 
-		oauthClientMan: NewOauthClientManager(),
-		oauthDpopMan:   NewOauthDpopManager(),
+		oauthProvider: provider.NewProvider(provider.Args{
+			Hostname: args.Hostname,
+			ClientManagerArgs: client_manager.Args{
+				Cli:    oauthCli,
+				Logger: args.Logger,
+			},
+			DpopManagerArgs: dpop_manager.Args{
+				NonceSecret:           nonceSecret,
+				NonceRotationInterval: constants.NonceMaxRotationInterval / 3,
+				OnNonceSecretCreated: func(newNonce []byte) {
+					if err := os.WriteFile("nonce.secret", newNonce, 0644); err != nil {
+						args.Logger.Error("error writing new nonce secret", "error", err)
+					}
+				},
+				Logger: args.Logger,
+			},
+		}),
 	}
 
 	s.loadTemplates()
@@ -575,9 +604,9 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/xrpc/com.atproto.sync.getBlob", s.handleSyncGetBlob)
 
 	// account
-	s.echo.GET("/account/signin", s.handleOauthSigninGet)
-	s.echo.POST("/account/signin", s.handleOauthSigninPost)
-	s.echo.GET("/account/signout", s.handleOauthSignout)
+	s.echo.GET("/account/signin", s.handleAccountSigninGet)
+	s.echo.POST("/account/signin", s.handleAccountSigninPost)
+	s.echo.GET("/account/signout", s.handleAccountSignout)
 
 	// oauth account
 	s.echo.GET("/oauth/jwks", s.handleOauthJwks)
@@ -585,8 +614,8 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/oauth/authorize", s.handleOauthAuthorizePost)
 
 	// oauth authorization
-	s.echo.POST("/oauth/par", s.handleOauthPar, s.handleOauthBaseMiddleware)
-	s.echo.POST("/oauth/token", s.handleOauthToken, s.handleOauthBaseMiddleware)
+	s.echo.POST("/oauth/par", s.handleOauthPar, s.oauthProvider.BaseMiddleware)
+	s.echo.POST("/oauth/token", s.handleOauthToken, s.oauthProvider.BaseMiddleware)
 
 	// authed
 	s.echo.GET("/xrpc/com.atproto.server.getSession", s.handleGetSession, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
@@ -636,8 +665,8 @@ func (s *Server) Serve(ctx context.Context) error {
 		&models.Record{},
 		&models.Blob{},
 		&models.BlobPart{},
-		&models.OauthAuthorizationRequest{},
-		&models.OauthToken{},
+		&provider.OauthToken{},
+		&provider.OauthAuthorizationRequest{},
 	)
 
 	s.logger.Info("starting cocoon")

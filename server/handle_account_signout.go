@@ -6,7 +6,7 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-func (s *Server) handleOauthSignout(e echo.Context) error {
+func (s *Server) handleAccountSignout(e echo.Context) error {
 	sess, err := session.Get("session", e)
 	if err != nil {
 		return err

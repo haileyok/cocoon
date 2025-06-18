@@ -11,12 +11,14 @@ import (
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/haileyok/cocoon/internal/helpers"
-	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/oauth"
+	"github.com/haileyok/cocoon/oauth/constants"
+	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/labstack/echo/v4"
 )
 
 type OauthTokenRequest struct {
-	models.OauthAuthenticateClientRequestBase
+	provider.AuthenticateClientRequestBase
 	GrantType    string  `form:"grant_type" json:"grant_type"`
 	Code         *string `form:"code" json:"code,omitempty"`
 	CodeVerifier *string `form:"code_verifier" json:"code_verifier,omitempty"`
@@ -40,13 +42,13 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	proof, err := s.oauthDpopMan.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, nil)
+	proof, err := s.oauthProvider.DpopManager.CheckProof(e.Request().Method, e.Request().URL.String(), e.Request().Header, nil)
 	if err != nil {
 		s.logger.Error("error getting dpop proof", "error", err)
 		return helpers.InputError(e, to.StringPtr(err.Error()))
 	}
 
-	client, clientAuth, err := s.oauthAuthenticateClient(e.Request().Context(), req.OauthAuthenticateClientRequestBase, proof, &OauthAuthenticateClientOptions{
+	client, clientAuth, err := s.oauthProvider.AuthenticateClient(e.Request().Context(), req.AuthenticateClientRequestBase, proof, &provider.AuthenticateClientOptions{
 		AllowMissingDpopProof: true,
 	})
 	if err != nil {
@@ -68,7 +70,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr(`"code" is required"`))
 		}
 
-		var authReq models.OauthAuthorizationRequest
+		var authReq provider.OauthAuthorizationRequest
 		// get the lil guy and delete him
 		if err := s.db.Raw("DELETE FROM oauth_authorization_requests WHERE code = ? RETURNING *", nil, *req.Code).Scan(&authReq).Error; err != nil {
 			s.logger.Error("error finding authorization request", "error", err)
@@ -120,10 +122,10 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		now := time.Now()
-		eat := now.Add(OauthTokenMaxAge)
-		id := generateTokenId()
+		eat := now.Add(constants.TokenMaxAge)
+		id := oauth.GenerateTokenId()
 
-		refreshToken := generateRefreshToken()
+		refreshToken := oauth.GenerateRefreshToken()
 
 		accessClaims := jwt.MapClaims{
 			"scope":     authReq.Parameters.Scope,
@@ -145,7 +147,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return err
 		}
 
-		if err := s.db.Create(&models.OauthToken{
+		if err := s.db.Create(&provider.OauthToken{
 			ClientId:     authReq.ClientId,
 			ClientAuth:   *clientAuth,
 			Parameters:   authReq.Parameters,
@@ -183,7 +185,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr(`"refresh_token" is required`))
 		}
 
-		var oauthToken models.OauthToken
+		var oauthToken provider.OauthToken
 		if err := s.db.Raw("SELECT * FROM oauth_tokens WHERE refresh_token = ?", nil, req.RefreshToken).Scan(&oauthToken).Error; err != nil {
 			s.logger.Error("error finding oauth token by refresh token", "error", err, "refresh_token", req.RefreshToken)
 			return helpers.ServerError(e, nil)
@@ -201,11 +203,11 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr("dpop proof does not match expected jkt"))
 		}
 
-		sessionLifetime := OauthPublicClientSessionLifetime
-		refreshLifetime := OauthPublicClientRefreshLifetime
+		sessionLifetime := constants.PublicClientSessionLifetime
+		refreshLifetime := constants.PublicClientRefreshLifetime
 		if clientAuth.Method != "none" {
-			sessionLifetime = OauthConfidentialClientSessionLifetime
-			refreshLifetime = OauthConfidentialClientRefreshLifetime
+			sessionLifetime = constants.ConfidentialClientSessionLifetime
+			refreshLifetime = constants.ConfidentialClientRefreshLifetime
 		}
 
 		sessionAge := time.Since(oauthToken.CreatedAt)
@@ -223,11 +225,11 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr("dpop jkt is required for dpop bound access tokens"))
 		}
 
-		nextTokenId := generateTokenId()
-		nextRefreshToken := generateRefreshToken()
+		nextTokenId := oauth.GenerateTokenId()
+		nextRefreshToken := oauth.GenerateRefreshToken()
 
 		now := time.Now()
-		eat := now.Add(OauthTokenMaxAge)
+		eat := now.Add(constants.TokenMaxAge)
 
 		accessClaims := jwt.MapClaims{
 			"scope":     oauthToken.Parameters.Scope,

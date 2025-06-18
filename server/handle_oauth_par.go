@@ -5,7 +5,9 @@ import (
 
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/haileyok/cocoon/internal/helpers"
-	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/oauth"
+	"github.com/haileyok/cocoon/oauth/constants"
+	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/labstack/echo/v4"
 )
 
@@ -15,7 +17,7 @@ type OauthParResponse struct {
 }
 
 func (s *Server) handleOauthPar(e echo.Context) error {
-	var parRequest models.OauthParRequest
+	var parRequest provider.ParRequest
 	if err := e.Bind(&parRequest); err != nil {
 		s.logger.Error("error binding for par request", "error", err)
 		return helpers.ServerError(e, nil)
@@ -27,13 +29,13 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 	}
 
 	// TODO: this seems wrong. should be a way to get the entire request url i believe, but this will work for now
-	dpopProof, err := s.oauthDpopMan.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, nil)
+	dpopProof, err := s.oauthProvider.DpopManager.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, nil)
 	if err != nil {
 		s.logger.Error("error getting dpop proof", "error", err)
 		return helpers.InputError(e, to.StringPtr(err.Error()))
 	}
 
-	client, clientAuth, err := s.oauthAuthenticateClient(e.Request().Context(), parRequest.OauthAuthenticateClientRequestBase, dpopProof, &OauthAuthenticateClientOptions{
+	client, clientAuth, err := s.oauthProvider.AuthenticateClient(e.Request().Context(), parRequest.AuthenticateClientRequestBase, dpopProof, &provider.AuthenticateClientOptions{
 		// rfc9449
 		// https://github.com/bluesky-social/atproto/blob/main/packages/oauth/oauth-provider/src/oauth-provider.ts#L473
 		AllowMissingDpopProof: true,
@@ -61,10 +63,10 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 		}
 	}
 
-	eat := time.Now().Add(OauthParExpiresIn)
-	id := generateRequestId()
+	eat := time.Now().Add(constants.ParExpiresIn)
+	id := oauth.GenerateRequestId()
 
-	authRequest := &models.OauthAuthorizationRequest{
+	authRequest := &provider.OauthAuthorizationRequest{
 		RequestId:  id,
 		ClientId:   client.Metadata.ClientID,
 		ClientAuth: *clientAuth,
@@ -77,10 +79,10 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	uri := encodeRequestUri(id)
+	uri := oauth.EncodeRequestUri(id)
 
 	return e.JSON(201, OauthParResponse{
-		ExpiresIn:  int64(OauthParExpiresIn.Seconds()),
+		ExpiresIn:  int64(constants.ParExpiresIn.Seconds()),
 		RequestURI: uri,
 	})
 }

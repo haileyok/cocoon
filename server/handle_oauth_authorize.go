@@ -7,7 +7,8 @@ import (
 
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/haileyok/cocoon/internal/helpers"
-	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/oauth"
+	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/labstack/echo/v4"
 )
 
@@ -31,12 +32,12 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 		return e.Redirect(303, "/account/signin?"+e.QueryParams().Encode())
 	}
 
-	reqId, err := decodeRequestUri(reqUri)
+	reqId, err := oauth.DecodeRequestUri(reqUri)
 	if err != nil {
 		return helpers.InputError(e, to.StringPtr(err.Error()))
 	}
 
-	var req models.OauthAuthorizationRequest
+	var req provider.OauthAuthorizationRequest
 	if err := s.db.Raw("SELECT * FROM oauth_authorization_requests WHERE request_id = ?", nil, reqId).Scan(&req).Error; err != nil {
 		return helpers.ServerError(e, to.StringPtr(err.Error()))
 	}
@@ -46,7 +47,7 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 		return helpers.InputError(e, to.StringPtr("client id does not match the client id for the supplied request"))
 	}
 
-	client, err := s.oauthClientMan.GetClient(e.Request().Context(), req.ClientId)
+	client, err := s.oauthProvider.ClientManager.GetClient(e.Request().Context(), req.ClientId)
 	if err != nil {
 		return helpers.ServerError(e, to.StringPtr(err.Error()))
 	}
@@ -82,17 +83,17 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
-	reqId, err := decodeRequestUri(req.RequestUri)
+	reqId, err := oauth.DecodeRequestUri(req.RequestUri)
 	if err != nil {
 		return helpers.InputError(e, to.StringPtr(err.Error()))
 	}
 
-	var authReq models.OauthAuthorizationRequest
+	var authReq provider.OauthAuthorizationRequest
 	if err := s.db.Raw("SELECT * FROM oauth_authorization_requests WHERE request_id = ?", nil, reqId).Scan(&authReq).Error; err != nil {
 		return helpers.ServerError(e, to.StringPtr(err.Error()))
 	}
 
-	client, err := s.oauthClientMan.GetClient(e.Request().Context(), authReq.ClientId)
+	client, err := s.oauthProvider.ClientManager.GetClient(e.Request().Context(), authReq.ClientId)
 	if err != nil {
 		return helpers.ServerError(e, to.StringPtr(err.Error()))
 	}
@@ -110,7 +111,7 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 		return helpers.InputError(e, to.StringPtr("this request was already authorized"))
 	}
 
-	code := generateCode()
+	code := oauth.GenerateCode()
 
 	if err := s.db.Exec("UPDATE oauth_authorization_requests SET sub = ?, code = ?, accepted = ? WHERE request_id = ?", nil, repo.Repo.Did, code, true, reqId).Error; err != nil {
 		s.logger.Error("error updating authorization request", "error", err)
