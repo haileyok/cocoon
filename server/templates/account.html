@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="stylesheet" href="/static/pico.css" />
+    <link rel="stylesheet" href="/static/style.css" />
+    <title>Your Account</title>
+  </head>
+  <body class="margin-top-md">
+    <main class="container base-container authorize-container margin-top-xl">
+      <h2>Welcome, {{ .Repo.Handle }}</h2>
+      <ul>
+        <li><a href="/account/signout">Sign Out</a></li>
+      </ul>
+      {{ if eq (len .Tokens) 0 }}
+      <div class="alert alert-success" role="alert">
+        <p class="alert-message">You do not have any active OAuth sessions!</p>
+      </div>
+      {{ else }} {{ range .Tokens }}
+      <div class="base-container">
+        <h4>{{ .ClientID }}</h4>
+        <form action="/account/revoke">
+          <input name="token" value="{{ .Token }}" />
+          <button type="submit" value="">Revoke</button>
+        </form>
+      </div>
+      {{ end }} {{ end }}
+    </main>
+  </body>
+</html>

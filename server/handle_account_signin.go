@@ -40,10 +40,10 @@ func (s *Server) getSessionRepoOrErr(e echo.Context) (*models.RepoActor, *sessio
 }
 
 func getFlashesFromSession(e echo.Context, sess *sessions.Session) map[string]any {
-	flashes := sess.Flashes("error")
-	sess.Save(e.Request(), e.Response())
+	defer sess.Save(e.Request(), e.Response())
 	return map[string]any{
-		"errors": flashes,
+		"errors":    sess.Flashes("error"),
+		"successes": sess.Flashes("success"),
 	}
 }
 

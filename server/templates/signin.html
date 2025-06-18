@@ -11,9 +11,13 @@
   <body class="centered-body">
     <main class="container base-container box-shadow-container login-container">
       <h2>Sign into your account</h2>
+      <p>Enter your handle and password below.</p>
+      {{ if .flashes.errors }}
+      <div class="alert alert-danger margin-bottom-xs">
+        <p>{{ index .flashes.errors 0 }}</p>
+      </div>
+      {{ end }}
       <form action="/account/signin" method="post">
-        <p>Enter your handle and password below.</p>
-        {{ if .flashes.errors }} {{ index .flashes.errors 0 }} {{ end }}
         <input name="username" id="username" placeholder="Handle" />
         <br />
         <input
