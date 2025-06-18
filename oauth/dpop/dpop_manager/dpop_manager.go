@@ -59,6 +59,7 @@ func New(args Args) *DpopManager {
 		}),
 		jtiCache: newJTICache(args.JTICacheSize),
 		logger:   args.Logger,
+		hostname: args.Hostname,
 	}
 }
 
