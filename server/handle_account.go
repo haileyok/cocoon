@@ -32,6 +32,7 @@ func (s *Server) handleAccount(e echo.Context) error {
 			"CreatedAt": t.CreatedAt.Format("02 Jan 06 15:04 MST"),
 			"UpdatedAt": t.CreatedAt.Format("02 Jan 06 15:04 MST"),
 			"ExpiresAt": t.CreatedAt.Format("02 Jan 06 15:04 MST"),
+			"Token":     t.Token,
 		})
 	}
 
