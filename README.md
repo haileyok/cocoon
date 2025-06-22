@@ -31,7 +31,7 @@ Just because something is implemented doesn't mean it is finisehd. Tons of these
 
 #### Server
 - [ ] com.atproto.server.activateAccount
-- [ ] com.atproto.server.checkAccountStatus
+- [x] com.atproto.server.checkAccountStatus
 - [x] com.atproto.server.confirmEmail
 - [x] com.atproto.server.createAccount
 - [x] com.atproto.server.createInviteCode
