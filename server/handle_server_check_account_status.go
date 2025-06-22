@@ -37,7 +37,7 @@ func (s *Server) handleServerCheckAccountStatus(e echo.Context) error {
 	resp.RepoCommit = rootcid.String()
 
 	type CountResp struct {
-		ct int64
+		Ct int64
 	}
 
 	var blockCtResp CountResp
@@ -45,21 +45,21 @@ func (s *Server) handleServerCheckAccountStatus(e echo.Context) error {
 		s.logger.Error("error getting block count", "error", err)
 		return helpers.ServerError(e, nil)
 	}
-	resp.RepoBlocks = blockCtResp.ct
+	resp.RepoBlocks = blockCtResp.Ct
 
 	var recCtResp CountResp
 	if err := s.db.Raw("SELECT COUNT(*) AS ct FROM records WHERE did = ?", nil, urepo.Repo.Did).Scan(&recCtResp).Error; err != nil {
 		s.logger.Error("error getting record count", "error", err)
 		return helpers.ServerError(e, nil)
 	}
-	resp.IndexedRecords = recCtResp.ct
+	resp.IndexedRecords = recCtResp.Ct
 
 	var blobCtResp CountResp
 	if err := s.db.Raw("SELECT COUNT(*) AS ct FROM blobs WHERE did = ?", nil, urepo.Repo.Did).Scan(&blobCtResp).Error; err != nil {
 		s.logger.Error("error getting record count", "error", err)
 		return helpers.ServerError(e, nil)
 	}
-	resp.ExpectedBlobs = blobCtResp.ct
+	resp.ExpectedBlobs = blobCtResp.Ct
 
 	return e.JSON(200, resp)
 }
