@@ -3,3 +3,4 @@
 /cocoon
 *.key
 *.secret
+.DS_Store
