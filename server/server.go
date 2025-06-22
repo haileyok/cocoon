@@ -401,6 +401,12 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 
 		accessToken := pts[1]
 
+		nonce := s.oauthProvider.NextNonce()
+		if nonce != "" {
+			e.Response().Header().Set("DPoP-Nonce", nonce)
+			e.Response().Header().Add("access-control-expose-headers", "DPoP-Nonce")
+		}
+
 		proof, err := s.oauthProvider.DpopManager.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, to.StringPtr(accessToken))
 		if err != nil {
 			s.logger.Error("invalid dpop proof", "error", err)
@@ -430,12 +436,6 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		if err != nil {
 			s.logger.Error("could not find actor in db", "error", err)
 			return helpers.ServerError(e, nil)
-		}
-
-		nonce := s.oauthProvider.NextNonce()
-		if nonce != "" {
-			e.Response().Header().Set("DPoP-Nonce", nonce)
-			e.Response().Header().Add("access-control-expose-headers", "DPoP-Nonce")
 		}
 
 		e.Set("repo", repo)
