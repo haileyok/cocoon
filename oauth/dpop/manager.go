@@ -1,4 +1,4 @@
-package dpop_manager
+package dpop
 
 import (
 	"crypto"
@@ -16,20 +16,18 @@ import (
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/oauth/constants"
-	"github.com/haileyok/cocoon/oauth/dpop"
-	"github.com/haileyok/cocoon/oauth/dpop/nonce"
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 )
 
-type DpopManager struct {
-	nonce    *nonce.Nonce
+type Manager struct {
+	nonce    *Nonce
 	jtiCache *jtiCache
 	logger   *slog.Logger
 	hostname string
 }
 
-type Args struct {
+type ManagerArgs struct {
 	NonceSecret           []byte
 	NonceRotationInterval time.Duration
 	OnNonceSecretCreated  func([]byte)
@@ -38,7 +36,7 @@ type Args struct {
 	Hostname              string
 }
 
-func New(args Args) *DpopManager {
+func NewManager(args ManagerArgs) *Manager {
 	if args.Logger == nil {
 		args.Logger = slog.Default()
 	}
@@ -51,8 +49,8 @@ func New(args Args) *DpopManager {
 		args.Logger.Warn("nonce secret passed to dpop manager was nil. existing sessions may break. consider saving and restoring your nonce.")
 	}
 
-	return &DpopManager{
-		nonce: nonce.NewNonce(nonce.Args{
+	return &Manager{
+		nonce: NewNonce(NonceArgs{
 			RotationInterval: args.NonceRotationInterval,
 			Secret:           args.NonceSecret,
 			OnSecretCreated:  args.OnNonceSecretCreated,
@@ -63,7 +61,7 @@ func New(args Args) *DpopManager {
 	}
 }
 
-func (dm *DpopManager) CheckProof(reqMethod, reqUrl string, headers http.Header, accessToken *string) (*dpop.Proof, error) {
+func (dm *Manager) CheckProof(reqMethod, reqUrl string, headers http.Header, accessToken *string) (*Proof, error) {
 	if reqMethod == "" {
 		return nil, errors.New("HTTP method is required")
 	}
@@ -226,7 +224,7 @@ func (dm *DpopManager) CheckProof(reqMethod, reqUrl string, headers http.Header,
 
 	thumb := base64.RawURLEncoding.EncodeToString(thumbBytes)
 
-	return &dpop.Proof{
+	return &Proof{
 		JTI: jti,
 		JKT: thumb,
 		HTM: htm,
@@ -246,6 +244,6 @@ func extractProof(headers http.Header) string {
 	}
 }
 
-func (dm *DpopManager) NextNonce() string {
+func (dm *Manager) NextNonce() string {
 	return dm.nonce.NextNonce()
 }

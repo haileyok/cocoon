@@ -1,4 +1,4 @@
-package nonce
+package dpop
 
 import (
 	"crypto/hmac"
@@ -24,13 +24,13 @@ type Nonce struct {
 	next    string
 }
 
-type Args struct {
+type NonceArgs struct {
 	RotationInterval time.Duration
 	Secret           []byte
 	OnSecretCreated  func([]byte)
 }
 
-func NewNonce(args Args) *Nonce {
+func NewNonce(args NonceArgs) *Nonce {
 	if args.RotationInterval == 0 {
 		args.RotationInterval = constants.NonceMaxRotationInterval / 3
 	}

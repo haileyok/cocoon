@@ -38,9 +38,9 @@ import (
 	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
-	"github.com/haileyok/cocoon/oauth/client_manager"
+	"github.com/haileyok/cocoon/oauth/client"
 	"github.com/haileyok/cocoon/oauth/constants"
-	"github.com/haileyok/cocoon/oauth/dpop/dpop_manager"
+	"github.com/haileyok/cocoon/oauth/dpop"
 	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/haileyok/cocoon/plc"
 	echo_session "github.com/labstack/echo-contrib/session"
@@ -611,11 +611,11 @@ func New(args *Args) (*Server, error) {
 
 		oauthProvider: provider.NewProvider(provider.Args{
 			Hostname: args.Hostname,
-			ClientManagerArgs: client_manager.Args{
+			ClientManagerArgs: client.ManagerArgs{
 				Cli:    oauthCli,
 				Logger: args.Logger,
 			},
-			DpopManagerArgs: dpop_manager.Args{
+			DpopManagerArgs: dpop.ManagerArgs{
 				NonceSecret:           nonceSecret,
 				NonceRotationInterval: constants.NonceMaxRotationInterval / 3,
 				OnNonceSecretCreated: func(newNonce []byte) {

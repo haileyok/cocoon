@@ -3,39 +3,16 @@ package provider
 import (
 	"context"
 	"crypto"
-	"database/sql/driver"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
-	"github.com/haileyok/cocoon/oauth"
+	"github.com/haileyok/cocoon/oauth/client"
 	"github.com/haileyok/cocoon/oauth/constants"
 	"github.com/haileyok/cocoon/oauth/dpop"
 )
-
-type ClientAuth struct {
-	Method string
-	Alg    string
-	Kid    string
-	Jkt    string
-	Jti    string
-	Exp    *float64
-}
-
-func (ca *ClientAuth) Scan(value any) error {
-	b, ok := value.([]byte)
-	if !ok {
-		return fmt.Errorf("failed to unmarshal OauthParRequest value")
-	}
-	return json.Unmarshal(b, ca)
-}
-
-func (ca ClientAuth) Value() (driver.Value, error) {
-	return json.Marshal(ca)
-}
 
 type AuthenticateClientOptions struct {
 	AllowMissingDpopProof bool
@@ -47,7 +24,7 @@ type AuthenticateClientRequestBase struct {
 	ClientAssertion     *string `form:"client_assertion" json:"client_assertion,omitempty"`
 }
 
-func (p *Provider) AuthenticateClient(ctx context.Context, req AuthenticateClientRequestBase, proof *dpop.Proof, opts *AuthenticateClientOptions) (*oauth.Client, *ClientAuth, error) {
+func (p *Provider) AuthenticateClient(ctx context.Context, req AuthenticateClientRequestBase, proof *dpop.Proof, opts *AuthenticateClientOptions) (*client.Client, *ClientAuth, error) {
 	client, err := p.ClientManager.GetClient(ctx, req.ClientID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get client: %w", err)
@@ -69,7 +46,7 @@ func (p *Provider) AuthenticateClient(ctx context.Context, req AuthenticateClien
 	return client, clientAuth, nil
 }
 
-func (p *Provider) Authenticate(_ context.Context, req AuthenticateClientRequestBase, client *oauth.Client) (*ClientAuth, error) {
+func (p *Provider) Authenticate(_ context.Context, req AuthenticateClientRequestBase, client *client.Client) (*ClientAuth, error) {
 	metadata := client.Metadata
 
 	if metadata.TokenEndpointAuthMethod == "none" {

@@ -1,8 +1,8 @@
-package oauth
+package client
 
 import "github.com/lestrrat-go/jwx/v2/jwk"
 
 type Client struct {
-	Metadata *ClientMetadata
+	Metadata *Metadata
 	JWKS     jwk.Key
 }

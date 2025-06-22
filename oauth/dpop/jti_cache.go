@@ -1,4 +1,4 @@
-package dpop_manager
+package dpop
 
 import (
 	"sync"
