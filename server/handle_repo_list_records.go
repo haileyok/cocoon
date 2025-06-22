@@ -2,14 +2,22 @@ package server
 
 import (
 	"strconv"
-	"strings"
 
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/bluesky-social/indigo/atproto/data"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/labstack/echo/v4"
 )
+
+type ComAtprotoRepoListRecordsRequest struct {
+	Repo       string `query:"repo" validate:"required"`
+	Collection string `query:"collection" validate:"required,atproto-nsid"`
+	Limit      int64  `query:"limit"`
+	Cursor     string `query:"cursor"`
+	Reverse    bool   `query:"reverse"`
+}
 
 type ComAtprotoRepoListRecordsResponse struct {
 	Cursor  *string                               `json:"cursor,omitempty"`
@@ -38,10 +46,22 @@ func getLimitFromContext(e echo.Context, def int) (int, error) {
 }
 
 func (s *Server) handleListRecords(e echo.Context) error {
-	did := e.QueryParam("repo")
-	collection := e.QueryParam("collection")
-	cursor := e.QueryParam("cursor")
-	reverse := e.QueryParam("reverse")
+	var req ComAtprotoRepoListRecordsRequest
+	if err := e.Bind(&req); err != nil {
+		s.logger.Error("could not bind list records request", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+
+	if err := e.Validate(req); err != nil {
+		return helpers.InputError(e, nil)
+	}
+
+	if req.Limit <= 0 {
+		req.Limit = 50
+	} else if req.Limit > 100 {
+		req.Limit = 100
+	}
+
 	limit, err := getLimitFromContext(e, 50)
 	if err != nil {
 		return helpers.InputError(e, nil)
@@ -51,14 +71,23 @@ func (s *Server) handleListRecords(e echo.Context) error {
 	dir := "<"
 	cursorquery := ""
 
-	if strings.ToLower(reverse) == "true" {
+	if req.Reverse {
 		sort = "ASC"
 		dir = ">"
 	}
 
-	params := []any{did, collection}
-	if cursor != "" {
-		params = append(params, cursor)
+	did := req.Repo
+	if _, err := syntax.ParseDID(did); err != nil {
+		actor, err := s.getActorByHandle(req.Repo)
+		if err != nil {
+			return helpers.InputError(e, to.StringPtr("RepoNotFound"))
+		}
+		did = actor.Did
+	}
+
+	params := []any{did, req.Collection}
+	if req.Cursor != "" {
+		params = append(params, req.Cursor)
 		cursorquery = "AND created_at " + dir + " ?"
 	}
 	params = append(params, limit)
