@@ -12,6 +12,7 @@
     <main class="container base-container authorize-container margin-top-xl">
       <h2>Welcome, {{ .Repo.Handle }}</h2>
       <ul>
+        <li><a href="/account/totp-enroll">Enroll in TOTP</a></li>
         <li><a href="/account/signout">Sign Out</a></li>
       </ul>
       {{ if .flashes.successes }}
