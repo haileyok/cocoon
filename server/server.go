@@ -690,6 +690,8 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/account/signin", s.handleAccountSigninGet)
 	s.echo.POST("/account/signin", s.handleAccountSigninPost)
 	s.echo.GET("/account/signout", s.handleAccountSignout)
+	s.echo.GET("/account/totp-enroll", s.handleAccountTotpEnrollGet)
+	s.echo.POST("/account/totp-enroll", s.handleAccountTotpEnrollPost)
 
 	// oauth account
 	s.echo.GET("/oauth/jwks", s.handleOauthJwks)

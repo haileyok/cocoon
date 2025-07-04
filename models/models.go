@@ -7,6 +7,13 @@ import (
 	"github.com/bluesky-social/indigo/atproto/crypto"
 )
 
+type TwoFactorType string
+
+var (
+	TwoFactorTypeNone = TwoFactorType("none")
+	TwoFactorTypeTotp = TwoFactorType("totp")
+)
+
 type Repo struct {
 	Did                            string `gorm:"primaryKey"`
 	CreatedAt                      time.Time
@@ -23,6 +30,8 @@ type Repo struct {
 	Rev                            string
 	Root                           []byte
 	Preferences                    []byte
+	TwoFactorType                  TwoFactorType `gorm:"default:none"`
+	TotpSecret                     *string
 }
 
 func (r *Repo) SignFor(ctx context.Context, did string, msg []byte) ([]byte, error) {

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="stylesheet" href="/static/pico.css" />
+    <link rel="stylesheet" href="/static/style.css" />
+    <title>TOTP Enrollment</title>
+  </head>
+  <body class="centered-body">
+    <main class="container base-container box-shadow-container login-container">
+      <h2>TOTP Enrollment</h2>
+      <p>
+        Enroll in TOTP by adding the below secret to your TOTP manager and
+        verifying the code.
+      </p>
+      {{ if .flashes.errors }}
+      <div class="alert alert-danger margin-bottom-xs">
+        <p>{{ index .flashes.errors 0 }}</p>
+      </div>
+      <img src="{{ .Image }}" class="totp-image" />
+      {{ end }}
+      <form action="/account/totp-enroll" method="post">
+        <input name="code" id="code" placeholder="Code" />
+        <button class="primary" type="submit" value="Login">Enroll</button>
+      </form>
+    </main>
+  </body>
+</html>

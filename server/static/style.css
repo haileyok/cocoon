@@ -81,3 +81,8 @@ button {
 .alert-danger {
   background-color: var(--danger);
 }
+
+.totp-image {
+  height: 200;
+  width: 200;
+}
