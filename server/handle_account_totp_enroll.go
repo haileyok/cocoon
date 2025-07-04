@@ -40,7 +40,6 @@ func (s *Server) handleAccountTotpEnrollGet(e echo.Context) error {
 	sess.Values["totp-secret"] = secret.String()
 	if err := sess.Save(e.Request(), e.Response()); err != nil {
 		s.logger.Error("error saving session", "error", err)
-
 		return helpers.ServerError(e, nil)
 	}
 

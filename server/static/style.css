@@ -24,6 +24,10 @@ main {
   margin-bottom: 1.5em;
 }
 
+.center {
+  justify-content: center;
+}
+
 .centered-body {
   min-height: 100vh;
   justify-content: center;

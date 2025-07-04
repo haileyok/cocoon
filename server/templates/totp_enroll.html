@@ -19,8 +19,10 @@
       <div class="alert alert-danger margin-bottom-xs">
         <p>{{ index .flashes.errors 0 }}</p>
       </div>
-      <img src="{{ .Image }}" class="totp-image" />
       {{ end }}
+      <div class="center">
+        <img src="{{ .Image }}" class="totp-image" />
+      </div>
       <form action="/account/totp-enroll" method="post">
         <input name="code" id="code" placeholder="Code" />
         <button class="primary" type="submit" value="Login">Enroll</button>
