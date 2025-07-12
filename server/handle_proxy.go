@@ -43,7 +43,7 @@ func (s *Server) getAtprotoProxyEndpointFromRequest(e echo.Context) (string, str
 		}
 	}
 
-	return endpoint, "", nil
+	return endpoint, svcDid, nil
 }
 
 func (s *Server) handleProxy(e echo.Context) error {
