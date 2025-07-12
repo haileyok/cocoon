@@ -17,14 +17,7 @@ import (
 	secp256k1secec "gitlab.com/yawning/secp256k1-voi/secec"
 )
 
-func (s *Server) handleProxy(e echo.Context) error {
-	repo, isAuthed := e.Get("repo").(*models.RepoActor)
-
-	pts := strings.Split(e.Request().URL.Path, "/")
-	if len(pts) != 3 {
-		return fmt.Errorf("incorrect number of parts")
-	}
-
+func (s *Server) getAtprotoProxyEndpointFromRequest(e echo.Context) (string, string, error) {
 	svc := e.Request().Header.Get("atproto-proxy")
 	if svc == "" {
 		svc = s.config.DefaultAtprotoProxy
@@ -32,7 +25,7 @@ func (s *Server) handleProxy(e echo.Context) error {
 
 	svcPts := strings.Split(svc, "#")
 	if len(svcPts) != 2 {
-		return fmt.Errorf("invalid service header")
+		return "", "", fmt.Errorf("invalid service header")
 	}
 
 	svcDid := svcPts[0]
@@ -40,7 +33,7 @@ func (s *Server) handleProxy(e echo.Context) error {
 
 	doc, err := s.passport.FetchDoc(e.Request().Context(), svcDid)
 	if err != nil {
-		return err
+		return "", "", err
 	}
 
 	var endpoint string
@@ -48,6 +41,25 @@ func (s *Server) handleProxy(e echo.Context) error {
 		if s.Id == svcId {
 			endpoint = s.ServiceEndpoint
 		}
+	}
+
+	return endpoint, "", nil
+}
+
+func (s *Server) handleProxy(e echo.Context) error {
+	lgr := s.logger.With("handler", "handleProxy")
+
+	repo, isAuthed := e.Get("repo").(*models.RepoActor)
+
+	pts := strings.Split(e.Request().URL.Path, "/")
+	if len(pts) != 3 {
+		return fmt.Errorf("incorrect number of parts")
+	}
+
+	endpoint, svcDid, err := s.getAtprotoProxyEndpointFromRequest(e)
+	if err != nil {
+		lgr.Error("could not get atproto proxy", "error", err)
+		return helpers.ServerError(e, nil)
 	}
 
 	requrl := e.Request().URL
@@ -78,7 +90,7 @@ func (s *Server) handleProxy(e echo.Context) error {
 		}
 		hj, err := json.Marshal(header)
 		if err != nil {
-			s.logger.Error("error marshaling header", "error", err)
+			lgr.Error("error marshaling header", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -93,7 +105,7 @@ func (s *Server) handleProxy(e echo.Context) error {
 		}
 		pj, err := json.Marshal(payload)
 		if err != nil {
-			s.logger.Error("error marashaling payload", "error", err)
+			lgr.Error("error marashaling payload", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -104,13 +116,13 @@ func (s *Server) handleProxy(e echo.Context) error {
 
 		sk, err := secp256k1secec.NewPrivateKey(repo.SigningKey)
 		if err != nil {
-			s.logger.Error("can't load private key", "error", err)
+			lgr.Error("can't load private key", "error", err)
 			return err
 		}
 
 		R, S, _, err := sk.SignRaw(rand.Reader, hash[:])
 		if err != nil {
-			s.logger.Error("error signing", "error", err)
+			lgr.Error("error signing", "error", err)
 		}
 
 		rBytes := R.Bytes()
