@@ -131,6 +131,11 @@ func main() {
 				Name:    "session-secret",
 				EnvVars: []string{"COCOON_SESSION_SECRET"},
 			},
+			&cli.StringFlag{
+				Name:    "default-atproto-proxy",
+				EnvVars: []string{"COCOON_DEFAULT_ATPROTO_PROXY"},
+				Value:   "did:web:api.bsky.app#bsky_appview",
+			},
 		},
 		Commands: []*cli.Command{
 			runServe,
@@ -178,7 +183,8 @@ var runServe = &cli.Command{
 				AccessKey:      cmd.String("s3-access-key"),
 				SecretKey:      cmd.String("s3-secret-key"),
 			},
-			SessionSecret: cmd.String("session-secret"),
+			SessionSecret:       cmd.String("session-secret"),
+			DefaultAtprotoProxy: cmd.String("default-atproto-proxy"),
 		})
 		if err != nil {
 			fmt.Printf("error creating cocoon: %v", err)

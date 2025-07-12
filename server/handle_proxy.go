@@ -27,7 +27,7 @@ func (s *Server) handleProxy(e echo.Context) error {
 
 	svc := e.Request().Header.Get("atproto-proxy")
 	if svc == "" {
-		svc = "did:web:api.bsky.app#bsky_appview" // TODO: should be a config var probably
+		svc = s.config.DefaultAtprotoProxy
 	}
 
 	svcPts := strings.Split(svc, "#")
