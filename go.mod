@@ -14,6 +14,7 @@ require (
 	github.com/google/uuid v1.4.0
 	github.com/gorilla/sessions v1.4.0
 	github.com/gorilla/websocket v1.5.1
+	github.com/hako/durafmt v0.0.0-20210608085754-5c1018a4e16b
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/ipfs/go-block-format v0.2.0
 	github.com/ipfs/go-cid v0.4.1

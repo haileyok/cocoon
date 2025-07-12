@@ -24,10 +24,10 @@
       </div>
       {{ else }} {{ range .Tokens }}
       <div class="base-container">
-        <h4>{{ .ClientId }}</h4>
-        <p>Created: {{ .CreatedAt }}</p>
-        <p>Updated: {{ .UpdatedAt }}</p>
-        <p>Expires: {{ .ExpiresAt }}</p>
+        <h4>{{ .ClientName }}</h4>
+        <p>Session Age: {{ .Age}}</p>
+        <p>Last Updated: {{ .LastUpdated }} ago</p>
+        <p>Expires In: {{ .ExpiresIn }}</p>
         <p>IP Address: {{ .Ip }}</p>
         <form action="/account/revoke" method="post">
           <input type="hidden" name="token" value="{{ .Token }}" />

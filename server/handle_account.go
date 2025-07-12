@@ -6,10 +6,12 @@ import (
 	"github.com/haileyok/cocoon/oauth"
 	"github.com/haileyok/cocoon/oauth/constants"
 	"github.com/haileyok/cocoon/oauth/provider"
+	"github.com/hako/durafmt"
 	"github.com/labstack/echo/v4"
 )
 
 func (s *Server) handleAccount(e echo.Context) error {
+	ctx := e.Request().Context()
 	repo, sess, err := s.getSessionRepoOrErr(e)
 	if err != nil {
 		return e.Redirect(303, "/account/signin")
@@ -36,15 +38,31 @@ func (s *Server) handleAccount(e echo.Context) error {
 		filtered = append(filtered, t)
 	}
 
+	now := time.Now()
+
 	tokenInfo := []map[string]string{}
 	for _, t := range tokens {
+		ageRes := oauth.GetSessionAgeFromToken(t)
+		maxTime := constants.PublicClientSessionLifetime
+		if t.ClientAuth.Method != "none" {
+			maxTime = constants.ConfidentialClientSessionLifetime
+		}
+
+		var clientName string
+		metadata, err := s.oauthProvider.ClientManager.GetClient(ctx, t.ClientId)
+		if err != nil {
+			clientName = t.ClientId
+		} else {
+			clientName = metadata.Metadata.ClientName
+		}
+
 		tokenInfo = append(tokenInfo, map[string]string{
-			"ClientId":  t.ClientId,
-			"CreatedAt": t.CreatedAt.Format("02 Jan 06 15:04 MST"),
-			"UpdatedAt": t.CreatedAt.Format("02 Jan 06 15:04 MST"),
-			"ExpiresAt": t.CreatedAt.Format("02 Jan 06 15:04 MST"),
-			"Token":     t.Token,
-			"Ip":        t.Ip,
+			"ClientName":  clientName,
+			"Age":         durafmt.Parse(ageRes.SessionAge).LimitFirstN(2).String(),
+			"LastUpdated": durafmt.Parse(now.Sub(t.UpdatedAt)).LimitFirstN(2).String(),
+			"ExpiresIn":   durafmt.Parse(now.Add(maxTime).Sub(now)).LimitFirstN(2).String(),
+			"Token":       t.Token,
+			"Ip":          t.Ip,
 		})
 	}
 
