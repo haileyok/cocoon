@@ -25,7 +25,7 @@ Just because something is implemented doesn't mean it is finisehd. Tons of these
 - [x] com.atproto.repo.deleteRecord
 - [x] com.atproto.repo.describeRepo
 - [x] com.atproto.repo.getRecord
-- [ ] com.atproto.repo.importRepo
+- [x] com.atproto.repo.importRepo (Works "okay". You still have to handle PLC operations on your own when migrating. Use with extreme caution.)
 - [x] com.atproto.repo.listRecords
 - [ ] com.atproto.repo.listMissingBlobs
 
