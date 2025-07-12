@@ -65,6 +65,7 @@ type OauthToken struct {
 	Code         string `gorm:"index"`
 	Token        string `gorm:"uniqueIndex"`
 	RefreshToken string `gorm:"uniqueIndex"`
+	Ip           string
 }
 
 type OauthAuthorizationRequest struct {
@@ -78,4 +79,5 @@ type OauthAuthorizationRequest struct {
 	Sub        *string
 	Code       *string
 	Accepted   *bool
+	Ip         string
 }

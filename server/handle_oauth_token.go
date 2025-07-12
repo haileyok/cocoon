@@ -157,6 +157,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			Code:         *authReq.Code,
 			Token:        accessString,
 			RefreshToken: refreshToken,
+			Ip:           authReq.Ip,
 		}, nil).Error; err != nil {
 			s.logger.Error("error creating token in db", "error", err)
 			return helpers.ServerError(e, nil)

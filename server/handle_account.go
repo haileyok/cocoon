@@ -44,6 +44,7 @@ func (s *Server) handleAccount(e echo.Context) error {
 			"UpdatedAt": t.CreatedAt.Format("02 Jan 06 15:04 MST"),
 			"ExpiresAt": t.CreatedAt.Format("02 Jan 06 15:04 MST"),
 			"Token":     t.Token,
+			"Ip":        t.Ip,
 		})
 	}
 

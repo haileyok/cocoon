@@ -28,6 +28,7 @@
         <p>Created: {{ .CreatedAt }}</p>
         <p>Updated: {{ .UpdatedAt }}</p>
         <p>Expires: {{ .ExpiresAt }}</p>
+        <p>IP Address: {{ .Ip }}</p>
         <form action="/account/revoke" method="post">
           <input type="hidden" name="token" value="{{ .Token }}" />
           <button type="submit" value="">Revoke</button>
