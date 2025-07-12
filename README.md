@@ -68,7 +68,7 @@ Just because something is implemented doesn't mean it is finisehd. Tons of these
 
 #### Other
 - [ ] com.atproto.label.queryLabels
-- [ ] com.atproto.moderation.createReport
+- [x] com.atproto.moderation.createReport (Note: this should be handled by proxying, not actually implemented in the PDS)
 - [x] app.bsky.actor.getPreferences
 - [x] app.bsky.actor.putPreferences
 
