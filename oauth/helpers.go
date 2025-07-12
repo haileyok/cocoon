@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"time"
 
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/oauth/constants"
+	"github.com/haileyok/cocoon/oauth/provider"
 )
 
 func GenerateCode() string {
@@ -45,4 +47,34 @@ func DecodeRequestUri(reqUri string) (string, error) {
 	}
 
 	return reqId, nil
+}
+
+type SessionAgeResult struct {
+	SessionAge     time.Duration
+	RefreshAge     time.Duration
+	SessionExpired bool
+	RefreshExpired bool
+}
+
+func GetSessionAgeFromToken(t provider.OauthToken) SessionAgeResult {
+	sessionLifetime := constants.PublicClientSessionLifetime
+	refreshLifetime := constants.PublicClientRefreshLifetime
+	if t.ClientAuth.Method != "none" {
+		sessionLifetime = constants.ConfidentialClientSessionLifetime
+		refreshLifetime = constants.ConfidentialClientRefreshLifetime
+	}
+
+	res := SessionAgeResult{}
+
+	res.SessionAge = time.Since(t.CreatedAt)
+	if res.SessionAge > sessionLifetime {
+		res.SessionExpired = true
+	}
+
+	refreshAge := time.Since(t.UpdatedAt)
+	if refreshAge > refreshLifetime {
+		res.RefreshExpired = true
+	}
+
+	return res
 }

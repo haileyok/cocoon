@@ -203,20 +203,13 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr("dpop proof does not match expected jkt"))
 		}
 
-		sessionLifetime := constants.PublicClientSessionLifetime
-		refreshLifetime := constants.PublicClientRefreshLifetime
-		if clientAuth.Method != "none" {
-			sessionLifetime = constants.ConfidentialClientSessionLifetime
-			refreshLifetime = constants.ConfidentialClientRefreshLifetime
-		}
+		ageRes := oauth.GetSessionAgeFromToken(oauthToken)
 
-		sessionAge := time.Since(oauthToken.CreatedAt)
-		if sessionAge > sessionLifetime {
+		if ageRes.SessionExpired {
 			return helpers.InputError(e, to.StringPtr("Session expired"))
 		}
 
-		refreshAge := time.Since(oauthToken.UpdatedAt)
-		if refreshAge > refreshLifetime {
+		if ageRes.RefreshExpired {
 			return helpers.InputError(e, to.StringPtr("Refresh token expired"))
 		}
 

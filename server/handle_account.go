@@ -3,6 +3,8 @@ package server
 import (
 	"time"
 
+	"github.com/haileyok/cocoon/oauth"
+	"github.com/haileyok/cocoon/oauth/constants"
 	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/labstack/echo/v4"
 )
@@ -13,16 +15,25 @@ func (s *Server) handleAccount(e echo.Context) error {
 		return e.Redirect(303, "/account/signin")
 	}
 
-	now := time.Now()
+	oldestPossibleSession := time.Now().Add(constants.ConfidentialClientSessionLifetime)
 
 	var tokens []provider.OauthToken
-	if err := s.db.Raw("SELECT * FROM oauth_tokens WHERE sub = ? AND expires_at >= ? ORDER BY created_at ASC", nil, repo.Repo.Did, now).Scan(&tokens).Error; err != nil {
+	if err := s.db.Raw("SELECT * FROM oauth_tokens WHERE sub = ? AND created_at < ? ORDER BY created_at ASC", nil, repo.Repo.Did, oldestPossibleSession).Scan(&tokens).Error; err != nil {
 		s.logger.Error("couldnt fetch oauth sessions for account", "did", repo.Repo.Did, "error", err)
 		sess.AddFlash("Unable to fetch sessions. See server logs for more details.", "error")
 		sess.Save(e.Request(), e.Response())
 		return e.Render(200, "account.html", map[string]any{
 			"flashes": getFlashesFromSession(e, sess),
 		})
+	}
+
+	var filtered []provider.OauthToken
+	for _, t := range tokens {
+		ageRes := oauth.GetSessionAgeFromToken(t)
+		if ageRes.SessionExpired {
+			continue
+		}
+		filtered = append(filtered, t)
 	}
 
 	tokenInfo := []map[string]string{}
