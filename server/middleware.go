@@ -54,7 +54,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 		token, _, err := new(jwt.Parser).ParseUnverified(tokenstr, jwt.MapClaims{})
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
-			return helpers.InputError(e, to.StringPtr("InvalidToken"))
+			return helpers.InvalidTokenError(e)
 		}
 
 		var did string
@@ -93,12 +93,11 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 			})
 			if err != nil {
 				s.logger.Error("error parsing jwt", "error", err)
-				// NOTE: https://github.com/bluesky-social/atproto/discussions/3319
-				return e.JSON(400, map[string]string{"error": "ExpiredToken", "message": "token has expired"})
+				return helpers.ExpiredTokenError(e)
 			}
 
 			if !token.Valid {
-				return helpers.InputError(e, to.StringPtr("InvalidToken"))
+				return helpers.InvalidTokenError(e)
 			}
 		} else {
 			kpts := strings.Split(tokenstr, ".")
@@ -143,9 +142,9 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 		scope, _ := claims["scope"].(string)
 
 		if isRefresh && scope != "com.atproto.refresh" {
-			return helpers.InputError(e, to.StringPtr("InvalidToken"))
+			return helpers.InvalidTokenError(e)
 		} else if !hasLxm && !isRefresh && scope != "com.atproto.access" {
-			return helpers.InputError(e, to.StringPtr("InvalidToken"))
+			return helpers.InvalidTokenError(e)
 		}
 
 		table := "tokens"
@@ -160,7 +159,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 			var result Result
 			if err := s.db.Raw("SELECT EXISTS(SELECT 1 FROM "+table+" WHERE token = ?) AS found", nil, tokenstr).Scan(&result).Error; err != nil {
 				if err == gorm.ErrRecordNotFound {
-					return helpers.InputError(e, to.StringPtr("InvalidToken"))
+					return helpers.InvalidTokenError(e)
 				}
 
 				s.logger.Error("error getting token from db", "error", err)
@@ -168,7 +167,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 			}
 
 			if !result.Found {
-				return helpers.InputError(e, to.StringPtr("InvalidToken"))
+				return helpers.InvalidTokenError(e)
 			}
 		}
 
@@ -179,7 +178,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 		}
 
 		if exp < float64(time.Now().UTC().Unix()) {
-			return helpers.InputError(e, to.StringPtr("ExpiredToken"))
+			return helpers.ExpiredTokenError(e)
 		}
 
 		if repo == nil {
@@ -197,7 +196,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 		e.Set("token", tokenstr)
 
 		if err := next(e); err != nil {
-			e.Error(err)
+			return helpers.InvalidTokenError(e)
 		}
 
 		return nil
@@ -241,7 +240,7 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		}
 
 		if oauthToken.Token == "" {
-			return helpers.InputError(e, to.StringPtr("InvalidToken"))
+			return helpers.InvalidTokenError(e)
 		}
 
 		if *oauthToken.Parameters.DpopJkt != proof.JKT {
@@ -250,7 +249,7 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		}
 
 		if time.Now().After(oauthToken.ExpiresAt) {
-			return e.JSON(400, map[string]string{"error": "ExpiredToken", "message": "token has expired"})
+			return helpers.ExpiredTokenError(e)
 		}
 
 		repo, err := s.getRepoActorByDid(oauthToken.Sub)

@@ -33,11 +33,11 @@ func (s *Server) handleServerResetPassword(e echo.Context) error {
 	}
 
 	if *urepo.PasswordResetCode != req.Token {
-		return helpers.InputError(e, to.StringPtr("InvalidToken"))
+		return helpers.InvalidTokenError(e)
 	}
 
 	if time.Now().UTC().After(*urepo.PasswordResetCodeExpiresAt) {
-		return helpers.InputError(e, to.StringPtr("ExpiredToken"))
+		return helpers.ExpiredTokenError(e)
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), 10)

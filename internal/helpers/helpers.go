@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net/url"
 
+	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/labstack/echo/v4"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 )
@@ -29,6 +30,18 @@ func ServerError(e echo.Context, suffix *string) error {
 		msg += ". " + *suffix
 	}
 	return genericError(e, 400, msg)
+}
+
+func InvalidTokenError(e echo.Context) error {
+	return InputError(e, to.StringPtr("InvalidToken"))
+}
+
+func ExpiredTokenError(e echo.Context) error {
+	// WARN: See https://github.com/bluesky-social/atproto/discussions/3319
+	return e.JSON(400, map[string]string{
+		"error":   "ExpiredToken",
+		"message": "*",
+	})
 }
 
 func genericError(e echo.Context, code int, msg string) error {

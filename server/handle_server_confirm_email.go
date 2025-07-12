@@ -28,7 +28,7 @@ func (s *Server) handleServerConfirmEmail(e echo.Context) error {
 	}
 
 	if urepo.EmailVerificationCode == nil || urepo.EmailVerificationCodeExpiresAt == nil {
-		return helpers.InputError(e, to.StringPtr("ExpiredToken"))
+		return helpers.ExpiredTokenError(e)
 	}
 
 	if *urepo.EmailVerificationCode != req.Token {
@@ -36,7 +36,7 @@ func (s *Server) handleServerConfirmEmail(e echo.Context) error {
 	}
 
 	if time.Now().UTC().After(*urepo.EmailVerificationCodeExpiresAt) {
-		return helpers.InputError(e, to.StringPtr("ExpiredToken"))
+		return helpers.ExpiredTokenError(e)
 	}
 
 	now := time.Now().UTC()

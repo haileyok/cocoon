@@ -3,7 +3,6 @@ package server
 import (
 	"time"
 
-	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/labstack/echo/v4"
@@ -29,15 +28,15 @@ func (s *Server) handleServerUpdateEmail(e echo.Context) error {
 	}
 
 	if urepo.EmailUpdateCode == nil || urepo.EmailUpdateCodeExpiresAt == nil {
-		return helpers.InputError(e, to.StringPtr("InvalidToken"))
+		return helpers.InvalidTokenError(e)
 	}
 
 	if *urepo.EmailUpdateCode != req.Token {
-		return helpers.InputError(e, to.StringPtr("InvalidToken"))
+		return helpers.InvalidTokenError(e)
 	}
 
 	if time.Now().UTC().After(*urepo.EmailUpdateCodeExpiresAt) {
-		return helpers.InputError(e, to.StringPtr("ExpiredToken"))
+		return helpers.ExpiredTokenError(e)
 	}
 
 	if err := s.db.Exec("UPDATE repos SET email_update_code = NULL, email_update_code_expires_at = NULL, email_confirmed_at = NULL,  email = ? WHERE did = ?", nil, req.Email, urepo.Repo.Did).Error; err != nil {
