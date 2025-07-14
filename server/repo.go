@@ -318,7 +318,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 			Rev:    rev,
 			Since:  &urepo.Rev,
 			Commit: lexutil.LexLink(newroot),
-			Time:   time.Now().Format(util.ISO8601),
+			Time:   time.Now().Format(time.RFC3339Nano),
 			Ops:    ops,
 			TooBig: false,
 		},
