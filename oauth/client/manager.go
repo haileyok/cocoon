@@ -289,7 +289,7 @@ func validateAndParseMetadata(clientId string, b []byte) (*Metadata, error) {
 		return nil, errors.New("at least one `redirect_uri` is required")
 	}
 
-	if metadata.ApplicationType == "native" && metadata.TokenEndpointAuthMethod == "none" {
+	if metadata.ApplicationType == "native" && metadata.TokenEndpointAuthMethod != "none" {
 		return nil, errors.New("native clients must authenticate using `none` method")
 	}
 
