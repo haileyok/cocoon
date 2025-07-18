@@ -19,8 +19,9 @@ import (
 
 type ServerGetServiceAuthRequest struct {
 	Aud string `query:"aud" validate:"required,atproto-did"`
-	Exp int64  `query:"exp"`
-	Lxm string `query:"lxm" validate:"required,atproto-nsid"`
+	// exp should be a float, as some clients will send a non-integer expiration
+	Exp float64 `query:"exp"`
+	Lxm string  `query:"lxm" validate:"required,atproto-nsid"`
 }
 
 func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
@@ -34,9 +35,10 @@ func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
+	exp := int64(req.Exp)
 	now := time.Now().Unix()
-	if req.Exp == 0 {
-		req.Exp = now + 60 // default
+	if exp == 0 {
+		exp = now + 60 // default
 	}
 
 	if req.Lxm == "com.atproto.server.getServiceAuth" {
@@ -44,7 +46,7 @@ func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
 	}
 
 	maxExp := now + (60 * 30)
-	if req.Exp > maxExp {
+	if exp > maxExp {
 		return helpers.InputError(e, to.StringPtr("expiration too big. smoller please"))
 	}
 
@@ -68,7 +70,7 @@ func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
 		"aud": req.Aud,
 		"lxm": req.Lxm,
 		"jti": uuid.NewString(),
-		"exp": req.Exp,
+		"exp": exp,
 		"iat": now,
 	}
 	pj, err := json.Marshal(payload)
