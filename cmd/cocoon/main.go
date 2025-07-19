@@ -136,6 +136,11 @@ func main() {
 				EnvVars: []string{"COCOON_DEFAULT_ATPROTO_PROXY"},
 				Value:   "did:web:api.bsky.app#bsky_appview",
 			},
+			&cli.StringFlag{
+				Name:    "blockstore-variant",
+				EnvVars: []string{"COCOON_BLOCKSTORE_VARIANT"},
+				Value:   "sqlite",
+			},
 		},
 		Commands: []*cli.Command{
 			runServe,
@@ -158,6 +163,7 @@ var runServe = &cli.Command{
 	Usage: "Start the cocoon PDS",
 	Flags: []cli.Flag{},
 	Action: func(cmd *cli.Context) error {
+
 		s, err := server.New(&server.Args{
 			Addr:            cmd.String("addr"),
 			DbName:          cmd.String("db-name"),
@@ -185,6 +191,7 @@ var runServe = &cli.Command{
 			},
 			SessionSecret:       cmd.String("session-secret"),
 			DefaultAtprotoProxy: cmd.String("default-atproto-proxy"),
+			BlockstoreVariant:   server.MustReturnBlockstoreVariant(cmd.String("blockstore-variant")),
 		})
 		if err != nil {
 			fmt.Printf("error creating cocoon: %v", err)

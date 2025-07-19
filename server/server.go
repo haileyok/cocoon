@@ -38,6 +38,7 @@ import (
 	"github.com/haileyok/cocoon/oauth/dpop"
 	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/haileyok/cocoon/plc"
+	"github.com/ipfs/go-cid"
 	echo_session "github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -104,6 +105,8 @@ type Args struct {
 	SessionSecret string
 
 	DefaultAtprotoProxy string
+
+	BlockstoreVariant BlockstoreVariant
 }
 
 type config struct {
@@ -117,6 +120,7 @@ type config struct {
 	SmtpEmail           string
 	SmtpName            string
 	DefaultAtprotoProxy string
+	BlockstoreVariant   BlockstoreVariant
 }
 
 type CustomValidator struct {
@@ -349,6 +353,7 @@ func New(args *Args) (*Server, error) {
 			SmtpName:            args.SmtpName,
 			SmtpEmail:           args.SmtpEmail,
 			DefaultAtprotoProxy: args.DefaultAtprotoProxy,
+			BlockstoreVariant:   args.BlockstoreVariant,
 		},
 		evtman:   events.NewEventManager(events.NewMemPersister()),
 		passport: identity.NewPassport(h, identity.NewMemCache(10_000)),
@@ -640,4 +645,12 @@ func (s *Server) backupRoutine() {
 	for range ticker.C {
 		go s.doBackup()
 	}
+}
+
+func (s *Server) UpdateRepo(ctx context.Context, did string, root cid.Cid, rev string) error {
+	if err := s.db.Exec("UPDATE repos SET root = ?, rev = ? WHERE did = ?", nil, root.Bytes(), rev, did).Error; err != nil {
+		return err
+	}
+
+	return nil
 }
