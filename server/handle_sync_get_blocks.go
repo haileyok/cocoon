@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/bluesky-social/indigo/carstore"
-	"github.com/haileyok/cocoon/blockstore"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/ipfs/go-cid"
 	cbor "github.com/ipfs/go-ipld-cbor"
@@ -54,7 +53,7 @@ func (s *Server) handleGetBlocks(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	bs := blockstore.New(urepo.Repo.Did, s.db)
+	bs := s.createBlockstore(urepo.Repo.Did)
 
 	for _, c := range cids {
 		b, err := bs.Get(context.TODO(), c)

@@ -9,7 +9,6 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/bluesky-social/indigo/repo"
-	"github.com/haileyok/cocoon/blockstore"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	blocks "github.com/ipfs/go-block-format"
@@ -27,7 +26,7 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	bs := blockstore.New(urepo.Repo.Did, s.db)
+	bs := s.createBlockstore(urepo.Repo.Did)
 
 	cs, err := car.NewCarReader(bytes.NewReader(b))
 	if err != nil {
@@ -107,7 +106,7 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := bs.UpdateRepo(context.TODO(), root, rev); err != nil {
+	if err := s.UpdateRepo(context.TODO(), urepo.Repo.Did, root, rev); err != nil {
 		s.logger.Error("error updating repo after commit", "error", err)
 		return helpers.ServerError(e, nil)
 	}

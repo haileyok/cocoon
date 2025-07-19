@@ -14,7 +14,6 @@ import (
 	"github.com/bluesky-social/indigo/events"
 	"github.com/bluesky-social/indigo/repo"
 	"github.com/bluesky-social/indigo/util"
-	"github.com/haileyok/cocoon/blockstore"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/labstack/echo/v4"
@@ -177,7 +176,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 	}
 
 	if customDidHeader == "" {
-		bs := blockstore.New(signupDid, s.db)
+		bs := s.createBlockstore(signupDid)
 		r := repo.NewRepo(context.TODO(), signupDid, bs)
 
 		root, rev, err := r.Commit(context.TODO(), urepo.SignFor)
@@ -186,7 +185,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 			return helpers.ServerError(e, nil)
 		}
 
-		if err := bs.UpdateRepo(context.TODO(), root, rev); err != nil {
+		if err := s.UpdateRepo(context.TODO(), urepo.Did, root, rev); err != nil {
 			s.logger.Error("error updating repo after commit", "error", err)
 			return helpers.ServerError(e, nil)
 		}

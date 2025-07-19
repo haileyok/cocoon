@@ -1,4 +1,4 @@
-package blockstore
+package sqlite_blockstore
 
 import (
 	"context"
@@ -134,14 +134,6 @@ func (bs *SqliteBlockstore) AllKeysChan(ctx context.Context) (<-chan cid.Cid, er
 
 func (bs *SqliteBlockstore) HashOnRead(enabled bool) {
 	panic("not implemented")
-}
-
-func (bs *SqliteBlockstore) UpdateRepo(ctx context.Context, root cid.Cid, rev string) error {
-	if err := bs.db.Exec("UPDATE repos SET root = ?, rev = ? WHERE did = ?", nil, root.Bytes(), rev, bs.did).Error; err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func (bs *SqliteBlockstore) Execute(ctx context.Context) error {
