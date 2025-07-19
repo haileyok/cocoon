@@ -107,6 +107,8 @@ type Args struct {
 	SessionSecret string
 
 	DefaultAtprotoProxy string
+
+	BlockstoreVariant BlockstoreVariant
 }
 
 type config struct {
