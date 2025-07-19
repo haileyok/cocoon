@@ -2,6 +2,8 @@ package server
 
 import (
 	"bytes"
+	"context"
+	"strings"
 
 	"github.com/bluesky-social/indigo/carstore"
 	"github.com/haileyok/cocoon/internal/helpers"
@@ -12,17 +14,14 @@ import (
 )
 
 func (s *Server) handleGetBlocks(e echo.Context) error {
-	ctx := e.Request().Context()
 	did := e.QueryParam("did")
+	cidsstr := e.QueryParam("cids")
 	if did == "" {
 		return helpers.InputError(e, nil)
 	}
 
-	cidstrs, ok := e.QueryParams()["cids"]
-	if !ok {
-		return helpers.InputError(e, nil)
-	}
-	var cids []cid.Cid
+	cidstrs := strings.Split(cidsstr, ",")
+	cids := []cid.Cid{}
 
 	for _, cs := range cidstrs {
 		c, err := cid.Cast([]byte(cs))
@@ -57,7 +56,7 @@ func (s *Server) handleGetBlocks(e echo.Context) error {
 	bs := s.getBlockstore(urepo.Repo.Did)
 
 	for _, c := range cids {
-		b, err := bs.Get(ctx, c)
+		b, err := bs.Get(context.TODO(), c)
 		if err != nil {
 			return err
 		}
