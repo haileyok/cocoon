@@ -129,7 +129,7 @@ func (bs *SqliteBlockstore) PutMany(ctx context.Context, blocks []blocks.Block) 
 }
 
 func (bs *SqliteBlockstore) AllKeysChan(ctx context.Context) (<-chan cid.Cid, error) {
-	panic("not implemented")
+	return nil, fmt.Errorf("iteration not allowed on sqlite blockstore")
 }
 
 func (bs *SqliteBlockstore) HashOnRead(enabled bool) {

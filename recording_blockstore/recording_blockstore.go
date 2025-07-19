@@ -2,6 +2,7 @@ package recording_blockstore
 
 import (
 	"context"
+	"fmt"
 
 	blockformat "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
@@ -58,7 +59,7 @@ func (bs *RecordingBlockstore) PutMany(ctx context.Context, blocks []blockformat
 }
 
 func (bs *RecordingBlockstore) AllKeysChan(ctx context.Context) (<-chan cid.Cid, error) {
-	return bs.AllKeysChan(ctx)
+	return nil, fmt.Errorf("iteration not allowed on recording blockstore")
 }
 
 func (bs *RecordingBlockstore) HashOnRead(enabled bool) {
