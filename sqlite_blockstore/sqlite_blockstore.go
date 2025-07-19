@@ -135,21 +135,3 @@ func (bs *SqliteBlockstore) AllKeysChan(ctx context.Context) (<-chan cid.Cid, er
 func (bs *SqliteBlockstore) HashOnRead(enabled bool) {
 	panic("not implemented")
 }
-
-func (bs *SqliteBlockstore) Execute(ctx context.Context) error {
-	if !bs.readonly {
-		return fmt.Errorf("blockstore was not readonly")
-	}
-
-	bs.readonly = false
-	for _, b := range bs.inserts {
-		bs.Put(ctx, b)
-	}
-	bs.readonly = true
-
-	return nil
-}
-
-func (bs *SqliteBlockstore) GetLog() map[cid.Cid]blocks.Block {
-	return bs.inserts
-}

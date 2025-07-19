@@ -11,20 +11,22 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+type ComAtprotoSyncGetBlocksRequest struct {
+	Did  string   `query:"did"`
+	Cids []string `query:"cids"`
+}
+
 func (s *Server) handleGetBlocks(e echo.Context) error {
 	ctx := e.Request().Context()
-	did := e.QueryParam("did")
-	if did == "" {
+
+	var req ComAtprotoSyncGetBlocksRequest
+	if err := e.Bind(&req); err != nil {
 		return helpers.InputError(e, nil)
 	}
 
-	cidstrs, ok := e.QueryParams()["cids"]
-	if !ok {
-		return helpers.InputError(e, nil)
-	}
 	var cids []cid.Cid
 
-	for _, cs := range cidstrs {
+	for _, cs := range req.Cids {
 		c, err := cid.Cast([]byte(cs))
 		if err != nil {
 			return err
@@ -33,7 +35,7 @@ func (s *Server) handleGetBlocks(e echo.Context) error {
 		cids = append(cids, c)
 	}
 
-	urepo, err := s.getRepoActorByDid(did)
+	urepo, err := s.getRepoActorByDid(req.Did)
 	if err != nil {
 		return helpers.ServerError(e, nil)
 	}

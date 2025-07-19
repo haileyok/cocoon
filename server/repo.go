@@ -104,7 +104,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 
 	dbs := rm.s.getBlockstore(urepo.Did)
 	bs := recording_blockstore.New(dbs)
-	r, err := repo.OpenRepo(context.TODO(), dbs, rootcid)
+	r, err := repo.OpenRepo(context.TODO(), bs, rootcid)
 
 	entries := []models.Record{}
 	var results []ApplyWriteResult

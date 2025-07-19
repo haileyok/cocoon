@@ -20,6 +20,7 @@ func New(base blockstore.Blockstore) *RecordingBlockstore {
 	return &RecordingBlockstore{
 		base:    base,
 		inserts: make(map[cid.Cid]blockformat.Block),
+		reads:   make(map[cid.Cid]blockformat.Block),
 	}
 }
 
