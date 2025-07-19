@@ -53,7 +53,7 @@ func (s *Server) handleGetBlocks(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	bs := s.createBlockstore(urepo.Repo.Did)
+	bs := s.getBlockstore(urepo.Repo.Did)
 
 	for _, c := range cids {
 		b, err := bs.Get(context.TODO(), c)

@@ -26,7 +26,7 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	bs := s.createBlockstore(urepo.Repo.Did)
+	bs := s.getBlockstore(urepo.Repo.Did)
 
 	cs, err := car.NewCarReader(bytes.NewReader(b))
 	if err != nil {

@@ -176,7 +176,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 	}
 
 	if customDidHeader == "" {
-		bs := s.createBlockstore(signupDid)
+		bs := s.getBlockstore(signupDid)
 		r := repo.NewRepo(context.TODO(), signupDid, bs)
 
 		root, rev, err := r.Commit(context.TODO(), urepo.SignFor)

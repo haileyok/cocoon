@@ -38,9 +38,7 @@ import (
 	"github.com/haileyok/cocoon/oauth/dpop"
 	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/haileyok/cocoon/plc"
-	"github.com/haileyok/cocoon/sqlite_blockstore"
 	"github.com/ipfs/go-cid"
-	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	echo_session "github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -122,6 +120,7 @@ type config struct {
 	SmtpEmail           string
 	SmtpName            string
 	DefaultAtprotoProxy string
+	BlockstoreVariant   BlockstoreVariant
 }
 
 type CustomValidator struct {
@@ -354,6 +353,7 @@ func New(args *Args) (*Server, error) {
 			SmtpName:            args.SmtpName,
 			SmtpEmail:           args.SmtpEmail,
 			DefaultAtprotoProxy: args.DefaultAtprotoProxy,
+			BlockstoreVariant:   args.BlockstoreVariant,
 		},
 		evtman:   events.NewEventManager(events.NewMemPersister()),
 		passport: identity.NewPassport(h, identity.NewMemCache(10_000)),
@@ -645,11 +645,6 @@ func (s *Server) backupRoutine() {
 	for range ticker.C {
 		go s.doBackup()
 	}
-}
-
-func (s *Server) createBlockstore(did string) blockstore.Blockstore {
-	// TODO: eventually configurable blockstore types here
-	return sqlite_blockstore.New(did, s.db)
 }
 
 func (s *Server) UpdateRepo(ctx context.Context, did string, root cid.Cid, rev string) error {

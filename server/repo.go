@@ -102,7 +102,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 		return nil, err
 	}
 
-	dbs := rm.s.createBlockstore(urepo.Did)
+	dbs := rm.s.getBlockstore(urepo.Did)
 	bs := recording_blockstore.New(dbs)
 	r, err := repo.OpenRepo(context.TODO(), dbs, rootcid)
 
@@ -345,7 +345,7 @@ func (rm *RepoMan) getRecordProof(urepo models.Repo, collection, rkey string) (c
 		return cid.Undef, nil, err
 	}
 
-	dbs := rm.s.createBlockstore(urepo.Did)
+	dbs := rm.s.getBlockstore(urepo.Did)
 	bs := recording_blockstore.New(dbs)
 
 	r, err := repo.OpenRepo(context.TODO(), bs, c)
