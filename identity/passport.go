@@ -19,7 +19,7 @@ type BackingCache interface {
 type Passport struct {
 	h  *http.Client
 	bc BackingCache
-	lk sync.Mutex
+	mu sync.RWMutex
 }
 
 func NewPassport(h *http.Client, bc BackingCache) *Passport {
@@ -30,7 +30,6 @@ func NewPassport(h *http.Client, bc BackingCache) *Passport {
 	return &Passport{
 		h:  h,
 		bc: bc,
-		lk: sync.Mutex{},
 	}
 }
 
@@ -38,21 +37,24 @@ func (p *Passport) FetchDoc(ctx context.Context, did string) (*DidDoc, error) {
 	skipCache, _ := ctx.Value("skip-cache").(bool)
 
 	if !skipCache {
+		p.mu.RLock()
 		cached, ok := p.bc.GetDoc(did)
+		p.mu.RUnlock()
+
 		if ok {
 			return cached, nil
 		}
 	}
 
-	p.lk.Lock() // this is pretty pathetic, and i should rethink this. but for now, fuck it
-	defer p.lk.Unlock()
-
+	// TODO: should coalesce requests here
 	doc, err := FetchDidDoc(ctx, p.h, did)
 	if err != nil {
 		return nil, err
 	}
 
+	p.mu.Lock()
 	p.bc.PutDoc(did, doc)
+	p.mu.Unlock()
 
 	return doc, nil
 }
@@ -61,7 +63,10 @@ func (p *Passport) ResolveHandle(ctx context.Context, handle string) (string, er
 	skipCache, _ := ctx.Value("skip-cache").(bool)
 
 	if !skipCache {
+		p.mu.RLock()
 		cached, ok := p.bc.GetDid(handle)
+		p.mu.RUnlock()
+
 		if ok {
 			return cached, nil
 		}
@@ -72,15 +77,21 @@ func (p *Passport) ResolveHandle(ctx context.Context, handle string) (string, er
 		return "", err
 	}
 
+	p.mu.Lock()
 	p.bc.PutDid(handle, did)
+	p.mu.Unlock()
 
 	return did, nil
 }
 
 func (p *Passport) BustDoc(ctx context.Context, did string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.bc.BustDoc(did)
 }
 
 func (p *Passport) BustDid(ctx context.Context, handle string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.bc.BustDid(handle)
 }

@@ -13,67 +13,90 @@ import (
 	"github.com/bluesky-social/indigo/util"
 )
 
+func ResolveHandleFromTXT(ctx context.Context, handle string) (string, error) {
+	name := fmt.Sprintf("_atproto.%s", handle)
+	recs, err := net.LookupTXT(name)
+	if err != nil {
+		return "", fmt.Errorf("handle could not be resolved via txt: %w", err)
+	}
+
+	for _, rec := range recs {
+		if strings.HasPrefix(rec, "did=") {
+			maybeDid := strings.Split(rec, "did=")[1]
+			if _, err := syntax.ParseDID(maybeDid); err == nil {
+				return maybeDid, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("handle could not be resolved via txt: no record found")
+}
+
+func ResolveHandleFromWellKnown(ctx context.Context, cli *http.Client, handle string) (string, error) {
+	ustr := fmt.Sprintf("https://%s/.well=known/atproto-did", handle)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		"GET",
+		ustr,
+		nil,
+	)
+	if err != nil {
+		return "", fmt.Errorf("handle could not be resolved via web: %w", err)
+	}
+
+	resp, err := cli.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("handle could not be resolved via web: %w", err)
+	}
+	defer resp.Body.Close()
+
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("handle could not be resolved via web: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("handle could not be resolved via web: invalid status code %d", resp.StatusCode)
+	}
+
+	maybeDid := string(b)
+
+	if _, err := syntax.ParseDID(maybeDid); err != nil {
+		return "", fmt.Errorf("handle could not be resolved via web: invalid did in document")
+	}
+
+	return maybeDid, nil
+}
+
 func ResolveHandle(ctx context.Context, cli *http.Client, handle string) (string, error) {
 	if cli == nil {
 		cli = util.RobustHTTPClient()
 	}
-
-	var did string
 
 	_, err := syntax.ParseHandle(handle)
 	if err != nil {
 		return "", err
 	}
 
-	recs, err := net.LookupTXT(fmt.Sprintf("_atproto.%s", handle))
-	if err == nil {
-		for _, rec := range recs {
-			if strings.HasPrefix(rec, "did=") {
-				did = strings.Split(rec, "did=")[1]
-				break
-			}
-		}
+	if maybeDidFromTxt, err := ResolveHandleFromTXT(ctx, handle); err == nil {
+		return maybeDidFromTxt, nil
+	}
+
+	if maybeDidFromWeb, err := ResolveHandleFromWellKnown(ctx, cli, handle); err == nil {
+		return maybeDidFromWeb, nil
+	}
+
+	return "", fmt.Errorf("handle could not be resolved")
+}
+
+func DidToDocUrl(did string) (string, error) {
+	if strings.HasPrefix(did, "did:plc:") {
+		return fmt.Sprintf("https://plc.directory/%s", did), nil
+	} else if strings.HasPrefix(did, "did:web:") {
+		return fmt.Sprintf("https://%s/.well-known/did.json", strings.TrimPrefix(did, "did:web:")), nil
 	} else {
-		fmt.Printf("erorr getting txt records: %v\n", err)
+		return "", fmt.Errorf("did was not a supported did type")
 	}
-
-	if did == "" {
-		req, err := http.NewRequestWithContext(
-			ctx,
-			"GET",
-			fmt.Sprintf("https://%s/.well-known/atproto-did", handle),
-			nil,
-		)
-		if err != nil {
-			return "", nil
-		}
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return "", nil
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			io.Copy(io.Discard, resp.Body)
-			return "", fmt.Errorf("unable to resolve handle")
-		}
-
-		b, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return "", err
-		}
-
-		maybeDid := string(b)
-
-		if _, err := syntax.ParseDID(maybeDid); err != nil {
-			return "", fmt.Errorf("unable to resolve handle")
-		}
-
-		did = maybeDid
-	}
-
-	return did, nil
 }
 
 func FetchDidDoc(ctx context.Context, cli *http.Client, did string) (*DidDoc, error) {
@@ -81,13 +104,9 @@ func FetchDidDoc(ctx context.Context, cli *http.Client, did string) (*DidDoc, er
 		cli = util.RobustHTTPClient()
 	}
 
-	var ustr string
-	if strings.HasPrefix(did, "did:plc:") {
-		ustr = fmt.Sprintf("https://plc.directory/%s", did)
-	} else if strings.HasPrefix(did, "did:web:") {
-		ustr = fmt.Sprintf("https://%s/.well-known/did.json", strings.TrimPrefix(did, "did:web:"))
-	} else {
-		return nil, fmt.Errorf("did was not a supported did type")
+	ustr, err := DidToDocUrl(did)
+	if err != nil {
+		return nil, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", ustr, nil)
@@ -95,7 +114,7 @@ func FetchDidDoc(ctx context.Context, cli *http.Client, did string) (*DidDoc, er
 		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cli.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +122,7 @@ func FetchDidDoc(ctx context.Context, cli *http.Client, did string) (*DidDoc, er
 
 	if resp.StatusCode != 200 {
 		io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("could not find identity in plc registry")
+		return nil, fmt.Errorf("unable to find did doc at url. did: %s. url: %s", did, ustr)
 	}
 
 	var diddoc DidDoc
@@ -127,7 +146,7 @@ func FetchDidData(ctx context.Context, cli *http.Client, did string) (*DidData, 
 		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cli.Do(req)
 	if err != nil {
 		return nil, err
 	}
