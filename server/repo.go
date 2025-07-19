@@ -274,7 +274,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 		}
 	}
 
-	for _, op := range bs.GetLogMap() {
+	for _, op := range bs.GetWriteLog() {
 		if _, err := carstore.LdWrite(buf, op.Cid().Bytes(), op.RawData()); err != nil {
 			return nil, err
 		}
@@ -358,7 +358,7 @@ func (rm *RepoMan) getRecordProof(urepo models.Repo, collection, rkey string) (c
 		return cid.Undef, nil, err
 	}
 
-	return c, bs.GetLogArray(), nil
+	return c, bs.GetReadLog(), nil
 }
 
 func (rm *RepoMan) incrementBlobRefs(urepo models.Repo, cbor []byte) ([]cid.Cid, error) {

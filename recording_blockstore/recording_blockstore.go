@@ -13,6 +13,7 @@ type RecordingBlockstore struct {
 	base blockstore.Blockstore
 
 	inserts map[cid.Cid]blockformat.Block
+	reads   map[cid.Cid]blockformat.Block
 }
 
 func New(base blockstore.Blockstore) *RecordingBlockstore {
@@ -27,7 +28,12 @@ func (bs *RecordingBlockstore) Has(ctx context.Context, c cid.Cid) (bool, error)
 }
 
 func (bs *RecordingBlockstore) Get(ctx context.Context, c cid.Cid) (blockformat.Block, error) {
-	return bs.base.Get(ctx, c)
+	b, err := bs.base.Get(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	bs.reads[c] = b
+	return b, nil
 }
 
 func (bs *RecordingBlockstore) GetSize(ctx context.Context, c cid.Cid) (int, error) {
@@ -65,13 +71,13 @@ func (bs *RecordingBlockstore) AllKeysChan(ctx context.Context) (<-chan cid.Cid,
 func (bs *RecordingBlockstore) HashOnRead(enabled bool) {
 }
 
-func (bs *RecordingBlockstore) GetLogMap() map[cid.Cid]blockformat.Block {
+func (bs *RecordingBlockstore) GetWriteLog() map[cid.Cid]blockformat.Block {
 	return bs.inserts
 }
 
-func (bs *RecordingBlockstore) GetLogArray() []blockformat.Block {
+func (bs *RecordingBlockstore) GetReadLog() []blockformat.Block {
 	var blocks []blockformat.Block
-	for _, b := range bs.inserts {
+	for _, b := range bs.reads {
 		blocks = append(blocks, b)
 	}
 	return blocks
