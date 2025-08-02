@@ -46,7 +46,6 @@ func (p *Passport) FetchDoc(ctx context.Context, did string) (*DidDoc, error) {
 		}
 	}
 
-	// TODO: should coalesce requests here
 	doc, err := FetchDidDoc(ctx, p.h, did)
 	if err != nil {
 		return nil, err
