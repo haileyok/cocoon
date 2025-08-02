@@ -33,7 +33,7 @@ func ResolveHandleFromTXT(ctx context.Context, handle string) (string, error) {
 }
 
 func ResolveHandleFromWellKnown(ctx context.Context, cli *http.Client, handle string) (string, error) {
-	ustr := fmt.Sprintf("https://%s/.well=known/atproto-did", handle)
+	ustr := fmt.Sprintf("https://%s/.well-known/atproto-did", handle)
 	req, err := http.NewRequestWithContext(
 		ctx,
 		"GET",
@@ -92,8 +92,8 @@ func ResolveHandle(ctx context.Context, cli *http.Client, handle string) (string
 func DidToDocUrl(did string) (string, error) {
 	if strings.HasPrefix(did, "did:plc:") {
 		return fmt.Sprintf("https://plc.directory/%s", did), nil
-	} else if strings.HasPrefix(did, "did:web:") {
-		return fmt.Sprintf("https://%s/.well-known/did.json", strings.TrimPrefix(did, "did:web:")), nil
+	} else if after, ok := strings.CutPrefix(did, "did:web:"); ok {
+		return fmt.Sprintf("https://%s/.well-known/did.json", after), nil
 	} else {
 		return "", fmt.Errorf("did was not a supported did type")
 	}
