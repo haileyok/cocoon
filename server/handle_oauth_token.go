@@ -52,7 +52,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		AllowMissingDpopProof: true,
 	})
 	if err != nil {
-		s.logger.Error("error authenticating client", "error", err)
+		s.logger.Error("error authenticating client", "client_id", req.ClientID, "error", err)
 		return helpers.InputError(e, to.StringPtr(err.Error()))
 	}
 
