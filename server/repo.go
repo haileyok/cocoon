@@ -138,6 +138,12 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 				return nil, err
 			}
 			mm := MarshalableMap(out)
+
+			// HACK: if a record doesn't contain a $type, we can manually set it here based on the op's collection
+			if mm["$type"] == "" {
+				mm["$type"] = op.Collection
+			}
+
 			nc, err := r.PutRecord(context.TODO(), op.Collection+"/"+*op.Rkey, &mm)
 			if err != nil {
 				return nil, err
