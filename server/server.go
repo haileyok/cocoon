@@ -104,23 +104,20 @@ type Args struct {
 
 	SessionSecret string
 
-	DefaultAtprotoProxy string
-
 	BlockstoreVariant BlockstoreVariant
 }
 
 type config struct {
-	Version             string
-	Did                 string
-	Hostname            string
-	ContactEmail        string
-	EnforcePeering      bool
-	Relays              []string
-	AdminPassword       string
-	SmtpEmail           string
-	SmtpName            string
-	DefaultAtprotoProxy string
-	BlockstoreVariant   BlockstoreVariant
+	Version           string
+	Did               string
+	Hostname          string
+	ContactEmail      string
+	EnforcePeering    bool
+	Relays            []string
+	AdminPassword     string
+	SmtpEmail         string
+	SmtpName          string
+	BlockstoreVariant BlockstoreVariant
 }
 
 type CustomValidator struct {
@@ -343,17 +340,16 @@ func New(args *Args) (*Server, error) {
 		plcClient:  plcClient,
 		privateKey: &pkey,
 		config: &config{
-			Version:             args.Version,
-			Did:                 args.Did,
-			Hostname:            args.Hostname,
-			ContactEmail:        args.ContactEmail,
-			EnforcePeering:      false,
-			Relays:              args.Relays,
-			AdminPassword:       args.AdminPassword,
-			SmtpName:            args.SmtpName,
-			SmtpEmail:           args.SmtpEmail,
-			DefaultAtprotoProxy: args.DefaultAtprotoProxy,
-			BlockstoreVariant:   args.BlockstoreVariant,
+			Version:           args.Version,
+			Did:               args.Did,
+			Hostname:          args.Hostname,
+			ContactEmail:      args.ContactEmail,
+			EnforcePeering:    false,
+			Relays:            args.Relays,
+			AdminPassword:     args.AdminPassword,
+			SmtpName:          args.SmtpName,
+			SmtpEmail:         args.SmtpEmail,
+			BlockstoreVariant: args.BlockstoreVariant,
 		},
 		evtman:   events.NewEventManager(events.NewMemPersister()),
 		passport: identity.NewPassport(h, identity.NewMemCache(10_000)),
