@@ -40,7 +40,7 @@ func (s *Server) handleRefreshSession(e echo.Context) error {
 		RefreshJwt: sess.RefreshToken,
 		Handle:     repo.Handle,
 		Did:        repo.Repo.Did,
-		Active:     true,
-		Status:     nil,
+		Active:     repo.Active(),
+		Status:     repo.Status(),
 	})
 }

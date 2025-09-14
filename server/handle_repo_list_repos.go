@@ -37,8 +37,8 @@ func (s *Server) handleListRepos(e echo.Context) error {
 			Did:    r.Did,
 			Head:   c.String(),
 			Rev:    r.Rev,
-			Active: true,
-			Status: nil,
+			Active: r.Active(),
+			Status: r.Status(),
 		})
 	}
 

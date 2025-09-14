@@ -102,7 +102,7 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 		Email:           repo.Email,
 		EmailConfirmed:  repo.EmailConfirmedAt != nil,
 		EmailAuthFactor: false,
-		Active:          true, // TODO: eventually do takedowns
-		Status:          nil,  // TODO eventually do takedowns
+		Active:          repo.Active(),
+		Status:          repo.Status(),
 	})
 }

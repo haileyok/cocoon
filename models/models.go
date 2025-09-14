@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/bluesky-social/indigo/atproto/crypto"
 )
 
@@ -23,6 +24,7 @@ type Repo struct {
 	Rev                            string
 	Root                           []byte
 	Preferences                    []byte
+	Deactivated                    bool
 }
 
 func (r *Repo) SignFor(ctx context.Context, did string, msg []byte) ([]byte, error) {
@@ -37,6 +39,18 @@ func (r *Repo) SignFor(ctx context.Context, did string, msg []byte) ([]byte, err
 	}
 
 	return sig, nil
+}
+
+func (r *Repo) Status() *string {
+	var status *string
+	if r.Deactivated {
+		status = to.StringPtr("deactivated")
+	}
+	return status
+}
+
+func (r *Repo) Active() bool {
+	return r.Status() == nil
 }
 
 type Actor struct {
