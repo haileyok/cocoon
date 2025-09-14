@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 
+	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/ipfs/go-cid"
@@ -23,6 +24,19 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 	c, err := cid.Parse(cstr)
 	if err != nil {
 		return helpers.InputError(e, nil)
+	}
+
+	urepo, err := s.getRepoActorByDid(did)
+	if err != nil {
+		s.logger.Error("could not find user for requested blob", "error", err)
+		return helpers.InputError(e, nil)
+	}
+
+	status := urepo.Status()
+	if status != nil {
+		if *status == "deactivated" {
+			return helpers.InputError(e, to.StringPtr("RepoDeactivated"))
+		}
 	}
 
 	var blob models.Blob

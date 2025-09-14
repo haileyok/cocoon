@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/ipfs/go-cid"
@@ -33,6 +34,19 @@ func (s *Server) handleSyncListBlobs(e echo.Context) error {
 		cursorquery = "AND created_at < ?"
 	}
 	params = append(params, limit)
+
+	urepo, err := s.getRepoActorByDid(did)
+	if err != nil {
+		s.logger.Error("could not find user for requested blobs", "error", err)
+		return helpers.InputError(e, nil)
+	}
+
+	status := urepo.Status()
+	if status != nil {
+		if *status == "deactivated" {
+			return helpers.InputError(e, to.StringPtr("RepoDeactivated"))
+		}
+	}
 
 	var blobs []models.Blob
 	if err := s.db.Raw("SELECT * FROM blobs WHERE did = ? "+cursorquery+" ORDER BY created_at DESC LIMIT ?", nil, params...).Scan(&blobs).Error; err != nil {
