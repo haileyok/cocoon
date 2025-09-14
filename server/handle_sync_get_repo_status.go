@@ -26,8 +26,8 @@ func (s *Server) handleSyncGetRepoStatus(e echo.Context) error {
 
 	return e.JSON(200, ComAtprotoSyncGetRepoStatusResponse{
 		Did:    urepo.Repo.Did,
-		Active: true,
-		Status: nil,
+		Active: urepo.Active(),
+		Status: urepo.Status(),
 		Rev:    &urepo.Rev,
 	})
 }

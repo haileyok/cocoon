@@ -24,7 +24,7 @@ func (s *Server) handleGetSession(e echo.Context) error {
 		Email:           repo.Email,
 		EmailConfirmed:  repo.EmailConfirmedAt != nil,
 		EmailAuthFactor: false, // TODO: todo todo
-		Active:          true,
-		Status:          nil,
+		Active:          repo.Active(),
+		Status:          repo.Status(),
 	})
 }
