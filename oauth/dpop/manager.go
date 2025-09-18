@@ -36,6 +36,10 @@ type ManagerArgs struct {
 	Hostname              string
 }
 
+var (
+	ErrUseDpopNonce = errors.New("use_dpop_nonce")
+)
+
 func NewManager(args ManagerArgs) *Manager {
 	if args.Logger == nil {
 		args.Logger = slog.Default()
@@ -194,12 +198,12 @@ func (dm *Manager) CheckProof(reqMethod, reqUrl string, headers http.Header, acc
 	nonce, _ := claims["nonce"].(string)
 	if nonce == "" {
 		// WARN: this _must_ be `use_dpop_nonce` for clients know they should make another request
-		return nil, errors.New("use_dpop_nonce")
+		return nil, ErrUseDpopNonce
 	}
 
 	if nonce != "" && !dm.nonce.Check(nonce) {
 		// WARN: this _must_ be `use_dpop_nonce` so that clients will fetch a new nonce
-		return nil, errors.New("use_dpop_nonce")
+		return nil, ErrUseDpopNonce
 	}
 
 	ath, _ := claims["ath"].(string)

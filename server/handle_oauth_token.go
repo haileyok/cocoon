@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"slices"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/oauth"
 	"github.com/haileyok/cocoon/oauth/constants"
+	"github.com/haileyok/cocoon/oauth/dpop"
 	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/labstack/echo/v4"
 )
@@ -44,8 +46,13 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 
 	proof, err := s.oauthProvider.DpopManager.CheckProof(e.Request().Method, e.Request().URL.String(), e.Request().Header, nil)
 	if err != nil {
+		if errors.Is(err, dpop.ErrUseDpopNonce) {
+			return e.JSON(401, map[string]string{
+				"error": "use_dpop_nonce",
+			})
+		}
 		s.logger.Error("error getting dpop proof", "error", err)
-		return helpers.InputError(e, to.StringPtr(err.Error()))
+		return helpers.InputError(e, nil)
 	}
 
 	client, clientAuth, err := s.oauthProvider.AuthenticateClient(e.Request().Context(), req.AuthenticateClientRequestBase, proof, &provider.AuthenticateClientOptions{
