@@ -34,7 +34,7 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 	dpopProof, err := s.oauthProvider.DpopManager.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, nil)
 	if err != nil {
 		if errors.Is(err, dpop.ErrUseDpopNonce) {
-			return e.JSON(401, map[string]string{
+			return e.JSON(400, map[string]string{
 				"error": "use_dpop_nonce",
 			})
 		}
