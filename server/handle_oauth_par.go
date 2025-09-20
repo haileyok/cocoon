@@ -1,12 +1,14 @@
 package server
 
 import (
+	"errors"
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/oauth"
 	"github.com/haileyok/cocoon/oauth/constants"
+	"github.com/haileyok/cocoon/oauth/dpop"
 	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/labstack/echo/v4"
 )
@@ -31,8 +33,13 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 	// TODO: this seems wrong. should be a way to get the entire request url i believe, but this will work for now
 	dpopProof, err := s.oauthProvider.DpopManager.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, nil)
 	if err != nil {
+		if errors.Is(err, dpop.ErrUseDpopNonce) {
+			return e.JSON(400, map[string]string{
+				"error": "use_dpop_nonce",
+			})
+		}
 		s.logger.Error("error getting dpop proof", "error", err)
-		return helpers.InputError(e, to.StringPtr(err.Error()))
+		return helpers.InputError(e, nil)
 	}
 
 	client, clientAuth, err := s.oauthProvider.AuthenticateClient(e.Request().Context(), parRequest.AuthenticateClientRequestBase, dpopProof, &provider.AuthenticateClientOptions{
