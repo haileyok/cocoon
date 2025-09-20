@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/oauth/dpop"
 	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/labstack/echo/v4"
 	"gitlab.com/yawning/secp256k1-voi"
@@ -229,8 +231,13 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 
 		proof, err := s.oauthProvider.DpopManager.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, to.StringPtr(accessToken))
 		if err != nil {
+			if errors.Is(err, dpop.ErrUseDpopNonce) {
+				return e.JSON(400, map[string]string{
+					"error": "use_dpop_nonce",
+				})
+			}
 			s.logger.Error("invalid dpop proof", "error", err)
-			return helpers.InputError(e, to.StringPtr(err.Error()))
+			return helpers.InputError(e, nil)
 		}
 
 		var oauthToken provider.OauthToken
