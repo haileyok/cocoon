@@ -19,6 +19,9 @@ import (
 
 func (s *Server) getAtprotoProxyEndpointFromRequest(e echo.Context) (string, string, error) {
 	svc := e.Request().Header.Get("atproto-proxy")
+	if svc == "" && s.config.FallbackProxy != "" {
+		svc = s.config.FallbackProxy
+	}
 
 	svcPts := strings.Split(svc, "#")
 	if len(svcPts) != 2 {

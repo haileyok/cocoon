@@ -136,6 +136,10 @@ func main() {
 				EnvVars: []string{"COCOON_BLOCKSTORE_VARIANT"},
 				Value:   "sqlite",
 			},
+			&cli.StringFlag{
+				Name:    "fallback-proxy",
+				EnvVars: []string{"COCOON_FALLBACK_PROXY"},
+			},
 		},
 		Commands: []*cli.Command{
 			runServe,
@@ -186,6 +190,7 @@ var runServe = &cli.Command{
 			},
 			SessionSecret:     cmd.String("session-secret"),
 			BlockstoreVariant: server.MustReturnBlockstoreVariant(cmd.String("blockstore-variant")),
+			FallbackProxy:     cmd.String("fallback-proxy"),
 		})
 		if err != nil {
 			fmt.Printf("error creating cocoon: %v", err)

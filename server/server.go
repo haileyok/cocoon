@@ -75,6 +75,7 @@ type Server struct {
 	oauthProvider *provider.Provider
 	evtman        *events.EventManager
 	passport      *identity.Passport
+	fallbackProxy string
 
 	dbName   string
 	s3Config *S3Config
@@ -118,6 +119,7 @@ type config struct {
 	SmtpEmail         string
 	SmtpName          string
 	BlockstoreVariant BlockstoreVariant
+	FallbackProxy     string
 }
 
 type CustomValidator struct {
@@ -350,6 +352,7 @@ func New(args *Args) (*Server, error) {
 			SmtpName:          args.SmtpName,
 			SmtpEmail:         args.SmtpEmail,
 			BlockstoreVariant: args.BlockstoreVariant,
+			FallbackProxy:     args.FallbackProxy,
 		},
 		evtman:   events.NewEventManager(events.NewMemPersister()),
 		passport: identity.NewPassport(h, identity.NewMemCache(10_000)),
