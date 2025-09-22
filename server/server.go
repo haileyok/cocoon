@@ -106,6 +106,7 @@ type Args struct {
 	SessionSecret string
 
 	BlockstoreVariant BlockstoreVariant
+	FallbackProxy     string
 }
 
 type config struct {
