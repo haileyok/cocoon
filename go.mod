@@ -5,7 +5,7 @@ go 1.24.1
 require (
 	github.com/Azure/go-autorest/autorest/to v0.4.1
 	github.com/aws/aws-sdk-go v1.55.7
-	github.com/bluesky-social/indigo v0.0.0-20250414202759-826fcdeaa36b
+	github.com/bluesky-social/indigo v0.0.0-20250924132341-b4dd6383c76f
 	github.com/btcsuite/websocket v0.0.0-20150119174127-31079b680792
 	github.com/domodwyer/mailyak/v3 v3.6.2
 	github.com/go-pkgz/expirable-cache/v3 v3.0.0

@@ -86,15 +86,6 @@ func (s *Server) handleIdentityUpdateHandle(e echo.Context) error {
 	}
 
 	s.evtman.AddEvent(context.TODO(), &events.XRPCStreamEvent{
-		RepoHandle: &atproto.SyncSubscribeRepos_Handle{
-			Did:    repo.Repo.Did,
-			Handle: req.Handle,
-			Seq:    time.Now().UnixMicro(), // TODO: no
-			Time:   time.Now().Format(util.ISO8601),
-		},
-	})
-
-	s.evtman.AddEvent(context.TODO(), &events.XRPCStreamEvent{
 		RepoIdentity: &atproto.SyncSubscribeRepos_Identity{
 			Did:    repo.Repo.Did,
 			Handle: to.StringPtr(req.Handle),

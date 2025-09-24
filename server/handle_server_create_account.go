@@ -191,15 +191,6 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		}
 
 		s.evtman.AddEvent(context.TODO(), &events.XRPCStreamEvent{
-			RepoHandle: &atproto.SyncSubscribeRepos_Handle{
-				Did:    urepo.Did,
-				Handle: request.Handle,
-				Seq:    time.Now().UnixMicro(), // TODO: no
-				Time:   time.Now().Format(util.ISO8601),
-			},
-		})
-
-		s.evtman.AddEvent(context.TODO(), &events.XRPCStreamEvent{
 			RepoIdentity: &atproto.SyncSubscribeRepos_Identity{
 				Did:    urepo.Did,
 				Handle: to.StringPtr(request.Handle),
