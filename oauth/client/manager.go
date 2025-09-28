@@ -270,7 +270,7 @@ func validateAndParseMetadata(clientId string, b []byte) (*Metadata, error) {
 			return nil, errors.New("private_key_jwt auth method requires jwks or jwks_uri")
 		}
 
-		if metadata.JWKS != nil && len(*metadata.JWKS) == 0 {
+		if metadata.JWKS != nil && len(metadata.JWKS.Keys) == 0 {
 			return nil, errors.New("private_key_jwt auth method requires atleast one key in jwks")
 		}
 
