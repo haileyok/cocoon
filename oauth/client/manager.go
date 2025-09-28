@@ -57,13 +57,19 @@ func (cm *Manager) GetClient(ctx context.Context, clientId string) (*Client, err
 	}
 
 	var jwks jwk.Key
-	if metadata.JWKS != nil {
+	if metadata.JWKS != nil && len(metadata.JWKS.Keys) > 0 {
 		// TODO: this is kinda bad but whatever for now. there could obviously be more than one jwk, and we need to
 		// make sure we use the right one
-		k, err := helpers.ParseJWKFromBytes((*metadata.JWKS)[0])
+		b, err := json.Marshal(metadata.JWKS.Keys[0])
 		if err != nil {
 			return nil, err
 		}
+
+		k, err := helpers.ParseJWKFromBytes(b)
+		if err != nil {
+			return nil, err
+		}
+
 		jwks = k
 	} else if metadata.JWKSURI != nil {
 		maybeJwks, err := cm.getClientJwks(ctx, clientId, *metadata.JWKSURI)
@@ -72,6 +78,8 @@ func (cm *Manager) GetClient(ctx context.Context, clientId string) (*Client, err
 		}
 
 		jwks = maybeJwks
+	} else {
+		return nil, fmt.Errorf("no valid jwks found in oauth client metadata")
 	}
 
 	return &Client{
@@ -262,7 +270,7 @@ func validateAndParseMetadata(clientId string, b []byte) (*Metadata, error) {
 			return nil, errors.New("private_key_jwt auth method requires jwks or jwks_uri")
 		}
 
-		if metadata.JWKS != nil && len(*metadata.JWKS) == 0 {
+		if metadata.JWKS != nil && len(metadata.JWKS.Keys) == 0 {
 			return nil, errors.New("private_key_jwt auth method requires atleast one key in jwks")
 		}
 
