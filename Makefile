@@ -40,3 +40,7 @@ check: ## Compile everything, checking syntax (does not output binaries)
 
 .env:
 	if [ ! -f ".env" ]; then cp example.dev.env .env; fi
+
+.PHONY: docker-build
+docker-build:
+	docker build -t cocoon .
