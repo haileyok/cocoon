@@ -284,7 +284,7 @@ func New(args *Args) (*Server, error) {
 		IdleTimeout:  5 * time.Minute,
 	}
 
-	gdb, err := gorm.Open(sqlite.Open("cocoon.db"), &gorm.Config{})
+	gdb, err := gorm.Open(sqlite.Open(args.DbName), &gorm.Config{})
 	if err != nil {
 		return nil, err
 	}
