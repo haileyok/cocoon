@@ -4,9 +4,9 @@ FROM golang:1.25.1-bookworm AS build-env
 ADD . /dockerbuild
 WORKDIR /dockerbuild
 
-RUN GIT_VERSION=$(git describe --tags --long --always) && \
+RUN GIT_VERSION=$(git describe --tags --long --always || echo "dev-local") && \
     go mod tidy && \
-    go build -o cocoon ./cmd/cocoon
+    go build -ldflags "-X main.Version=$GIT_VERSION" -o cocoon ./cmd/cocoon
 
 ### Run stage
 FROM debian:bookworm-slim AS run
