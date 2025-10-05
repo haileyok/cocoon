@@ -387,7 +387,7 @@ func New(args *Args) (*Server, error) {
 
 	// TODO: should validate these args
 	if args.SmtpUser == "" || args.SmtpPass == "" || args.SmtpHost == "" || args.SmtpPort == "" || args.SmtpEmail == "" || args.SmtpName == "" {
-		args.Logger.Warn("not enough smpt args were provided. mailing will not work for your server.")
+		args.Logger.Warn("not enough smtp args were provided. mailing will not work for your server.")
 	} else {
 		mail := mailyak.New(args.SmtpHost+":"+args.SmtpPort, smtp.PlainAuth("", args.SmtpUser, args.SmtpPass, args.SmtpHost))
 		mail.From(s.config.SmtpEmail)
