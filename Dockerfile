@@ -18,7 +18,7 @@ WORKDIR /
 RUN mkdir -p data/cocoon
 COPY --from=build-env /dockerbuild/cocoon /
 
-CMD ["/cocoon"]
+CMD ["/cocoon", "run"]
 
 LABEL org.opencontainers.image.source=https://github.com/haileyok/cocoon
 LABEL org.opencontainers.image.description="Cocoon ATProto PDS"
