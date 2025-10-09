@@ -4,7 +4,7 @@ import (
 	"strconv"
 
 	"github.com/Azure/go-autorest/autorest/to"
-	"github.com/bluesky-social/indigo/atproto/data"
+	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
@@ -100,7 +100,7 @@ func (s *Server) handleListRecords(e echo.Context) error {
 
 	items := []ComAtprotoRepoListRecordsRecordItem{}
 	for _, r := range records {
-		val, err := data.UnmarshalCBOR(r.Value)
+		val, err := atdata.UnmarshalCBOR(r.Value)
 		if err != nil {
 			return err
 		}
