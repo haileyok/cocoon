@@ -10,7 +10,7 @@ import (
 
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/bluesky-social/indigo/api/atproto"
-	"github.com/bluesky-social/indigo/atproto/data"
+	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/bluesky-social/indigo/carstore"
 	"github.com/bluesky-social/indigo/events"
@@ -72,7 +72,7 @@ type FirehoseOp struct {
 }
 
 func (mm *MarshalableMap) MarshalCBOR(w io.Writer) error {
-	data, err := data.MarshalCBOR(*mm)
+	data, err := atdata.MarshalCBOR(*mm)
 	if err != nil {
 		return err
 	}
@@ -133,7 +133,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 			if err != nil {
 				return nil, err
 			}
-			out, err := data.UnmarshalJSON(j)
+			out, err := atdata.UnmarshalJSON(j)
 			if err != nil {
 				return nil, err
 			}
@@ -148,7 +148,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 			if err != nil {
 				return nil, err
 			}
-			d, err := data.MarshalCBOR(mm)
+			d, err := atdata.MarshalCBOR(mm)
 			if err != nil {
 				return nil, err
 			}
@@ -189,7 +189,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 			if err != nil {
 				return nil, err
 			}
-			out, err := data.UnmarshalJSON(j)
+			out, err := atdata.UnmarshalJSON(j)
 			if err != nil {
 				return nil, err
 			}
@@ -198,7 +198,7 @@ func (rm *RepoMan) applyWrites(urepo models.Repo, writes []Op, swapCommit *strin
 			if err != nil {
 				return nil, err
 			}
-			d, err := data.MarshalCBOR(mm)
+			d, err := atdata.MarshalCBOR(mm)
 			if err != nil {
 				return nil, err
 			}
@@ -415,7 +415,7 @@ func (rm *RepoMan) decrementBlobRefs(urepo models.Repo, cbor []byte) ([]cid.Cid,
 func getBlobCidsFromCbor(cbor []byte) ([]cid.Cid, error) {
 	var cids []cid.Cid
 
-	decoded, err := data.UnmarshalCBOR(cbor)
+	decoded, err := atdata.UnmarshalCBOR(cbor)
 	if err != nil {
 		return nil, fmt.Errorf("error unmarshaling cbor: %w", err)
 	}

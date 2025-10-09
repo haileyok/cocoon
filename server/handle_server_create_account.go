@@ -9,7 +9,7 @@ import (
 
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/bluesky-social/indigo/api/atproto"
-	"github.com/bluesky-social/indigo/atproto/crypto"
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/bluesky-social/indigo/events"
 	"github.com/bluesky-social/indigo/repo"
@@ -125,7 +125,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 
 	// TODO: unsupported domains
 
-	k, err := crypto.GeneratePrivateKeyK256()
+	k, err := atcrypto.GeneratePrivateKeyK256()
 	if err != nil {
 		s.logger.Error("error creating signing key", "endpoint", "com.atproto.server.createAccount", "error", err)
 		return helpers.ServerError(e, nil)

@@ -7,7 +7,7 @@ import (
 
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/bluesky-social/indigo/api/atproto"
-	"github.com/bluesky-social/indigo/atproto/crypto"
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/events"
 	"github.com/bluesky-social/indigo/util"
 	"github.com/haileyok/cocoon/identity"
@@ -66,7 +66,7 @@ func (s *Server) handleIdentityUpdateHandle(e echo.Context) error {
 			Prev:                &latest.Cid,
 		}
 
-		k, err := crypto.ParsePrivateBytesK256(repo.SigningKey)
+		k, err := atcrypto.ParsePrivateBytesK256(repo.SigningKey)
 		if err != nil {
 			s.logger.Error("error parsing signing key", "error", err)
 			return helpers.ServerError(e, nil)

@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/to"
-	"github.com/bluesky-social/indigo/atproto/crypto"
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
 )
 
 type Repo struct {
@@ -28,7 +28,7 @@ type Repo struct {
 }
 
 func (r *Repo) SignFor(ctx context.Context, did string, msg []byte) ([]byte, error) {
-	k, err := crypto.ParsePrivateBytesK256(r.SigningKey)
+	k, err := atcrypto.ParsePrivateBytesK256(r.SigningKey)
 	if err != nil {
 		return nil, err
 	}

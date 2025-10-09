@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/bluesky-social/indigo/atproto/crypto"
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/server"
@@ -217,7 +217,7 @@ var runCreateRotationKey = &cli.Command{
 		},
 	},
 	Action: func(cmd *cli.Context) error {
-		key, err := crypto.GeneratePrivateKeyK256()
+		key, err := atcrypto.GeneratePrivateKeyK256()
 		if err != nil {
 			return err
 		}

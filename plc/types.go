@@ -3,7 +3,7 @@ package plc
 import (
 	"encoding/json"
 
-	"github.com/bluesky-social/indigo/atproto/data"
+	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/haileyok/cocoon/identity"
 	cbg "github.com/whyrusleeping/cbor-gen"
 )
@@ -38,7 +38,7 @@ func (po *Operation) MarshalCBOR() ([]byte, error) {
 		return nil, err
 	}
 
-	b, err = data.MarshalCBOR(m)
+	b, err = atdata.MarshalCBOR(m)
 	if err != nil {
 		return nil, err
 	}

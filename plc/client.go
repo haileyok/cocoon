@@ -13,7 +13,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/bluesky-social/indigo/atproto/crypto"
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/util"
 	"github.com/haileyok/cocoon/identity"
 )
@@ -22,7 +22,7 @@ type Client struct {
 	h           *http.Client
 	service     string
 	pdsHostname string
-	rotationKey *crypto.PrivateKeyK256
+	rotationKey *atcrypto.PrivateKeyK256
 }
 
 type ClientArgs struct {
@@ -41,7 +41,7 @@ func NewClient(args *ClientArgs) (*Client, error) {
 		args.H = util.RobustHTTPClient()
 	}
 
-	rk, err := crypto.ParsePrivateBytesK256([]byte(args.RotationKey))
+	rk, err := atcrypto.ParsePrivateBytesK256([]byte(args.RotationKey))
 	if err != nil {
 		return nil, err
 	}
@@ -54,7 +54,7 @@ func NewClient(args *ClientArgs) (*Client, error) {
 	}, nil
 }
 
-func (c *Client) CreateDID(sigkey *crypto.PrivateKeyK256, recovery string, handle string) (string, *Operation, error) {
+func (c *Client) CreateDID(sigkey *atcrypto.PrivateKeyK256, recovery string, handle string) (string, *Operation, error) {
 	pubsigkey, err := sigkey.PublicKey()
 	if err != nil {
 		return "", nil, err
@@ -107,7 +107,7 @@ func (c *Client) CreateDID(sigkey *crypto.PrivateKeyK256, recovery string, handl
 	return did, &op, nil
 }
 
-func (c *Client) SignOp(sigkey *crypto.PrivateKeyK256, op *Operation) error {
+func (c *Client) SignOp(sigkey *atcrypto.PrivateKeyK256, op *Operation) error {
 	b, err := op.MarshalCBOR()
 	if err != nil {
 		return err

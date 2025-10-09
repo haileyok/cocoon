@@ -1,7 +1,7 @@
 package server
 
 import (
-	"github.com/bluesky-social/indigo/atproto/data"
+	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/haileyok/cocoon/models"
 	"github.com/labstack/echo/v4"
@@ -37,7 +37,7 @@ func (s *Server) handleRepoGetRecord(e echo.Context) error {
 		return err
 	}
 
-	val, err := data.UnmarshalCBOR(record.Value)
+	val, err := atdata.UnmarshalCBOR(record.Value)
 	if err != nil {
 		return s.handleProxy(e) // TODO: this should be getting handled like...if we don't find it in the db. why doesn't it throw error up there?
 	}
