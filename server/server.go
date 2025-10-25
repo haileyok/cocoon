@@ -77,6 +77,9 @@ type Server struct {
 	passport      *identity.Passport
 	fallbackProxy string
 
+	lastRequestCrawl time.Time
+	requestCrawlMu   sync.Mutex
+
 	dbName   string
 	s3Config *S3Config
 }
@@ -518,16 +521,44 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	go s.backupRoutine()
 
-	for _, relay := range s.config.Relays {
-		cli := xrpc.Client{Host: relay}
-		atproto.SyncRequestCrawl(ctx, &cli, &atproto.SyncRequestCrawl_Input{
-			Hostname: s.config.Hostname,
-		})
-	}
+	go func() {
+		if err := s.requestCrawl(ctx); err != nil {
+			s.logger.Error("error requesting crawls", "err", err)
+		}
+	}()
 
 	<-ctx.Done()
 
 	fmt.Println("shut down")
+
+	return nil
+}
+
+func (s *Server) requestCrawl(ctx context.Context) error {
+	logger := s.logger.With("component", "request-crawl")
+	s.requestCrawlMu.Lock()
+	defer s.requestCrawlMu.Unlock()
+
+	logger.Info("requesting crawl with configured relays")
+
+	if time.Now().Sub(s.lastRequestCrawl) <= 1*time.Minute {
+		return fmt.Errorf("a crawl request has already been made within the last minute")
+	}
+
+	for _, relay := range s.config.Relays {
+		logger := logger.With("relay", relay)
+		logger.Info("requesting crawl from relay")
+		cli := xrpc.Client{Host: relay}
+		if err := atproto.SyncRequestCrawl(ctx, &cli, &atproto.SyncRequestCrawl_Input{
+			Hostname: s.config.Hostname,
+		}); err != nil {
+			logger.Error("error requesting crawl", "err", err)
+		} else {
+			logger.Info("crawl requested successfully")
+		}
+	}
+
+	s.lastRequestCrawl = time.Now()
 
 	return nil
 }
