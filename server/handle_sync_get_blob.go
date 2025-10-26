@@ -64,7 +64,12 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 		for _, p := range parts {
 			buf.Write(p.Data)
 		}
-	} else if blob.Storage == "s3" && s.s3Config != nil && s.s3Config.BlobstoreEnabled {
+	} else if blob.Storage == "s3" {
+		if  !(s.s3Config != nil && s.s3Config.BlobstoreEnabled) {
+			s.logger.Error("s3 storage disabled")
+			return helpers.ServerError(e, nil)
+		}
+
 		config := &aws.Config{
 			Region:      aws.String(s.s3Config.Region),
 			Credentials: credentials.NewStaticCredentials(s.s3Config.AccessKey, s.s3Config.SecretKey, ""),
