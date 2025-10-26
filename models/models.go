@@ -106,7 +106,7 @@ type Blob struct {
 	Did       string `gorm:"index;index:idx_blob_did_cid"`
 	Cid       []byte `gorm:"index;index:idx_blob_did_cid"`
 	RefCount  int
-	Storage   string `gorm:"default:sqlite;check:storage in ('sqlite', 's3')"`
+	Storage   string `gorm:"default:sqlite"`
 }
 
 type BlobPart struct {
