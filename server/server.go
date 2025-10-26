@@ -52,12 +52,13 @@ const (
 )
 
 type S3Config struct {
-	BackupsEnabled bool
-	Endpoint       string
-	Region         string
-	Bucket         string
-	AccessKey      string
-	SecretKey      string
+	BackupsEnabled   bool
+	BlobstoreEnabled bool
+	Endpoint         string
+	Region           string
+	Bucket           string
+	AccessKey        string
+	SecretKey        string
 }
 
 type Server struct {
