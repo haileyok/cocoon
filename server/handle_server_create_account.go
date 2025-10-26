@@ -10,7 +10,6 @@ import (
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
-	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/bluesky-social/indigo/events"
 	"github.com/bluesky-social/indigo/repo"
 	"github.com/bluesky-social/indigo/util"
@@ -38,22 +37,6 @@ type ComAtprotoServerCreateAccountResponse struct {
 
 func (s *Server) handleCreateAccount(e echo.Context) error {
 	var request ComAtprotoServerCreateAccountRequest
-
-	var signupDid string
-	customDidHeader := e.Request().Header.Get("authorization")
-	if customDidHeader != "" {
-		pts := strings.Split(customDidHeader, " ")
-		if len(pts) != 2 {
-			return helpers.InputError(e, to.StringPtr("InvalidDid"))
-		}
-
-		_, err := syntax.ParseDID(pts[1])
-		if err != nil {
-			return helpers.InputError(e, to.StringPtr("InvalidDid"))
-		}
-
-		signupDid = pts[1]
-	}
 
 	if err := e.Bind(&request); err != nil {
 		s.logger.Error("error receiving request", "endpoint", "com.atproto.server.createAccount", "error", err)
@@ -85,18 +68,38 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 			}
 		}
 	}
+	
+	var signupDid string
+	if request.Did != nil {
+		signupDid = *request.Did;
+		
+		token := strings.TrimSpace(strings.Replace(e.Request().Header.Get("authorization"), "Bearer ", "", 1))
+		if token == "" {
+			return helpers.UnauthorizedError(e, to.StringPtr("must authenticate to use an existing did"))
+		}
+		authDid, err := s.validateServiceAuth(e.Request().Context(), token, "com.atproto.server.createAccount")
+
+		if err != nil {
+			s.logger.Warn("error validating authorization token", "endpoint", "com.atproto.server.createAccount", "error", err)
+			return helpers.UnauthorizedError(e, to.StringPtr("invalid authorization token"))
+		}
+
+		if authDid != signupDid {
+			return helpers.ForbiddenError(e, to.StringPtr("auth did did not match signup did"))
+		}
+	}
 
 	// see if the handle is already taken
-	_, err := s.getActorByHandle(request.Handle)
+	actor, err := s.getActorByHandle(request.Handle)
 	if err != nil && err != gorm.ErrRecordNotFound {
 		s.logger.Error("error looking up handle in db", "endpoint", "com.atproto.server.createAccount", "error", err)
 		return helpers.ServerError(e, nil)
 	}
-	if err == nil {
+	if err == nil && actor.Did != signupDid {
 		return helpers.InputError(e, to.StringPtr("HandleNotAvailable"))
 	}
 
-	if did, err := s.passport.ResolveHandle(e.Request().Context(), request.Handle); err == nil && did != "" {
+	if did, err := s.passport.ResolveHandle(e.Request().Context(), request.Handle); err == nil && did != signupDid {
 		return helpers.InputError(e, to.StringPtr("HandleNotAvailable"))
 	}
 
@@ -114,12 +117,12 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 	}
 
 	// see if the email is already taken
-	_, err = s.getRepoByEmail(request.Email)
+	existingRepo, err := s.getRepoByEmail(request.Email)
 	if err != nil && err != gorm.ErrRecordNotFound {
 		s.logger.Error("error looking up email in db", "endpoint", "com.atproto.server.createAccount", "error", err)
 		return helpers.ServerError(e, nil)
 	}
-	if err == nil {
+	if err == nil && existingRepo.Did != signupDid {
 		return helpers.InputError(e, to.StringPtr("EmailNotAvailable"))
 	}
 
@@ -160,22 +163,29 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		SigningKey:            k.Bytes(),
 	}
 
-	actor := models.Actor{
-		Did:    signupDid,
-		Handle: request.Handle,
+	if actor == nil {
+		actor = &models.Actor{
+			Did:    signupDid,
+			Handle: request.Handle,
+		}
+
+		if err := s.db.Create(&urepo, nil).Error; err != nil {
+			s.logger.Error("error inserting new repo", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+	
+		if err := s.db.Create(&actor, nil).Error; err != nil {
+			s.logger.Error("error inserting new actor", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+	} else {
+		if err := s.db.Save(&actor, nil).Error; err != nil {
+			s.logger.Error("error inserting new actor", "error", err)
+			return helpers.ServerError(e, nil)
+		}
 	}
 
-	if err := s.db.Create(&urepo, nil).Error; err != nil {
-		s.logger.Error("error inserting new repo", "error", err)
-		return helpers.ServerError(e, nil)
-	}
-
-	if err := s.db.Create(&actor, nil).Error; err != nil {
-		s.logger.Error("error inserting new actor", "error", err)
-		return helpers.ServerError(e, nil)
-	}
-
-	if customDidHeader == "" {
+	if request.Did == nil || *request.Did == "" {
 		bs := s.getBlockstore(signupDid)
 		r := repo.NewRepo(context.TODO(), signupDid, bs)
 
