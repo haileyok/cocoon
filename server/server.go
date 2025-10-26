@@ -423,7 +423,6 @@ func (s *Server) addRoutes() {
 	// public
 	s.echo.GET("/xrpc/com.atproto.identity.resolveHandle", s.handleResolveHandle)
 	s.echo.POST("/xrpc/com.atproto.server.createAccount", s.handleCreateAccount)
-	s.echo.POST("/xrpc/com.atproto.server.createAccount", s.handleCreateAccount)
 	s.echo.POST("/xrpc/com.atproto.server.createSession", s.handleCreateSession)
 	s.echo.GET("/xrpc/com.atproto.server.describeServer", s.handleDescribeServer)
 
