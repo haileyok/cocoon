@@ -8,6 +8,14 @@ import (
 	cbg "github.com/whyrusleeping/cbor-gen"
 )
 
+
+type DidCredentials struct {
+	VerificationMethods map[string]string                    `json:"verificationMethods"`
+	RotationKeys        []string                             `json:"rotationKeys"`
+	AlsoKnownAs         []string                             `json:"alsoKnownAs"`
+	Services            map[string]identity.OperationService `json:"services"`
+}
+
 type Operation struct {
 	Type                string                               `json:"type"`
 	VerificationMethods map[string]string                    `json:"verificationMethods"`
