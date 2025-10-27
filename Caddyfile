@@ -1,14 +1,8 @@
-# Automatic HTTPS for your hostname
-# IMPORTANT: Set COCOON_HOSTNAME in your .env file to your domain
-
 {$COCOON_HOSTNAME} {
-	# Reverse proxy to Cocoon PDS
 	reverse_proxy localhost:8080
 
-	# Enable compression
 	encode gzip
 
-	# Logging
 	log {
 		output file /data/access.log
 		format json
