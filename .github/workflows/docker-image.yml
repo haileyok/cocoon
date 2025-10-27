@@ -2,7 +2,9 @@ name: Docker image
 
 on:
   workflow_dispatch:
-  push: main
+  push:
+    branches:
+      - main
 
 env:
   REGISTRY: ghcr.io
