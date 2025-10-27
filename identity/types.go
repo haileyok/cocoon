@@ -4,7 +4,7 @@ type DidDoc struct {
 	Context             []string                   `json:"@context"`
 	Id                  string                     `json:"id"`
 	AlsoKnownAs         []string                   `json:"alsoKnownAs"`
-	VerificationMethods []DidDocVerificationMethod `json:"verificationMethods"`
+	VerificationMethods []DidDocVerificationMethod `json:"verificationMethod"`
 	Service             []DidDocService            `json:"service"`
 }
 

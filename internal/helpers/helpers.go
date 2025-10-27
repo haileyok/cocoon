@@ -32,6 +32,22 @@ func ServerError(e echo.Context, suffix *string) error {
 	return genericError(e, 400, msg)
 }
 
+func UnauthorizedError(e echo.Context, suffix *string) error {
+	msg := "Unauthorized"
+	if suffix != nil {
+		msg += ". " + *suffix
+	}
+	return genericError(e, 401, msg)
+}
+
+func ForbiddenError(e echo.Context, suffix *string) error {
+	msg := "Forbidden"
+	if suffix != nil {
+		msg += ". " + *suffix
+	}
+	return genericError(e, 403, msg)
+}
+
 func InvalidTokenError(e echo.Context) error {
 	return InputError(e, to.StringPtr("InvalidToken"))
 }
