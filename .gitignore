@@ -4,3 +4,5 @@
 *.key
 *.secret
 .DS_Store
+data/
+keys/
