@@ -1,10 +1,9 @@
 #!/bin/sh
 set -e
 
-# Create keys directory if it doesn't exist
 mkdir -p /keys
+mkdir -p /data/cocoon
 
-# Generate rotation key if it doesn't exist
 if [ ! -f /keys/rotation.key ]; then
     echo "Generating rotation key..."
     /cocoon create-rotation-key --out /keys/rotation.key 2>/dev/null || true
@@ -18,7 +17,6 @@ else
     echo "✓ Rotation key already exists"
 fi
 
-# Generate JWK if it doesn't exist
 if [ ! -f /keys/jwk.key ]; then
     echo "Generating JWK..."
     /cocoon create-private-jwk --out /keys/jwk.key 2>/dev/null || true
@@ -32,4 +30,5 @@ else
     echo "✓ JWK already exists"
 fi
 
-echo "Key initialization complete!"
+echo ""
+echo "✓ Key initialization complete!"

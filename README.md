@@ -55,7 +55,21 @@ Cocoon is a PDS implementation in Go. It is highly experimental, and is not read
    docker-compose up -d
    ```
 
-5. **Check the logs**
+5. **Get your invite code**
+
+   On first run, an invite code is automatically created. View it with:
+   ```bash
+   docker-compose logs create-invite
+   ```
+
+   Or check the saved file:
+   ```bash
+   cat keys/initial-invite-code.txt
+   ```
+
+   **IMPORTANT**: Save this invite code! You'll need it to create your first account.
+
+6. **Monitor the services**
    ```bash
    docker-compose logs -f
    ```
@@ -66,6 +80,7 @@ The Docker Compose setup includes:
 
 - **init-keys**: Automatically generates cryptographic keys (rotation key and JWK) on first run
 - **cocoon**: The main PDS service running on port 8080
+- **create-invite**: Automatically creates an initial invite code after Cocoon starts (first run only)
 - **caddy**: Reverse proxy with automatic HTTPS via Let's Encrypt
 
 ### Data Persistence
@@ -73,6 +88,9 @@ The Docker Compose setup includes:
 The following directories will be created automatically:
 
 - `./keys/` - Cryptographic keys (generated automatically)
+  - `rotation.key` - PDS rotation key
+  - `jwk.key` - JWK private key
+  - `initial-invite-code.txt` - Your first invite code (first run only)
 - `./data/` - SQLite database and blockstore
 - Docker volumes for Caddy configuration and certificates
 
