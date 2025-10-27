@@ -1,9 +1,140 @@
 # Cocoon
 
 > [!WARNING]
-You should not use this PDS. You should not rely on this code as a reference for a PDS implementation. You should not trust this code. Using this PDS implementation may result in data loss, corruption, etc.
+I migrated and have been running my main account on this PDS for months now without issue, however, I am still not responsible if things go awry, particularly during account migration. Please use caution.
 
 Cocoon is a PDS implementation in Go. It is highly experimental, and is not ready for any production use.
+
+## Quick Start with Docker Compose
+
+### Prerequisites
+
+- Docker and Docker Compose installed
+- A domain name pointing to your server (for automatic HTTPS)
+- Ports 80 and 443 open in i.e. UFW
+
+### Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/haileyok/cocoon.git
+   cd cocoon
+   ```
+
+2. **Create your configuration file**
+   ```bash
+   cp .env.example .env
+   ```
+
+3. **Edit `.env` with your settings**
+
+   Required settings:
+   ```bash
+   COCOON_DID="did:web:your-domain.com"
+   COCOON_HOSTNAME="your-domain.com"
+   COCOON_CONTACT_EMAIL="you@example.com"
+   COCOON_RELAYS="https://bsky.network"
+
+   # Generate with: openssl rand -hex 16
+   COCOON_ADMIN_PASSWORD="your-secure-password"
+
+   # Generate with: openssl rand -hex 32
+   COCOON_SESSION_SECRET="your-session-secret"
+   ```
+
+4. **Start the services**
+   ```bash
+   # Pull pre-built image from GitHub Container Registry
+   docker-compose pull
+   docker-compose up -d
+   ```
+
+   Or build locally:
+   ```bash
+   docker-compose build
+   docker-compose up -d
+   ```
+
+5. **Get your invite code**
+
+   On first run, an invite code is automatically created. View it with:
+   ```bash
+   docker-compose logs create-invite
+   ```
+
+   Or check the saved file:
+   ```bash
+   cat keys/initial-invite-code.txt
+   ```
+
+   **IMPORTANT**: Save this invite code! You'll need it to create your first account.
+
+6. **Monitor the services**
+   ```bash
+   docker-compose logs -f
+   ```
+
+### What Gets Set Up
+
+The Docker Compose setup includes:
+
+- **init-keys**: Automatically generates cryptographic keys (rotation key and JWK) on first run
+- **cocoon**: The main PDS service running on port 8080
+- **create-invite**: Automatically creates an initial invite code after Cocoon starts (first run only)
+- **caddy**: Reverse proxy with automatic HTTPS via Let's Encrypt
+
+### Data Persistence
+
+The following directories will be created automatically:
+
+- `./keys/` - Cryptographic keys (generated automatically)
+  - `rotation.key` - PDS rotation key
+  - `jwk.key` - JWK private key
+  - `initial-invite-code.txt` - Your first invite code (first run only)
+- `./data/` - SQLite database and blockstore
+- Docker volumes for Caddy configuration and certificates
+
+### Optional Configuration
+
+#### SMTP Email Settings
+```bash
+COCOON_SMTP_USER="your-smtp-username"
+COCOON_SMTP_PASS="your-smtp-password"
+COCOON_SMTP_HOST="smtp.example.com"
+COCOON_SMTP_PORT="587"
+COCOON_SMTP_EMAIL="noreply@example.com"
+COCOON_SMTP_NAME="Cocoon PDS"
+```
+
+#### S3 Storage
+```bash
+COCOON_S3_BACKUPS_ENABLED=true
+COCOON_S3_BLOBSTORE_ENABLED=true
+COCOON_S3_REGION="us-east-1"
+COCOON_S3_BUCKET="your-bucket"
+COCOON_S3_ENDPOINT="https://s3.amazonaws.com"
+COCOON_S3_ACCESS_KEY="your-access-key"
+COCOON_S3_SECRET_KEY="your-secret-key"
+```
+
+### Management Commands
+
+Create an invite code:
+```bash
+docker exec cocoon-pds /cocoon create-invite-code --uses 1
+```
+
+Reset a user's password:
+```bash
+docker exec cocoon-pds /cocoon reset-password --did "did:plc:xxx"
+```
+
+### Updating
+
+```bash
+docker-compose pull
+docker-compose up -d
+```
 
 ## Implemented Endpoints
 

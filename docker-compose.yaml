@@ -1,0 +1,125 @@
+version: '3.8'
+
+services:
+  init-keys:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/haileyok/cocoon:latest
+    container_name: cocoon-init-keys
+    volumes:
+      - ./keys:/keys
+      - ./data:/data/cocoon
+      - ./init-keys.sh:/init-keys.sh:ro
+    environment:
+      COCOON_DID: ${COCOON_DID}
+      COCOON_HOSTNAME: ${COCOON_HOSTNAME}
+      COCOON_ROTATION_KEY_PATH: /keys/rotation.key
+      COCOON_JWK_PATH: /keys/jwk.key
+      COCOON_CONTACT_EMAIL: ${COCOON_CONTACT_EMAIL}
+      COCOON_RELAYS: ${COCOON_RELAYS:-https://bsky.network}
+      COCOON_ADMIN_PASSWORD: ${COCOON_ADMIN_PASSWORD}
+    entrypoint: ["/bin/sh", "/init-keys.sh"]
+    restart: "no"
+
+  cocoon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/haileyok/cocoon:latest
+    container_name: cocoon-pds
+    network_mode: host
+    depends_on:
+      init-keys:
+        condition: service_completed_successfully
+    volumes:
+      - ./data:/data/cocoon
+      - ./keys/rotation.key:/keys/rotation.key:ro
+      - ./keys/jwk.key:/keys/jwk.key:ro
+    environment:
+      # Required settings
+      COCOON_DID: ${COCOON_DID}
+      COCOON_HOSTNAME: ${COCOON_HOSTNAME}
+      COCOON_ROTATION_KEY_PATH: /keys/rotation.key
+      COCOON_JWK_PATH: /keys/jwk.key
+      COCOON_CONTACT_EMAIL: ${COCOON_CONTACT_EMAIL}
+      COCOON_RELAYS: ${COCOON_RELAYS:-https://bsky.network}
+      COCOON_ADMIN_PASSWORD: ${COCOON_ADMIN_PASSWORD}
+      COCOON_SESSION_SECRET: ${COCOON_SESSION_SECRET}
+
+      # Server configuration
+      COCOON_ADDR: ":8080"
+      COCOON_DB_NAME: /data/cocoon/cocoon.db
+      COCOON_BLOCKSTORE_VARIANT: ${COCOON_BLOCKSTORE_VARIANT:-sqlite}
+
+      # Optional: SMTP settings for email
+      COCOON_SMTP_USER: ${COCOON_SMTP_USER:-}
+      COCOON_SMTP_PASS: ${COCOON_SMTP_PASS:-}
+      COCOON_SMTP_HOST: ${COCOON_SMTP_HOST:-}
+      COCOON_SMTP_PORT: ${COCOON_SMTP_PORT:-}
+      COCOON_SMTP_EMAIL: ${COCOON_SMTP_EMAIL:-}
+      COCOON_SMTP_NAME: ${COCOON_SMTP_NAME:-}
+
+      # Optional: S3 configuration
+      COCOON_S3_BACKUPS_ENABLED: ${COCOON_S3_BACKUPS_ENABLED:-false}
+      COCOON_S3_BLOBSTORE_ENABLED: ${COCOON_S3_BLOBSTORE_ENABLED:-false}
+      COCOON_S3_REGION: ${COCOON_S3_REGION:-}
+      COCOON_S3_BUCKET: ${COCOON_S3_BUCKET:-}
+      COCOON_S3_ENDPOINT: ${COCOON_S3_ENDPOINT:-}
+      COCOON_S3_ACCESS_KEY: ${COCOON_S3_ACCESS_KEY:-}
+      COCOON_S3_SECRET_KEY: ${COCOON_S3_SECRET_KEY:-}
+
+      # Optional: Fallback proxy
+      COCOON_FALLBACK_PROXY: ${COCOON_FALLBACK_PROXY:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/xrpc/_health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  create-invite:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/haileyok/cocoon:latest
+    container_name: cocoon-create-invite
+    network_mode: host
+    volumes:
+      - ./keys:/keys
+      - ./create-initial-invite.sh:/create-initial-invite.sh:ro
+    environment:
+      COCOON_DID: ${COCOON_DID}
+      COCOON_HOSTNAME: ${COCOON_HOSTNAME}
+      COCOON_ROTATION_KEY_PATH: /keys/rotation.key
+      COCOON_JWK_PATH: /keys/jwk.key
+      COCOON_CONTACT_EMAIL: ${COCOON_CONTACT_EMAIL}
+      COCOON_RELAYS: ${COCOON_RELAYS:-https://bsky.network}
+      COCOON_ADMIN_PASSWORD: ${COCOON_ADMIN_PASSWORD}
+      COCOON_DB_NAME: /data/cocoon/cocoon.db
+    depends_on:
+      - init-keys
+    entrypoint: ["/bin/sh", "/create-initial-invite.sh"]
+    restart: "no"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: cocoon-caddy
+    network_mode: host
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+    environment:
+      COCOON_HOSTNAME: ${COCOON_HOSTNAME}
+      CADDY_ACME_EMAIL: ${COCOON_CONTACT_EMAIL:-}
+
+volumes:
+  data:
+    driver: local
+  caddy_data:
+    driver: local
+  caddy_config:
+    driver: local

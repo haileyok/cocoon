@@ -1,0 +1,10 @@
+{$COCOON_HOSTNAME} {
+	reverse_proxy localhost:8080
+
+	encode gzip
+
+	log {
+		output file /data/access.log
+		format json
+	}
+}
