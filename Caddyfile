@@ -1,0 +1,19 @@
+{
+	# Global options
+	email {$CADDY_ACME_EMAIL}
+}
+
+# Automatic HTTPS for your hostname
+{$COCOON_HOSTNAME} {
+	# Reverse proxy to Cocoon PDS
+	reverse_proxy localhost:8080
+
+	# Enable compression
+	encode gzip
+
+	# Logging
+	log {
+		output file /data/access.log
+		format json
+	}
+}
