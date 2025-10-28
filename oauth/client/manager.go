@@ -207,6 +207,16 @@ func validateAndParseMetadata(clientId string, b []byte) (*Metadata, error) {
 		return nil, fmt.Errorf("error unmarshaling metadata: %w", err)
 	}
 
+	if metadata.ClientURI == "" {
+		u, err := url.Parse(metadata.ClientID)
+		if err != nil {
+			return nil, fmt.Errorf("unable to parse client id: %w", err)
+		}
+		u.RawPath = ""
+		u.RawQuery = ""
+		metadata.ClientURI = fmt.Sprintf(u.String())
+	}
+
 	u, err := url.Parse(metadata.ClientURI)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse client uri: %w", err)
