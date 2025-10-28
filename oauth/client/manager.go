@@ -57,29 +57,32 @@ func (cm *Manager) GetClient(ctx context.Context, clientId string) (*Client, err
 	}
 
 	var jwks jwk.Key
-	if metadata.JWKS != nil && len(metadata.JWKS.Keys) > 0 {
-		// TODO: this is kinda bad but whatever for now. there could obviously be more than one jwk, and we need to
-		// make sure we use the right one
-		b, err := json.Marshal(metadata.JWKS.Keys[0])
-		if err != nil {
-			return nil, err
-		}
+	if metadata.TokenEndpointAuthMethod == "private_key_jwt" {
+		if metadata.JWKS != nil && len(metadata.JWKS.Keys) > 0 {
+			// TODO: this is kinda bad but whatever for now. there could obviously be more than one jwk, and we need to
+			// make sure we use the right one
+			b, err := json.Marshal(metadata.JWKS.Keys[0])
+			if err != nil {
+				return nil, err
+			}
 
-		k, err := helpers.ParseJWKFromBytes(b)
-		if err != nil {
-			return nil, err
-		}
+			k, err := helpers.ParseJWKFromBytes(b)
+			if err != nil {
+				return nil, err
+			}
 
-		jwks = k
-	} else if metadata.JWKSURI != nil {
-		maybeJwks, err := cm.getClientJwks(ctx, clientId, *metadata.JWKSURI)
-		if err != nil {
-			return nil, err
-		}
+			jwks = k
+		} else if metadata.JWKS != nil {
+		} else if metadata.JWKSURI != nil {
+			maybeJwks, err := cm.getClientJwks(ctx, clientId, *metadata.JWKSURI)
+			if err != nil {
+				return nil, err
+			}
 
-		jwks = maybeJwks
-	} else {
-		return nil, fmt.Errorf("no valid jwks found in oauth client metadata")
+			jwks = maybeJwks
+		} else {
+			return nil, fmt.Errorf("no valid jwks found in oauth client metadata")
+		}
 	}
 
 	return &Client{
@@ -349,15 +352,12 @@ func validateAndParseMetadata(clientId string, b []byte) (*Metadata, error) {
 			if u.Scheme != "http" {
 				return nil, fmt.Errorf("loopback redirect uri %s must use http", ruri)
 			}
-
-			break
 		case u.Scheme == "http":
 			return nil, errors.New("only loopbvack redirect uris are allowed to use the `http` scheme")
 		case u.Scheme == "https":
 			if isLocalHostname(u.Hostname()) {
 				return nil, fmt.Errorf("redirect uri %s's domain must not be a local hostname", ruri)
 			}
-			break
 		case strings.Contains(u.Scheme, "."):
 			if metadata.ApplicationType != "native" {
 				return nil, errors.New("private-use uri scheme redirect uris are only allowed for native apps")
