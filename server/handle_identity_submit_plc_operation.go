@@ -36,7 +36,7 @@ func (s *Server) handleSubmitPlcOperation(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
-	op := req.Operation;
+	op := req.Operation
 
 	k, err := atcrypto.ParsePrivateBytesK256(repo.SigningKey)
 	if err != nil {
@@ -77,9 +77,9 @@ func (s *Server) handleSubmitPlcOperation(e echo.Context) error {
 
 	s.evtman.AddEvent(context.TODO(), &events.XRPCStreamEvent{
 		RepoIdentity: &atproto.SyncSubscribeRepos_Identity{
-			Did:    repo.Repo.Did,
-			Seq:    time.Now().UnixMicro(), // TODO: no
-			Time:   time.Now().Format(util.ISO8601),
+			Did:  repo.Repo.Did,
+			Seq:  time.Now().UnixMicro(), // TODO: no
+			Time: time.Now().Format(util.ISO8601),
 		},
 	})
 
