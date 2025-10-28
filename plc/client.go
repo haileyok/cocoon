@@ -55,14 +55,41 @@ func NewClient(args *ClientArgs) (*Client, error) {
 }
 
 func (c *Client) CreateDID(sigkey *atcrypto.PrivateKeyK256, recovery string, handle string) (string, *Operation, error) {
-	pubsigkey, err := sigkey.PublicKey()
+	creds, err := c.CreateDidCredentials(sigkey, recovery, handle)
 	if err != nil {
 		return "", nil, err
 	}
 
-	pubrotkey, err := c.rotationKey.PublicKey()
+	op := Operation{
+		Type: "plc_operation",
+		VerificationMethods: creds.VerificationMethods,
+		RotationKeys: creds.RotationKeys,
+		AlsoKnownAs: creds.AlsoKnownAs,
+		Services: creds.Services,
+		Prev: nil,
+	}
+
+	if err := c.SignOp(sigkey, &op); err != nil {
+		return "", nil, err
+	}
+
+	did, err := DidFromOp(&op)
 	if err != nil {
 		return "", nil, err
+	}
+
+	return did, &op, nil
+}
+
+func (c *Client) CreateDidCredentials(sigkey *atcrypto.PrivateKeyK256, recovery string, handle string) (*DidCredentials, error) {
+	pubsigkey, err := sigkey.PublicKey()
+	if err != nil {
+		return nil, err
+	}
+
+	pubrotkey, err := c.rotationKey.PublicKey()
+	if err != nil {
+		return nil, err
 	}
 
 	// todo
@@ -77,8 +104,7 @@ func (c *Client) CreateDID(sigkey *atcrypto.PrivateKeyK256, recovery string, han
 		}(recovery)
 	}
 
-	op := Operation{
-		Type: "plc_operation",
+	creds := DidCredentials{
 		VerificationMethods: map[string]string{
 			"atproto": pubsigkey.DIDKey(),
 		},
@@ -92,19 +118,9 @@ func (c *Client) CreateDID(sigkey *atcrypto.PrivateKeyK256, recovery string, han
 				Endpoint: "https://" + c.pdsHostname,
 			},
 		},
-		Prev: nil,
 	}
 
-	if err := c.SignOp(sigkey, &op); err != nil {
-		return "", nil, err
-	}
-
-	did, err := DidFromOp(&op)
-	if err != nil {
-		return "", nil, err
-	}
-
-	return did, &op, nil
+	return &creds, nil
 }
 
 func (c *Client) SignOp(sigkey *atcrypto.PrivateKeyK256, op *Operation) error {

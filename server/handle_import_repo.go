@@ -87,7 +87,7 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 			Value:     b.RawData(),
 		}
 
-		if err := tx.Create(rec).Error; err != nil {
+		if err := tx.Save(rec).Error; err != nil {
 			return err
 		}
 
