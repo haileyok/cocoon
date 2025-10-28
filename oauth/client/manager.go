@@ -22,7 +22,7 @@ type Manager struct {
 	cli           *http.Client
 	logger        *slog.Logger
 	jwksCache     cache.Cache[string, jwk.Key]
-	metadataCache cache.Cache[string, Metadata]
+	metadataCache cache.Cache[string, *Metadata]
 }
 
 type ManagerArgs struct {
@@ -40,7 +40,7 @@ func NewManager(args ManagerArgs) *Manager {
 	}
 
 	jwksCache := cache.NewCache[string, jwk.Key]().WithLRU().WithMaxKeys(500).WithTTL(5 * time.Minute)
-	metadataCache := cache.NewCache[string, Metadata]().WithLRU().WithMaxKeys(500).WithTTL(5 * time.Minute)
+	metadataCache := cache.NewCache[string, *Metadata]().WithLRU().WithMaxKeys(500).WithTTL(5 * time.Minute)
 
 	return &Manager{
 		cli:           args.Cli,
@@ -92,7 +92,7 @@ func (cm *Manager) GetClient(ctx context.Context, clientId string) (*Client, err
 }
 
 func (cm *Manager) getClientMetadata(ctx context.Context, clientId string) (*Metadata, error) {
-	metadataCached, ok := cm.metadataCache.Get(clientId)
+	cached, ok := cm.metadataCache.Get(clientId)
 	if !ok {
 		req, err := http.NewRequestWithContext(ctx, "GET", clientId, nil)
 		if err != nil {
@@ -120,9 +120,11 @@ func (cm *Manager) getClientMetadata(ctx context.Context, clientId string) (*Met
 			return nil, err
 		}
 
+		cm.metadataCache.Set(clientId, validated, 10*time.Minute)
+
 		return validated, nil
 	} else {
-		return &metadataCached, nil
+		return cached, nil
 	}
 }
 
@@ -214,12 +216,16 @@ func validateAndParseMetadata(clientId string, b []byte) (*Metadata, error) {
 		}
 		u.RawPath = ""
 		u.RawQuery = ""
-		metadata.ClientURI = fmt.Sprintf(u.String())
+		metadata.ClientURI = u.String()
 	}
 
 	u, err := url.Parse(metadata.ClientURI)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse client uri: %w", err)
+	}
+
+	if metadata.ClientName == "" {
+		metadata.ClientName = metadata.ClientURI
 	}
 
 	if isLocalHostname(u.Hostname()) {
