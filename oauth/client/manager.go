@@ -213,7 +213,7 @@ func validateAndParseMetadata(clientId string, b []byte) (*Metadata, error) {
 	}
 
 	if isLocalHostname(u.Hostname()) {
-		return nil, errors.New("`client_uri` hostname is invalid")
+		return nil, fmt.Errorf("`client_uri` hostname is invalid: %s", u.Hostname())
 	}
 
 	if metadata.Scope == "" {
