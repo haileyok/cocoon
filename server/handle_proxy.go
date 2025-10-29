@@ -96,10 +96,23 @@ func (s *Server) handleProxy(e echo.Context) error {
 
 		encheader := strings.TrimRight(base64.RawURLEncoding.EncodeToString(hj), "=")
 
+		// When proxying app.bsky.feed.getFeed the token is actually issued for the
+		// underlying feed generator and the app view passes it on. This allows the
+		// getFeed implementation to pass in the desired lxm and aud for the token
+		// and then just delegate to the general proxying logic
+		lxm, proxyTokenLxmExists := e.Get("proxyTokenLxm").(string)
+		if !proxyTokenLxmExists || lxm == "" {
+			lxm = pts[2]
+		}
+		aud, proxyTokenAudExists := e.Get("proxyTokenAud").(string)
+		if !proxyTokenAudExists || aud == "" {
+			aud = svcDid
+		}
+
 		payload := map[string]any{
 			"iss": repo.Repo.Did,
 			"aud": svcDid,
-			"lxm": pts[2],
+			"lxm": lxm,
 			"jti": uuid.NewString(),
 			"exp": time.Now().Add(1 * time.Minute).UTC().Unix(),
 		}
