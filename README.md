@@ -143,11 +143,11 @@ Just because something is implemented doesn't mean it is finished. Tons of these
 
 ### Identity
 
-- [ ] `com.atproto.identity.getRecommendedDidCredentials`
-- [ ] `com.atproto.identity.requestPlcOperationSignature`
+- [x] `com.atproto.identity.getRecommendedDidCredentials`
+- [x] `com.atproto.identity.requestPlcOperationSignature`
 - [x] `com.atproto.identity.resolveHandle`
-- [ ] `com.atproto.identity.signPlcOperation`
-- [ ] `com.atproto.identity.submitPlcOperation`
+- [x] `com.atproto.identity.signPlcOperation`
+- [x] `com.atproto.identity.submitPlcOperation`
 - [x] `com.atproto.identity.updateHandle`
 
 ### Repo
@@ -158,7 +158,7 @@ Just because something is implemented doesn't mean it is finished. Tons of these
 - [x] `com.atproto.repo.deleteRecord`
 - [x] `com.atproto.repo.describeRepo`
 - [x] `com.atproto.repo.getRecord`
-- [x] `com.atproto.repo.importRepo` (Works "okay". You still have to handle PLC operations on your own when migrating. Use with extreme caution.)
+- [x] `com.atproto.repo.importRepo` (Works "okay". Use with extreme caution.)
 - [x] `com.atproto.repo.listRecords`
 - [ ] `com.atproto.repo.listMissingBlobs`
 
