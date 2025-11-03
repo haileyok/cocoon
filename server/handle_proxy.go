@@ -111,7 +111,7 @@ func (s *Server) handleProxy(e echo.Context) error {
 
 		payload := map[string]any{
 			"iss": repo.Repo.Did,
-			"aud": svcDid,
+			"aud": aud,
 			"lxm": lxm,
 			"jti": uuid.NewString(),
 			"exp": time.Now().Add(1 * time.Minute).UTC().Unix(),
