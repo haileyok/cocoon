@@ -15,6 +15,8 @@ type ComAtprotoRepoDeleteRecordRequest struct {
 }
 
 func (s *Server) handleDeleteRecord(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	repo := e.Get("repo").(*models.RepoActor)
 
 	var req ComAtprotoRepoDeleteRecordRequest
@@ -33,7 +35,7 @@ func (s *Server) handleDeleteRecord(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
-	results, err := s.repoman.applyWrites(repo.Repo, []Op{
+	results, err := s.repoman.applyWrites(ctx, repo.Repo, []Op{
 		{
 			Type:       OpTypeDelete,
 			Collection: req.Collection,

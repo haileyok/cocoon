@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"io"
 	"slices"
 	"strings"
@@ -18,6 +17,8 @@ import (
 )
 
 func (s *Server) handleRepoImportRepo(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	urepo := e.Get("repo").(*models.RepoActor)
 
 	b, err := io.ReadAll(e.Request().Body)
@@ -52,12 +53,12 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 
 	slices.Reverse(orderedBlocks)
 
-	if err := bs.PutMany(context.TODO(), orderedBlocks); err != nil {
+	if err := bs.PutMany(ctx, orderedBlocks); err != nil {
 		s.logger.Error("could not insert blocks", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	r, err := repo.OpenRepo(context.TODO(), bs, cs.Header.Roots[0])
+	r, err := repo.OpenRepo(ctx, bs, cs.Header.Roots[0])
 	if err != nil {
 		s.logger.Error("could not open repo", "error", err)
 		return helpers.ServerError(e, nil)
@@ -67,12 +68,12 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 
 	clock := syntax.NewTIDClock(0)
 
-	if err := r.ForEach(context.TODO(), "", func(key string, cid cid.Cid) error {
+	if err := r.ForEach(ctx, "", func(key string, cid cid.Cid) error {
 		pts := strings.Split(key, "/")
 		nsid := pts[0]
 		rkey := pts[1]
 		cidStr := cid.String()
-		b, err := bs.Get(context.TODO(), cid)
+		b, err := bs.Get(ctx, cid)
 		if err != nil {
 			s.logger.Error("record bytes don't exist in blockstore", "error", err)
 			return helpers.ServerError(e, nil)
@@ -100,13 +101,13 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 
 	tx.Commit()
 
-	root, rev, err := r.Commit(context.TODO(), urepo.SignFor)
+	root, rev, err := r.Commit(ctx, urepo.SignFor)
 	if err != nil {
 		s.logger.Error("error committing", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.UpdateRepo(context.TODO(), urepo.Repo.Did, root, rev); err != nil {
+	if err := s.UpdateRepo(ctx, urepo.Repo.Did, root, rev); err != nil {
 		s.logger.Error("error updating repo after commit", "error", err)
 		return helpers.ServerError(e, nil)
 	}

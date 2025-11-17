@@ -26,6 +26,8 @@ type ComAtprotoRepoApplyWritesResponse struct {
 }
 
 func (s *Server) handleApplyWrites(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	repo := e.Get("repo").(*models.RepoActor)
 
 	var req ComAtprotoRepoApplyWritesRequest
@@ -54,7 +56,7 @@ func (s *Server) handleApplyWrites(e echo.Context) error {
 		})
 	}
 
-	results, err := s.repoman.applyWrites(repo.Repo, ops, req.SwapCommit)
+	results, err := s.repoman.applyWrites(ctx, repo.Repo, ops, req.SwapCommit)
 	if err != nil {
 		s.logger.Error("error applying writes", "error", err)
 		return helpers.ServerError(e, nil)

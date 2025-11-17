@@ -17,6 +17,8 @@ type ComAtprotoRepoPutRecordRequest struct {
 }
 
 func (s *Server) handlePutRecord(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	repo := e.Get("repo").(*models.RepoActor)
 
 	var req ComAtprotoRepoPutRecordRequest
@@ -40,7 +42,7 @@ func (s *Server) handlePutRecord(e echo.Context) error {
 		optype = OpTypeUpdate
 	}
 
-	results, err := s.repoman.applyWrites(repo.Repo, []Op{
+	results, err := s.repoman.applyWrites(ctx, repo.Repo, []Op{
 		{
 			Type:       optype,
 			Collection: req.Collection,

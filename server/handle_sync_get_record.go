@@ -13,6 +13,8 @@ import (
 )
 
 func (s *Server) handleSyncGetRecord(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	did := e.QueryParam("did")
 	collection := e.QueryParam("collection")
 	rkey := e.QueryParam("rkey")
@@ -23,7 +25,7 @@ func (s *Server) handleSyncGetRecord(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	root, blocks, err := s.repoman.getRecordProof(urepo, collection, rkey)
+	root, blocks, err := s.repoman.getRecordProof(ctx, urepo, collection, rkey)
 	if err != nil {
 		return err
 	}

@@ -12,6 +12,7 @@ import (
 
 func (s *Server) handleAccount(e echo.Context) error {
 	ctx := e.Request().Context()
+
 	repo, sess, err := s.getSessionRepoOrErr(e)
 	if err != nil {
 		return e.Redirect(303, "/account/signin")
