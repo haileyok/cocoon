@@ -151,7 +151,7 @@ COCOON_S3_BLOBSTORE_ENABLED=true
 # S3 configuration (works with AWS S3, MinIO, Cloudflare R2, etc.)
 COCOON_S3_REGION="us-east-1"
 COCOON_S3_BUCKET="your-bucket"
-COCOON_S3_ENDPOINT="https://s3.amazonaws.com"  # Optional: custom endpoint for S3-compatible services
+COCOON_S3_ENDPOINT="https://s3.amazonaws.com"
 COCOON_S3_ACCESS_KEY="your-access-key"
 COCOON_S3_SECRET_KEY="your-secret-key"
 ```
