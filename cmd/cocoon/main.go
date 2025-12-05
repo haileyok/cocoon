@@ -17,6 +17,7 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -37,6 +38,17 @@ func main() {
 				Name:    "db-name",
 				Value:   "cocoon.db",
 				EnvVars: []string{"COCOON_DB_NAME"},
+			},
+			&cli.StringFlag{
+				Name:    "db-type",
+				Value:   "sqlite",
+				Usage:   "Database type: sqlite or postgres",
+				EnvVars: []string{"COCOON_DB_TYPE"},
+			},
+			&cli.StringFlag{
+				Name:    "database-url",
+				Usage:   "PostgreSQL connection string (required if db-type is postgres)",
+				EnvVars: []string{"COCOON_DATABASE_URL", "DATABASE_URL"},
 			},
 			&cli.StringFlag{
 				Name:    "did",
@@ -157,6 +169,8 @@ var runServe = &cli.Command{
 		s, err := server.New(&server.Args{
 			Addr:            cmd.String("addr"),
 			DbName:          cmd.String("db-name"),
+			DbType:          cmd.String("db-type"),
+			DatabaseURL:     cmd.String("database-url"),
 			Did:             cmd.String("did"),
 			Hostname:        cmd.String("hostname"),
 			RotationKeyPath: cmd.String("rotation-key-path"),
@@ -346,5 +360,26 @@ var runResetPassword = &cli.Command{
 }
 
 func newDb() (*gorm.DB, error) {
-	return gorm.Open(sqlite.Open("cocoon.db"), &gorm.Config{})
+	dbType := os.Getenv("COCOON_DB_TYPE")
+	if dbType == "" {
+		dbType = "sqlite"
+	}
+
+	switch dbType {
+	case "postgres":
+		databaseURL := os.Getenv("COCOON_DATABASE_URL")
+		if databaseURL == "" {
+			databaseURL = os.Getenv("DATABASE_URL")
+		}
+		if databaseURL == "" {
+			return nil, fmt.Errorf("COCOON_DATABASE_URL or DATABASE_URL must be set when using postgres")
+		}
+		return gorm.Open(postgres.Open(databaseURL), &gorm.Config{})
+	default:
+		dbName := os.Getenv("COCOON_DB_NAME")
+		if dbName == "" {
+			dbName = "cocoon.db"
+		}
+		return gorm.Open(sqlite.Open(dbName), &gorm.Config{})
+	}
 }

@@ -55,6 +55,12 @@ Cocoon is a PDS implementation in Go. It is highly experimental, and is not read
    docker-compose up -d
    ```
 
+   **For PostgreSQL deployment:**
+   ```bash
+   # Add POSTGRES_PASSWORD to your .env file first!
+   docker-compose -f docker-compose.postgres.yaml up -d
+   ```
+
 5. **Get your invite code**
 
    On first run, an invite code is automatically created. View it with:
@@ -96,6 +102,30 @@ The following directories will be created automatically:
 
 ### Optional Configuration
 
+#### Database Configuration
+
+By default, Cocoon uses SQLite which requires no additional setup. For production deployments with higher traffic, you can use PostgreSQL:
+
+```bash
+# Database type: sqlite (default) or postgres
+COCOON_DB_TYPE="postgres"
+
+# PostgreSQL connection string (required if db-type is postgres)
+# Format: postgres://user:password@host:port/database?sslmode=disable
+COCOON_DATABASE_URL="postgres://cocoon:password@localhost:5432/cocoon?sslmode=disable"
+
+# Or use the standard DATABASE_URL environment variable
+DATABASE_URL="postgres://cocoon:password@localhost:5432/cocoon?sslmode=disable"
+```
+
+For SQLite (default):
+```bash
+COCOON_DB_TYPE="sqlite"
+COCOON_DB_NAME="/data/cocoon/cocoon.db"
+```
+
+> **Note**: When using PostgreSQL, database backups to S3 are not handled by Cocoon. Use `pg_dump` or your database provider's backup solution instead.
+
 #### SMTP Email Settings
 ```bash
 COCOON_SMTP_USER="your-smtp-username"
@@ -107,15 +137,28 @@ COCOON_SMTP_NAME="Cocoon PDS"
 ```
 
 #### S3 Storage
+
+Cocoon supports S3-compatible storage for both database backups (SQLite only) and blob storage (images, videos, etc.):
+
 ```bash
+# Enable S3 backups (SQLite databases only - hourly backups)
 COCOON_S3_BACKUPS_ENABLED=true
+
+# Enable S3 for blob storage (images, videos, etc.)
+# When enabled, blobs are stored in S3 instead of the database
 COCOON_S3_BLOBSTORE_ENABLED=true
+
+# S3 configuration (works with AWS S3, MinIO, Cloudflare R2, etc.)
 COCOON_S3_REGION="us-east-1"
 COCOON_S3_BUCKET="your-bucket"
-COCOON_S3_ENDPOINT="https://s3.amazonaws.com"
+COCOON_S3_ENDPOINT="https://s3.amazonaws.com"  # Optional: custom endpoint for S3-compatible services
 COCOON_S3_ACCESS_KEY="your-access-key"
 COCOON_S3_SECRET_KEY="your-secret-key"
 ```
+
+**Blob Storage Options:**
+- `COCOON_S3_BLOBSTORE_ENABLED=false` (default): Blobs stored in the database
+- `COCOON_S3_BLOBSTORE_ENABLED=true`: Blobs stored in S3 bucket under `blobs/{did}/{cid}`
 
 ### Management Commands
 
