@@ -203,7 +203,7 @@ Just because something is implemented doesn't mean it is finished. Tons of these
 - [x] `com.atproto.repo.getRecord`
 - [x] `com.atproto.repo.importRepo` (Works "okay". Use with extreme caution.)
 - [x] `com.atproto.repo.listRecords`
-- [x] `com.atproto.repo.listMissingBlobs`
+- [x] `com.atproto.repo.listMissingBlobs` (Not actually functional, but will return a response as if no blobs were missing)
 
 ### Server
 
