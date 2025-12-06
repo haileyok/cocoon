@@ -47,6 +47,7 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:    "database-url",
+				Aliases: []string{"db-url"},
 				Usage:   "PostgreSQL connection string (required if db-type is postgres)",
 				EnvVars: []string{"COCOON_DATABASE_URL", "DATABASE_URL"},
 			},
@@ -293,7 +294,7 @@ var runCreateInviteCode = &cli.Command{
 		},
 	},
 	Action: func(cmd *cli.Context) error {
-		db, err := newDb()
+		db, err := newDb(cmd)
 		if err != nil {
 			return err
 		}
@@ -332,7 +333,7 @@ var runResetPassword = &cli.Command{
 		},
 	},
 	Action: func(cmd *cli.Context) error {
-		db, err := newDb()
+		db, err := newDb(cmd)
 		if err != nil {
 			return err
 		}
@@ -359,24 +360,24 @@ var runResetPassword = &cli.Command{
 	},
 }
 
-func newDb() (*gorm.DB, error) {
-	dbType := os.Getenv("COCOON_DB_TYPE")
+func newDb(cmd *cli.Context) (*gorm.DB, error) {
+	dbType := cmd.String("db-type")
 	if dbType == "" {
 		dbType = "sqlite"
 	}
 
 	switch dbType {
 	case "postgres":
-		databaseURL := os.Getenv("COCOON_DATABASE_URL")
+		databaseURL := cmd.String("database-url")
 		if databaseURL == "" {
-			databaseURL = os.Getenv("DATABASE_URL")
+			databaseURL = cmd.String("database-url")
 		}
 		if databaseURL == "" {
 			return nil, fmt.Errorf("COCOON_DATABASE_URL or DATABASE_URL must be set when using postgres")
 		}
 		return gorm.Open(postgres.Open(databaseURL), &gorm.Config{})
 	default:
-		dbName := os.Getenv("COCOON_DB_NAME")
+		dbName := cmd.String("db-name")
 		if dbName == "" {
 			dbName = "cocoon.db"
 		}
