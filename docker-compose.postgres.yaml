@@ -1,6 +1,32 @@
+# Docker Compose with PostgreSQL
+# 
+# Usage:
+#   docker-compose -f docker-compose.postgres.yaml up -d
+#
+# This file extends the base docker-compose.yaml with a PostgreSQL database.
+# Set the following in your .env file:
+#   COCOON_DB_TYPE=postgres
+#   POSTGRES_PASSWORD=your-secure-password
+
 version: '3.8'
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: cocoon-postgres
+    environment:
+      POSTGRES_USER: cocoon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: cocoon
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cocoon -d cocoon"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   init-keys:
     build:
       context: .
@@ -28,10 +54,13 @@ services:
       dockerfile: Dockerfile
     image: ghcr.io/haileyok/cocoon:latest
     container_name: cocoon-pds
-    network_mode: host
     depends_on:
       init-keys:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
     volumes:
       - ./data:/data/cocoon
       - ./keys/rotation.key:/keys/rotation.key:ro
@@ -47,11 +76,10 @@ services:
       COCOON_ADMIN_PASSWORD: ${COCOON_ADMIN_PASSWORD}
       COCOON_SESSION_SECRET: ${COCOON_SESSION_SECRET}
 
-      # Server configuration
+      # Database configuration - PostgreSQL
       COCOON_ADDR: ":8080"
-      COCOON_DB_TYPE: ${COCOON_DB_TYPE:-sqlite}
-      COCOON_DB_NAME: ${COCOON_DB_NAME:-/data/cocoon/cocoon.db}
-      COCOON_DATABASE_URL: ${COCOON_DATABASE_URL:-}
+      COCOON_DB_TYPE: postgres
+      COCOON_DATABASE_URL: postgres://cocoon:${POSTGRES_PASSWORD}@postgres:5432/cocoon?sslmode=disable
       COCOON_BLOCKSTORE_VARIANT: ${COCOON_BLOCKSTORE_VARIANT:-sqlite}
 
       # Optional: SMTP settings for email
@@ -87,7 +115,6 @@ services:
       dockerfile: Dockerfile
     image: ghcr.io/haileyok/cocoon:latest
     container_name: cocoon-create-invite
-    network_mode: host
     volumes:
       - ./keys:/keys
       - ./create-initial-invite.sh:/create-initial-invite.sh:ro
@@ -99,20 +126,22 @@ services:
       COCOON_CONTACT_EMAIL: ${COCOON_CONTACT_EMAIL}
       COCOON_RELAYS: ${COCOON_RELAYS:-https://bsky.network}
       COCOON_ADMIN_PASSWORD: ${COCOON_ADMIN_PASSWORD}
-      COCOON_DB_TYPE: ${COCOON_DB_TYPE:-sqlite}
-      COCOON_DB_NAME: ${COCOON_DB_NAME:-/data/cocoon/cocoon.db}
-      COCOON_DATABASE_URL: ${COCOON_DATABASE_URL:-}
+      COCOON_DB_TYPE: postgres
+      COCOON_DATABASE_URL: postgres://cocoon:${POSTGRES_PASSWORD}@postgres:5432/cocoon?sslmode=disable
     depends_on:
-      - init-keys
+      cocoon:
+        condition: service_healthy
     entrypoint: ["/bin/sh", "/create-initial-invite.sh"]
     restart: "no"
 
   caddy:
     image: caddy:2-alpine
     container_name: cocoon-caddy
-    network_mode: host
+    ports:
+      - "80:80"
+      - "443:443"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile.postgres:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     restart: unless-stopped
@@ -121,7 +150,7 @@ services:
       CADDY_ACME_EMAIL: ${COCOON_CONTACT_EMAIL:-}
 
 volumes:
-  data:
+  postgres_data:
     driver: local
   caddy_data:
     driver: local

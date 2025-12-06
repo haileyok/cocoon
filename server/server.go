@@ -43,6 +43,7 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	slogecho "github.com/samber/slog-echo"
+	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -82,12 +83,15 @@ type Server struct {
 	requestCrawlMu   sync.Mutex
 
 	dbName   string
+	dbType   string
 	s3Config *S3Config
 }
 
 type Args struct {
 	Addr            string
 	DbName          string
+	DbType          string
+	DatabaseURL     string
 	Logger          *slog.Logger
 	Version         string
 	Did             string
@@ -288,9 +292,29 @@ func New(args *Args) (*Server, error) {
 		IdleTimeout:  5 * time.Minute,
 	}
 
-	gdb, err := gorm.Open(sqlite.Open(args.DbName), &gorm.Config{})
-	if err != nil {
-		return nil, err
+	dbType := args.DbType
+	if dbType == "" {
+		dbType = "sqlite"
+	}
+
+	var gdb *gorm.DB
+	var err error
+	switch dbType {
+	case "postgres":
+		if args.DatabaseURL == "" {
+			return nil, fmt.Errorf("database-url must be set when using postgres")
+		}
+		gdb, err = gorm.Open(postgres.Open(args.DatabaseURL), &gorm.Config{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect to postgres: %w", err)
+		}
+		args.Logger.Info("connected to PostgreSQL database")
+	default:
+		gdb, err = gorm.Open(sqlite.Open(args.DbName), &gorm.Config{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to open sqlite database: %w", err)
+		}
+		args.Logger.Info("connected to SQLite database", "path", args.DbName)
 	}
 	dbw := db.NewDB(gdb)
 
@@ -363,6 +387,7 @@ func New(args *Args) (*Server, error) {
 		passport: identity.NewPassport(h, identity.NewMemCache(10_000)),
 
 		dbName:   args.DbName,
+		dbType:   dbType,
 		s3Config: args.S3Config,
 
 		oauthProvider: provider.NewProvider(provider.Args{
@@ -429,6 +454,7 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/xrpc/com.atproto.repo.describeRepo", s.handleDescribeRepo)
 	s.echo.GET("/xrpc/com.atproto.sync.listRepos", s.handleListRepos)
 	s.echo.GET("/xrpc/com.atproto.repo.listRecords", s.handleListRecords)
+	s.echo.GET("/xrpc/com.atproto.repo.listMissingBlobs", s.handleListMissingBlobs)
 	s.echo.GET("/xrpc/com.atproto.repo.getRecord", s.handleRepoGetRecord)
 	s.echo.GET("/xrpc/com.atproto.sync.getRecord", s.handleSyncGetRecord)
 	s.echo.GET("/xrpc/com.atproto.sync.getBlocks", s.handleGetBlocks)
@@ -569,6 +595,11 @@ func (s *Server) requestCrawl(ctx context.Context) error {
 }
 
 func (s *Server) doBackup() {
+	if s.dbType == "postgres" {
+		s.logger.Info("skipping S3 backup - PostgreSQL backups should be handled externally (pg_dump, managed database backups, etc.)")
+		return
+	}
+
 	start := time.Now()
 
 	s.logger.Info("beginning backup to s3...")
