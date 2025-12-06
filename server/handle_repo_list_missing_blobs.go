@@ -47,17 +47,14 @@ func (s *Server) handleListMissingBlobs(e echo.Context) error {
 	var allBlobRefs []blobRef
 
 	for _, rec := range records {
-		cids, err := getBlobCidsFromRecord(rec.Value)
-		if err != nil {
-			continue
-		}
+		blobs := getBlobsFromRecord(rec.Value)
 		recordUri := fmt.Sprintf("at://%s/%s/%s", urepo.Repo.Did, rec.Nsid, rec.Rkey)
-		for _, c := range cids {
-			allBlobRefs = append(allBlobRefs, blobRef{cid: c, recordUri: recordUri})
+		for _, b := range blobs {
+			allBlobRefs = append(allBlobRefs, blobRef{cid: cid.Cid(b.Ref), recordUri: recordUri})
 		}
 	}
 
-	var missingBlobs []ComAtprotoRepoListMissingBlobsRecordBlob
+	missingBlobs := make([]ComAtprotoRepoListMissingBlobsRecordBlob, 0)
 	seenCids := make(map[string]bool)
 
 	for _, ref := range allBlobRefs {
@@ -101,46 +98,15 @@ func (s *Server) handleListMissingBlobs(e echo.Context) error {
 	})
 }
 
-func getBlobCidsFromRecord(cbor []byte) ([]cid.Cid, error) {
-	var cids []cid.Cid
-
-	decoded, err := atdata.UnmarshalCBOR(cbor)
-	if err != nil {
-		return nil, fmt.Errorf("error unmarshaling cbor: %w", err)
-	}
-
-	var deepiter func(any) error
-	deepiter = func(item any) error {
-		switch val := item.(type) {
-		case map[string]any:
-			if val["$type"] == "blob" {
-				if ref, ok := val["ref"].(cid.Cid); ok {
-					cids = append(cids, ref)
-				} else if refStr, ok := val["ref"].(string); ok {
-					c, err := cid.Parse(refStr)
-					if err == nil {
-						cids = append(cids, c)
-					}
-				}
-			}
-			for _, v := range val {
-				if err := deepiter(v); err != nil {
-					return err
-				}
-			}
-		case []any:
-			for _, v := range val {
-				if err := deepiter(v); err != nil {
-					return err
-				}
-			}
-		}
+func getBlobsFromRecord(data []byte) []atdata.Blob {
+	if len(data) == 0 {
 		return nil
 	}
 
-	if err := deepiter(decoded); err != nil {
-		return nil, err
+	decoded, err := atdata.UnmarshalCBOR(data)
+	if err != nil {
+		return nil
 	}
 
-	return cids, nil
+	return atdata.ExtractBlobs(decoded)
 }
