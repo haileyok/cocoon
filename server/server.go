@@ -454,7 +454,6 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/xrpc/com.atproto.repo.describeRepo", s.handleDescribeRepo)
 	s.echo.GET("/xrpc/com.atproto.sync.listRepos", s.handleListRepos)
 	s.echo.GET("/xrpc/com.atproto.repo.listRecords", s.handleListRecords)
-	s.echo.GET("/xrpc/com.atproto.repo.listMissingBlobs", s.handleListMissingBlobs)
 	s.echo.GET("/xrpc/com.atproto.repo.getRecord", s.handleRepoGetRecord)
 	s.echo.GET("/xrpc/com.atproto.sync.getRecord", s.handleSyncGetRecord)
 	s.echo.GET("/xrpc/com.atproto.sync.getBlocks", s.handleGetBlocks)
@@ -502,6 +501,7 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/xrpc/com.atproto.server.activateAccount", s.handleServerActivateAccount, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 
 	// repo
+	s.echo.GET("/xrpc/com.atproto.repo.listMissingBlobs", s.handleListMissingBlobs, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.createRecord", s.handleCreateRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.putRecord", s.handlePutRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.deleteRecord", s.handleDeleteRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
