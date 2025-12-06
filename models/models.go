@@ -117,3 +117,10 @@ type BlobPart struct {
 	Idx    int  `gorm:"primaryKey"`
 	Data   []byte
 }
+
+type ReservedKey struct {
+	KeyDid    string `gorm:"primaryKey"`
+	Did       *string `gorm:"index"`
+	PrivateKey []byte
+	CreatedAt  time.Time `gorm:"index"`
+}

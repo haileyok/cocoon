@@ -218,14 +218,14 @@ Just because something is implemented doesn't mean it is finished. Tons of these
 - [x] `com.atproto.server.deleteSession`
 - [x] `com.atproto.server.describeServer`
 - [ ] `com.atproto.server.getAccountInviteCodes`
-- [ ] `com.atproto.server.getServiceAuth`
+- [x] `com.atproto.server.getServiceAuth`
 - ~~[ ] `com.atproto.server.listAppPasswords`~~ - not going to add app passwords
 - [x] `com.atproto.server.refreshSession`
 - [ ] `com.atproto.server.requestAccountDelete`
 - [x] `com.atproto.server.requestEmailConfirmation`
 - [x] `com.atproto.server.requestEmailUpdate`
 - [x] `com.atproto.server.requestPasswordReset`
-- [ ] `com.atproto.server.reserveSigningKey`
+- [x] `com.atproto.server.reserveSigningKey`
 - [x] `com.atproto.server.resetPassword`
 - ~~[] `com.atproto.server.revokeAppPassword`~~ - not going to add app passwords
 - [x] `com.atproto.server.updateEmail`

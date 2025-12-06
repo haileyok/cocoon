@@ -450,6 +450,7 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/xrpc/com.atproto.server.createAccount", s.handleCreateAccount)
 	s.echo.POST("/xrpc/com.atproto.server.createSession", s.handleCreateSession)
 	s.echo.GET("/xrpc/com.atproto.server.describeServer", s.handleDescribeServer)
+	s.echo.POST("/xrpc/com.atproto.server.reserveSigningKey", s.handleServerReserveSigningKey)
 
 	s.echo.GET("/xrpc/com.atproto.repo.describeRepo", s.handleDescribeRepo)
 	s.echo.GET("/xrpc/com.atproto.sync.listRepos", s.handleListRepos)
@@ -538,6 +539,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		&models.Record{},
 		&models.Blob{},
 		&models.BlobPart{},
+		&models.ReservedKey{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
 	)
