@@ -221,7 +221,7 @@ Just because something is implemented doesn't mean it is finished. Tons of these
 - [x] `com.atproto.server.getServiceAuth`
 - ~~[ ] `com.atproto.server.listAppPasswords`~~ - not going to add app passwords
 - [x] `com.atproto.server.refreshSession`
-- [ ] `com.atproto.server.requestAccountDelete`
+- [x] `com.atproto.server.requestAccountDelete`
 - [x] `com.atproto.server.requestEmailConfirmation`
 - [x] `com.atproto.server.requestEmailUpdate`
 - [x] `com.atproto.server.requestPasswordReset`
