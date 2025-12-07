@@ -214,7 +214,7 @@ Just because something is implemented doesn't mean it is finished. Tons of these
 - [x] `com.atproto.server.createInviteCode`
 - [x] `com.atproto.server.createInviteCodes`
 - [x] `com.atproto.server.deactivateAccount`
-- [ ] `com.atproto.server.deleteAccount`
+- [x] `com.atproto.server.deleteAccount`
 - [x] `com.atproto.server.deleteSession`
 - [x] `com.atproto.server.describeServer`
 - [ ] `com.atproto.server.getAccountInviteCodes`

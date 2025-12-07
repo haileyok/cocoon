@@ -21,6 +21,8 @@ type Repo struct {
 	PasswordResetCodeExpiresAt     *time.Time
 	PlcOperationCode               *string
 	PlcOperationCodeExpiresAt      *time.Time
+	AccountDeleteCode              *string
+	AccountDeleteCodeExpiresAt     *time.Time
 	Password                       string
 	SigningKey                     []byte
 	Rev                            string
