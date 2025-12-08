@@ -60,6 +60,7 @@ type S3Config struct {
 	Bucket           string
 	AccessKey        string
 	SecretKey        string
+	CDNUrl           string
 }
 
 type Server struct {

@@ -154,11 +154,21 @@ COCOON_S3_BUCKET="your-bucket"
 COCOON_S3_ENDPOINT="https://s3.amazonaws.com"
 COCOON_S3_ACCESS_KEY="your-access-key"
 COCOON_S3_SECRET_KEY="your-secret-key"
+
+# Optional: CDN/public URL for blob redirects
+# When set, com.atproto.sync.getBlob redirects to this URL instead of proxying
+COCOON_S3_CDN_URL="https://cdn.example.com"
 ```
 
 **Blob Storage Options:**
 - `COCOON_S3_BLOBSTORE_ENABLED=false` (default): Blobs stored in the database
 - `COCOON_S3_BLOBSTORE_ENABLED=true`: Blobs stored in S3 bucket under `blobs/{did}/{cid}`
+
+**Blob Serving Options:**
+- Without `COCOON_S3_CDN_URL`: Blobs are proxied through the PDS server
+- With `COCOON_S3_CDN_URL`: `getBlob` returns a 302 redirect to `{CDN_URL}/blobs/{did}/{cid}`
+
+> **Tip**: For Cloudflare R2, you can use the public bucket URL as the CDN URL. For AWS S3, you can use CloudFront or the S3 bucket URL directly if public access is enabled.
 
 ### Management Commands
 

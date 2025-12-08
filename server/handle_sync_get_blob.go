@@ -65,9 +65,16 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 			buf.Write(p.Data)
 		}
 	} else if blob.Storage == "s3" {
-		if  !(s.s3Config != nil && s.s3Config.BlobstoreEnabled) {
+		if !(s.s3Config != nil && s.s3Config.BlobstoreEnabled) {
 			s.logger.Error("s3 storage disabled")
 			return helpers.ServerError(e, nil)
+		}
+
+		blobKey := fmt.Sprintf("blobs/%s/%s", urepo.Repo.Did, c.String())
+
+		if s.s3Config.CDNUrl != "" {
+			redirectUrl := fmt.Sprintf("%s/%s", s.s3Config.CDNUrl, blobKey)
+			return e.Redirect(302, redirectUrl)
 		}
 
 		config := &aws.Config{
@@ -89,7 +96,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 		svc := s3.New(sess)
 		if result, err := svc.GetObject(&s3.GetObjectInput{
 			Bucket: aws.String(s.s3Config.Bucket),
-			Key:    aws.String(fmt.Sprintf("blobs/%s/%s", urepo.Repo.Did, c.String())),
+			Key:    aws.String(blobKey),
 		}); err != nil {
 			s.logger.Error("error getting blob from s3", "error", err)
 			return helpers.ServerError(e, nil)

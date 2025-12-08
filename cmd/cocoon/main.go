@@ -132,6 +132,11 @@ func main() {
 				EnvVars: []string{"COCOON_S3_SECRET_KEY"},
 			},
 			&cli.StringFlag{
+				Name:    "s3-cdn-url",
+				EnvVars: []string{"COCOON_S3_CDN_URL"},
+				Usage:   "Public URL for S3 blob redirects (e.g., https://cdn.example.com). When set, getBlob redirects to this URL instead of proxying.",
+			},
+			&cli.StringFlag{
 				Name:    "session-secret",
 				EnvVars: []string{"COCOON_SESSION_SECRET"},
 			},
@@ -194,6 +199,7 @@ var runServe = &cli.Command{
 				Endpoint:         cmd.String("s3-endpoint"),
 				AccessKey:        cmd.String("s3-access-key"),
 				SecretKey:        cmd.String("s3-secret-key"),
+				CDNUrl:           cmd.String("s3-cdn-url"),
 			},
 			SessionSecret:     cmd.String("session-secret"),
 			BlockstoreVariant: server.MustReturnBlockstoreVariant(cmd.String("blockstore-variant")),
