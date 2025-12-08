@@ -258,7 +258,12 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		}
 
 		if time.Now().After(oauthToken.ExpiresAt) {
-			return helpers.ExpiredTokenError(e)
+			e.Response().Header().Set("WWW-Authenticate", `DPoP error="invalid_token", error_description="Token expired"`)
+			e.Response().Header().Add("access-control-expose-headers", "WWW-Authenticate")
+			return e.JSON(401, map[string]string{
+				"error":             "invalid_token",
+				"error_description": "Token expired",
+			})
 		}
 
 		repo, err := s.getRepoActorByDid(oauthToken.Sub)
