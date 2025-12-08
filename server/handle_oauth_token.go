@@ -47,6 +47,11 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 	proof, err := s.oauthProvider.DpopManager.CheckProof(e.Request().Method, e.Request().URL.String(), e.Request().Header, nil)
 	if err != nil {
 		if errors.Is(err, dpop.ErrUseDpopNonce) {
+			nonce := s.oauthProvider.NextNonce()
+			if nonce != "" {
+				e.Response().Header().Set("DPoP-Nonce", nonce)
+				e.Response().Header().Add("access-control-expose-headers", "DPoP-Nonce")
+			}
 			return e.JSON(400, map[string]string{
 				"error": "use_dpop_nonce",
 			})
