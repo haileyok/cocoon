@@ -21,7 +21,7 @@ type ServerGetServiceAuthRequest struct {
 	Aud string `query:"aud" validate:"required,atproto-did"`
 	// exp should be a float, as some clients will send a non-integer expiration
 	Exp float64 `query:"exp"`
-	Lxm string  `query:"lxm" validate:"required,atproto-nsid"`
+	Lxm string  `query:"lxm"`
 }
 
 func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
@@ -45,7 +45,12 @@ func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
 		return helpers.InputError(e, to.StringPtr("may not generate auth tokens recursively"))
 	}
 
-	maxExp := now + (60 * 30)
+	var maxExp int64
+	if req.Lxm != "" {
+		maxExp = now + (60 * 60)
+	} else {
+		maxExp = now + 60
+	}
 	if exp > maxExp {
 		return helpers.InputError(e, to.StringPtr("expiration too big. smoller please"))
 	}
@@ -68,10 +73,12 @@ func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
 	payload := map[string]any{
 		"iss": repo.Repo.Did,
 		"aud": req.Aud,
-		"lxm": req.Lxm,
 		"jti": uuid.NewString(),
 		"exp": exp,
 		"iat": now,
+	}
+	if req.Lxm != "" {
+		payload["lxm"] = req.Lxm
 	}
 	pj, err := json.Marshal(payload)
 	if err != nil {

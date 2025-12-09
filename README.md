@@ -154,11 +154,21 @@ COCOON_S3_BUCKET="your-bucket"
 COCOON_S3_ENDPOINT="https://s3.amazonaws.com"
 COCOON_S3_ACCESS_KEY="your-access-key"
 COCOON_S3_SECRET_KEY="your-secret-key"
+
+# Optional: CDN/public URL for blob redirects
+# When set, com.atproto.sync.getBlob redirects to this URL instead of proxying
+COCOON_S3_CDN_URL="https://cdn.example.com"
 ```
 
 **Blob Storage Options:**
 - `COCOON_S3_BLOBSTORE_ENABLED=false` (default): Blobs stored in the database
 - `COCOON_S3_BLOBSTORE_ENABLED=true`: Blobs stored in S3 bucket under `blobs/{did}/{cid}`
+
+**Blob Serving Options:**
+- Without `COCOON_S3_CDN_URL`: Blobs are proxied through the PDS server
+- With `COCOON_S3_CDN_URL`: `getBlob` returns a 302 redirect to `{CDN_URL}/blobs/{did}/{cid}`
+
+> **Tip**: For Cloudflare R2, you can use the public bucket URL as the CDN URL. For AWS S3, you can use CloudFront or the S3 bucket URL directly if public access is enabled.
 
 ### Management Commands
 
@@ -203,7 +213,7 @@ Just because something is implemented doesn't mean it is finished. Tons of these
 - [x] `com.atproto.repo.getRecord`
 - [x] `com.atproto.repo.importRepo` (Works "okay". Use with extreme caution.)
 - [x] `com.atproto.repo.listRecords`
-- [x] `com.atproto.repo.listMissingBlobs` (Not actually functional, but will return a response as if no blobs were missing)
+- [x] `com.atproto.repo.listMissingBlobs`
 
 ### Server
 
@@ -214,18 +224,18 @@ Just because something is implemented doesn't mean it is finished. Tons of these
 - [x] `com.atproto.server.createInviteCode`
 - [x] `com.atproto.server.createInviteCodes`
 - [x] `com.atproto.server.deactivateAccount`
-- [ ] `com.atproto.server.deleteAccount`
+- [x] `com.atproto.server.deleteAccount`
 - [x] `com.atproto.server.deleteSession`
 - [x] `com.atproto.server.describeServer`
 - [ ] `com.atproto.server.getAccountInviteCodes`
-- [ ] `com.atproto.server.getServiceAuth`
+- [x] `com.atproto.server.getServiceAuth`
 - ~~[ ] `com.atproto.server.listAppPasswords`~~ - not going to add app passwords
 - [x] `com.atproto.server.refreshSession`
-- [ ] `com.atproto.server.requestAccountDelete`
+- [x] `com.atproto.server.requestAccountDelete`
 - [x] `com.atproto.server.requestEmailConfirmation`
 - [x] `com.atproto.server.requestEmailUpdate`
 - [x] `com.atproto.server.requestPasswordReset`
-- [ ] `com.atproto.server.reserveSigningKey`
+- [x] `com.atproto.server.reserveSigningKey`
 - [x] `com.atproto.server.resetPassword`
 - ~~[] `com.atproto.server.revokeAppPassword`~~ - not going to add app passwords
 - [x] `com.atproto.server.updateEmail`

@@ -232,7 +232,9 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		proof, err := s.oauthProvider.DpopManager.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, to.StringPtr(accessToken))
 		if err != nil {
 			if errors.Is(err, dpop.ErrUseDpopNonce) {
-				return e.JSON(400, map[string]string{
+				e.Response().Header().Set("WWW-Authenticate", `DPoP error="use_dpop_nonce"`)
+				e.Response().Header().Add("access-control-expose-headers", "WWW-Authenticate")
+				return e.JSON(401, map[string]string{
 					"error": "use_dpop_nonce",
 				})
 			}
@@ -256,7 +258,12 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		}
 
 		if time.Now().After(oauthToken.ExpiresAt) {
-			return helpers.ExpiredTokenError(e)
+			e.Response().Header().Set("WWW-Authenticate", `DPoP error="invalid_token", error_description="Token expired"`)
+			e.Response().Header().Add("access-control-expose-headers", "WWW-Authenticate")
+			return e.JSON(401, map[string]string{
+				"error":             "invalid_token",
+				"error_description": "Token expired",
+			})
 		}
 
 		repo, err := s.getRepoActorByDid(oauthToken.Sub)

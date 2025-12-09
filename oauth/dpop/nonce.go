@@ -102,7 +102,8 @@ func (n *Nonce) NextNonce() string {
 }
 
 func (n *Nonce) Check(nonce string) bool {
-	n.mu.RLock()
-	defer n.mu.RUnlock()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.rotate()
 	return nonce == n.prev || nonce == n.curr || nonce == n.next
 }

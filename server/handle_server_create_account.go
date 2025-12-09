@@ -128,10 +128,34 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 
 	// TODO: unsupported domains
 
-	k, err := atcrypto.GeneratePrivateKeyK256()
-	if err != nil {
-		s.logger.Error("error creating signing key", "endpoint", "com.atproto.server.createAccount", "error", err)
-		return helpers.ServerError(e, nil)
+	var k *atcrypto.PrivateKeyK256
+
+	if signupDid != "" {
+		reservedKey, err := s.getReservedKey(signupDid)
+		if err != nil {
+			s.logger.Error("error looking up reserved key", "error", err)
+		}
+		if reservedKey != nil {
+			k, err = atcrypto.ParsePrivateBytesK256(reservedKey.PrivateKey)
+			if err != nil {
+				s.logger.Error("error parsing reserved key", "error", err)
+				k = nil
+			} else {
+				defer func() {
+					if delErr := s.deleteReservedKey(reservedKey.KeyDid, reservedKey.Did); delErr != nil {
+						s.logger.Error("error deleting reserved key", "error", delErr)
+					}
+				}()
+			}
+		}
+	}
+
+	if k == nil {
+		k, err = atcrypto.GeneratePrivateKeyK256()
+		if err != nil {
+			s.logger.Error("error creating signing key", "endpoint", "com.atproto.server.createAccount", "error", err)
+			return helpers.ServerError(e, nil)
+		}
 	}
 
 	if signupDid == "" {

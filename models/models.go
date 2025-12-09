@@ -21,6 +21,8 @@ type Repo struct {
 	PasswordResetCodeExpiresAt     *time.Time
 	PlcOperationCode               *string
 	PlcOperationCodeExpiresAt      *time.Time
+	AccountDeleteCode              *string
+	AccountDeleteCodeExpiresAt     *time.Time
 	Password                       string
 	SigningKey                     []byte
 	Rev                            string
@@ -116,4 +118,11 @@ type BlobPart struct {
 	BlobID uint `gorm:"primaryKey"`
 	Idx    int  `gorm:"primaryKey"`
 	Data   []byte
+}
+
+type ReservedKey struct {
+	KeyDid    string `gorm:"primaryKey"`
+	Did       *string `gorm:"index"`
+	PrivateKey []byte
+	CreatedAt  time.Time `gorm:"index"`
 }

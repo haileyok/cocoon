@@ -60,6 +60,7 @@ type S3Config struct {
 	Bucket           string
 	AccessKey        string
 	SecretKey        string
+	CDNUrl           string
 }
 
 type Server struct {
@@ -450,11 +451,11 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/xrpc/com.atproto.server.createAccount", s.handleCreateAccount)
 	s.echo.POST("/xrpc/com.atproto.server.createSession", s.handleCreateSession)
 	s.echo.GET("/xrpc/com.atproto.server.describeServer", s.handleDescribeServer)
+	s.echo.POST("/xrpc/com.atproto.server.reserveSigningKey", s.handleServerReserveSigningKey)
 
 	s.echo.GET("/xrpc/com.atproto.repo.describeRepo", s.handleDescribeRepo)
 	s.echo.GET("/xrpc/com.atproto.sync.listRepos", s.handleListRepos)
 	s.echo.GET("/xrpc/com.atproto.repo.listRecords", s.handleListRecords)
-	s.echo.GET("/xrpc/com.atproto.repo.listMissingBlobs", s.handleListMissingBlobs)
 	s.echo.GET("/xrpc/com.atproto.repo.getRecord", s.handleRepoGetRecord)
 	s.echo.GET("/xrpc/com.atproto.sync.getRecord", s.handleSyncGetRecord)
 	s.echo.GET("/xrpc/com.atproto.sync.getBlocks", s.handleGetBlocks)
@@ -500,8 +501,11 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/xrpc/com.atproto.server.checkAccountStatus", s.handleServerCheckAccountStatus, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.deactivateAccount", s.handleServerDeactivateAccount, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.activateAccount", s.handleServerActivateAccount, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.requestAccountDelete", s.handleServerRequestAccountDelete, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/com.atproto.server.deleteAccount", s.handleServerDeleteAccount)
 
 	// repo
+	s.echo.GET("/xrpc/com.atproto.repo.listMissingBlobs", s.handleListMissingBlobs, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.createRecord", s.handleCreateRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.putRecord", s.handlePutRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.deleteRecord", s.handleDeleteRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
@@ -538,6 +542,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		&models.Record{},
 		&models.Blob{},
 		&models.BlobPart{},
+		&models.ReservedKey{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
 	)
