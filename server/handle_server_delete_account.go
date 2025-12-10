@@ -66,48 +66,68 @@ func (s *Server) handleServerDeleteAccount(e echo.Context) error {
 		})
 	}
 
-	if err := s.db.Exec("DELETE FROM blocks WHERE did = ?", nil, req.Did).Error; err != nil {
+	tx := s.db.BeginDangerously()
+	if tx.Error != nil {
+		s.logger.Error("error starting transaction", "error", tx.Error)
+		return helpers.ServerError(e, nil)
+	}
+
+	if err := tx.Exec("DELETE FROM blocks WHERE did = ?", nil, req.Did).Error; err != nil {
+		tx.Rollback()
 		s.logger.Error("error deleting blocks", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.db.Exec("DELETE FROM records WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM records WHERE did = ?", nil, req.Did).Error; err != nil {
+		tx.Rollback()
 		s.logger.Error("error deleting records", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.db.Exec("DELETE FROM blobs WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM blobs WHERE did = ?", nil, req.Did).Error; err != nil {
+		tx.Rollback()
 		s.logger.Error("error deleting blobs", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.db.Exec("DELETE FROM tokens WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM tokens WHERE did = ?", nil, req.Did).Error; err != nil {
+		tx.Rollback()
 		s.logger.Error("error deleting tokens", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.db.Exec("DELETE FROM refresh_tokens WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM refresh_tokens WHERE did = ?", nil, req.Did).Error; err != nil {
+		tx.Rollback()
 		s.logger.Error("error deleting refresh tokens", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.db.Exec("DELETE FROM reserved_keys WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM reserved_keys WHERE did = ?", nil, req.Did).Error; err != nil {
+		tx.Rollback()
 		s.logger.Error("error deleting reserved keys", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.db.Exec("DELETE FROM invite_codes WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM invite_codes WHERE did = ?", nil, req.Did).Error; err != nil {
+		tx.Rollback()
 		s.logger.Error("error deleting invite codes", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.db.Exec("DELETE FROM actors WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM actors WHERE did = ?", nil, req.Did).Error; err != nil {
+		tx.Rollback()
 		s.logger.Error("error deleting actor", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.db.Exec("DELETE FROM repos WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM repos WHERE did = ?", nil, req.Did).Error; err != nil {
+		tx.Rollback()
 		s.logger.Error("error deleting repo", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		s.logger.Error("error committing transaction", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
