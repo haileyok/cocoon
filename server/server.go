@@ -466,6 +466,9 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/xrpc/com.atproto.sync.listBlobs", s.handleSyncListBlobs)
 	s.echo.GET("/xrpc/com.atproto.sync.getBlob", s.handleSyncGetBlob)
 
+	// labels
+	s.echo.GET("/xrpc/com.atproto.label.queryLabels", s.handleLabelQueryLabels)
+
 	// account
 	s.echo.GET("/account", s.handleAccount)
 	s.echo.POST("/account/revoke", s.handleAccountRevoke)
