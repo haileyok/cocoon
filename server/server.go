@@ -102,6 +102,7 @@ type Args struct {
 	ContactEmail    string
 	Relays          []string
 	AdminPassword   string
+	RequireInvite   bool
 
 	SmtpUser  string
 	SmtpPass  string
@@ -126,6 +127,7 @@ type config struct {
 	EnforcePeering    bool
 	Relays            []string
 	AdminPassword     string
+	RequireInvite     bool
 	SmtpEmail         string
 	SmtpName          string
 	BlockstoreVariant BlockstoreVariant
@@ -379,6 +381,7 @@ func New(args *Args) (*Server, error) {
 			EnforcePeering:    false,
 			Relays:            args.Relays,
 			AdminPassword:     args.AdminPassword,
+			RequireInvite:     args.RequireInvite,
 			SmtpName:          args.SmtpName,
 			SmtpEmail:         args.SmtpEmail,
 			BlockstoreVariant: args.BlockstoreVariant,
