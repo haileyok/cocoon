@@ -102,6 +102,7 @@ type Args struct {
 	ContactEmail    string
 	Relays          []string
 	AdminPassword   string
+	RequireInvite   bool
 
 	SmtpUser  string
 	SmtpPass  string
@@ -126,6 +127,7 @@ type config struct {
 	EnforcePeering    bool
 	Relays            []string
 	AdminPassword     string
+	RequireInvite     bool
 	SmtpEmail         string
 	SmtpName          string
 	BlockstoreVariant BlockstoreVariant
@@ -379,6 +381,7 @@ func New(args *Args) (*Server, error) {
 			EnforcePeering:    false,
 			Relays:            args.Relays,
 			AdminPassword:     args.AdminPassword,
+			RequireInvite:     args.RequireInvite,
 			SmtpName:          args.SmtpName,
 			SmtpEmail:         args.SmtpEmail,
 			BlockstoreVariant: args.BlockstoreVariant,
@@ -442,6 +445,7 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/", s.handleRoot)
 	s.echo.GET("/xrpc/_health", s.handleHealth)
 	s.echo.GET("/.well-known/did.json", s.handleWellKnown)
+	s.echo.GET("/.well-known/atproto-did", s.handleAtprotoDid)
 	s.echo.GET("/.well-known/oauth-protected-resource", s.handleOauthProtectedResource)
 	s.echo.GET("/.well-known/oauth-authorization-server", s.handleOauthAuthorizationServer)
 	s.echo.GET("/robots.txt", s.handleRobots)
@@ -465,6 +469,9 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/xrpc/com.atproto.sync.subscribeRepos", s.handleSyncSubscribeRepos)
 	s.echo.GET("/xrpc/com.atproto.sync.listBlobs", s.handleSyncListBlobs)
 	s.echo.GET("/xrpc/com.atproto.sync.getBlob", s.handleSyncGetBlob)
+
+	// labels
+	s.echo.GET("/xrpc/com.atproto.label.queryLabels", s.handleLabelQueryLabels)
 
 	// account
 	s.echo.GET("/account", s.handleAccount)

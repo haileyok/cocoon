@@ -2,9 +2,12 @@ package server
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/labstack/echo/v4"
+	"gorm.io/gorm"
 )
 
 var (
@@ -61,6 +64,36 @@ func (s *Server) handleWellKnown(e echo.Context) error {
 			},
 		},
 	})
+}
+
+func (s *Server) handleAtprotoDid(e echo.Context) error {
+	host := e.Request().Host
+	if host == "" {
+		return helpers.InputError(e, to.StringPtr("Invalid handle."))
+	}
+
+	host = strings.Split(host, ":")[0]
+	host = strings.ToLower(strings.TrimSpace(host))
+
+	if host == s.config.Hostname {
+		return e.String(200, s.config.Did)
+	}
+
+	suffix := "." + s.config.Hostname
+	if !strings.HasSuffix(host, suffix) {
+		return e.NoContent(404)
+	}
+
+	actor, err := s.getActorByHandle(host)
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return e.NoContent(404)
+		}
+		s.logger.Error("error looking up actor by handle", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+
+	return e.String(200, actor.Did)
 }
 
 func (s *Server) handleOauthProtectedResource(e echo.Context) error {

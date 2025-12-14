@@ -25,7 +25,7 @@ type ComAtprotoServerCreateAccountRequest struct {
 	Handle     string  `json:"handle" validate:"required,atproto-handle"`
 	Did        *string `json:"did" validate:"atproto-did"`
 	Password   string  `json:"password" validate:"required"`
-	InviteCode string  `json:"inviteCode" validate:"required"`
+	InviteCode string  `json:"inviteCode" validate:"omitempty"`
 }
 
 type ComAtprotoServerCreateAccountResponse struct {
@@ -104,16 +104,22 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 	}
 
 	var ic models.InviteCode
-	if err := s.db.Raw("SELECT * FROM invite_codes WHERE code = ?", nil, request.InviteCode).Scan(&ic).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
+	if s.config.RequireInvite {
+		if strings.TrimSpace(request.InviteCode) == "" {
 			return helpers.InputError(e, to.StringPtr("InvalidInviteCode"))
 		}
-		s.logger.Error("error getting invite code from db", "error", err)
-		return helpers.ServerError(e, nil)
-	}
 
-	if ic.RemainingUseCount < 1 {
-		return helpers.InputError(e, to.StringPtr("InvalidInviteCode"))
+		if err := s.db.Raw("SELECT * FROM invite_codes WHERE code = ?", nil, request.InviteCode).Scan(&ic).Error; err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return helpers.InputError(e, to.StringPtr("InvalidInviteCode"))
+			}
+			s.logger.Error("error getting invite code from db", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+
+		if ic.RemainingUseCount < 1 {
+			return helpers.InputError(e, to.StringPtr("InvalidInviteCode"))
+		}
 	}
 
 	// see if the email is already taken
@@ -234,9 +240,11 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		})
 	}
 
-	if err := s.db.Raw("UPDATE invite_codes SET remaining_use_count = remaining_use_count - 1 WHERE code = ?", nil, request.InviteCode).Scan(&ic).Error; err != nil {
-		s.logger.Error("error decrementing use count", "error", err)
-		return helpers.ServerError(e, nil)
+	if s.config.RequireInvite {
+		if err := s.db.Raw("UPDATE invite_codes SET remaining_use_count = remaining_use_count - 1 WHERE code = ?", nil, request.InviteCode).Scan(&ic).Error; err != nil {
+			s.logger.Error("error decrementing use count", "error", err)
+			return helpers.ServerError(e, nil)
+		}
 	}
 
 	sess, err := s.createSession(&urepo)

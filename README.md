@@ -256,7 +256,7 @@ Just because something is implemented doesn't mean it is finished. Tons of these
 
 ### Other
 
-- [ ] `com.atproto.label.queryLabels`
+- [x] `com.atproto.label.queryLabels`
 - [x] `com.atproto.moderation.createReport` (Note: this should be handled by proxying, not actually implemented in the PDS)
 - [x] `app.bsky.actor.getPreferences`
 - [x] `app.bsky.actor.putPreferences`

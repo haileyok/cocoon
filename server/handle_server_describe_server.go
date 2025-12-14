@@ -22,7 +22,7 @@ type ComAtprotoServerDescribeServerResponse struct {
 
 func (s *Server) handleDescribeServer(e echo.Context) error {
 	return e.JSON(200, ComAtprotoServerDescribeServerResponse{
-		InviteCodeRequired:        true,
+		InviteCodeRequired:        s.config.RequireInvite,
 		PhoneVerificationRequired: false,
 		AvailableUserDomains:      []string{"." + s.config.Hostname}, // TODO: more
 		Links: ComAtprotoServerDescribeServerResponseLinks{
