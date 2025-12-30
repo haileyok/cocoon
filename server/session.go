@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
@@ -13,7 +14,7 @@ type Session struct {
 	RefreshToken string
 }
 
-func (s *Server) createSession(repo *models.Repo) (*Session, error) {
+func (s *Server) createSession(ctx context.Context, repo *models.Repo) (*Session, error) {
 	now := time.Now()
 	accexp := now.Add(3 * time.Hour)
 	refexp := now.Add(7 * 24 * time.Hour)
@@ -49,7 +50,7 @@ func (s *Server) createSession(repo *models.Repo) (*Session, error) {
 		return nil, err
 	}
 
-	if err := s.db.Create(&models.Token{
+	if err := s.db.Create(ctx, &models.Token{
 		Token:        accessString,
 		Did:          repo.Did,
 		RefreshToken: refreshString,
@@ -59,7 +60,7 @@ func (s *Server) createSession(repo *models.Repo) (*Session, error) {
 		return nil, err
 	}
 
-	if err := s.db.Create(&models.RefreshToken{
+	if err := s.db.Create(ctx, &models.RefreshToken{
 		Token:     refreshString,
 		Did:       repo.Did,
 		CreatedAt: now,

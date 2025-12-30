@@ -18,6 +18,8 @@ import (
 )
 
 func (s *Server) handleRepoImportRepo(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	urepo := e.Get("repo").(*models.RepoActor)
 
 	b, err := io.ReadAll(e.Request().Body)
@@ -63,7 +65,7 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	tx := s.db.BeginDangerously()
+	tx := s.db.BeginDangerously(ctx)
 
 	clock := syntax.NewTIDClock(0)
 

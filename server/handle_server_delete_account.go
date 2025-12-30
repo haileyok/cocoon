@@ -20,6 +20,8 @@ type ComAtprotoServerDeleteAccountRequest struct {
 }
 
 func (s *Server) handleServerDeleteAccount(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	var req ComAtprotoServerDeleteAccountRequest
 	if err := e.Bind(&req); err != nil {
 		s.logger.Error("error binding", "error", err)
@@ -31,7 +33,7 @@ func (s *Server) handleServerDeleteAccount(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	urepo, err := s.getRepoActorByDid(req.Did)
+	urepo, err := s.getRepoActorByDid(ctx, req.Did)
 	if err != nil {
 		s.logger.Error("error getting repo", "error", err)
 		return echo.NewHTTPError(400, "account not found")
@@ -66,7 +68,7 @@ func (s *Server) handleServerDeleteAccount(e echo.Context) error {
 		})
 	}
 
-	tx := s.db.BeginDangerously()
+	tx := s.db.BeginDangerously(ctx)
 	if tx.Error != nil {
 		s.logger.Error("error starting transaction", "error", tx.Error)
 		return helpers.ServerError(e, nil)

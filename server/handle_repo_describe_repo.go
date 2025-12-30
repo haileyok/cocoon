@@ -20,8 +20,10 @@ type ComAtprotoRepoDescribeRepoResponse struct {
 }
 
 func (s *Server) handleDescribeRepo(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	did := e.QueryParam("repo")
-	repo, err := s.getRepoActorByDid(did)
+	repo, err := s.getRepoActorByDid(ctx, did)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return helpers.InputError(e, to.StringPtr("RepoNotFound"))
@@ -64,7 +66,7 @@ func (s *Server) handleDescribeRepo(e echo.Context) error {
 	}
 
 	var records []models.Record
-	if err := s.db.Raw("SELECT DISTINCT(nsid) FROM records WHERE did = ?", nil, repo.Repo.Did).Scan(&records).Error; err != nil {
+	if err := s.db.Raw(ctx, "SELECT DISTINCT(nsid) FROM records WHERE did = ?", nil, repo.Repo.Did).Scan(&records).Error; err != nil {
 		s.logger.Error("error getting collections", "error", err)
 		return helpers.ServerError(e, nil)
 	}

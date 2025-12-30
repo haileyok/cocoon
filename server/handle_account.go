@@ -12,6 +12,7 @@ import (
 
 func (s *Server) handleAccount(e echo.Context) error {
 	ctx := e.Request().Context()
+
 	repo, sess, err := s.getSessionRepoOrErr(e)
 	if err != nil {
 		return e.Redirect(303, "/account/signin")
@@ -20,7 +21,7 @@ func (s *Server) handleAccount(e echo.Context) error {
 	oldestPossibleSession := time.Now().Add(constants.ConfidentialClientSessionLifetime)
 
 	var tokens []provider.OauthToken
-	if err := s.db.Raw("SELECT * FROM oauth_tokens WHERE sub = ? AND created_at < ? ORDER BY created_at ASC", nil, repo.Repo.Did, oldestPossibleSession).Scan(&tokens).Error; err != nil {
+	if err := s.db.Raw(ctx, "SELECT * FROM oauth_tokens WHERE sub = ? AND created_at < ? ORDER BY created_at ASC", nil, repo.Repo.Did, oldestPossibleSession).Scan(&tokens).Error; err != nil {
 		s.logger.Error("couldnt fetch oauth sessions for account", "did", repo.Repo.Did, "error", err)
 		sess.AddFlash("Unable to fetch sessions. See server logs for more details.", "error")
 		sess.Save(e.Request(), e.Response())

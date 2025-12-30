@@ -46,6 +46,8 @@ func getLimitFromContext(e echo.Context, def int) (int, error) {
 }
 
 func (s *Server) handleListRecords(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	var req ComAtprotoRepoListRecordsRequest
 	if err := e.Bind(&req); err != nil {
 		s.logger.Error("could not bind list records request", "error", err)
@@ -78,7 +80,7 @@ func (s *Server) handleListRecords(e echo.Context) error {
 
 	did := req.Repo
 	if _, err := syntax.ParseDID(did); err != nil {
-		actor, err := s.getActorByHandle(req.Repo)
+		actor, err := s.getActorByHandle(ctx, req.Repo)
 		if err != nil {
 			return helpers.InputError(e, to.StringPtr("RepoNotFound"))
 		}
@@ -93,7 +95,7 @@ func (s *Server) handleListRecords(e echo.Context) error {
 	params = append(params, limit)
 
 	var records []models.Record
-	if err := s.db.Raw("SELECT * FROM records WHERE did = ? AND nsid = ? "+cursorquery+" ORDER BY created_at "+sort+" limit ?", nil, params...).Scan(&records).Error; err != nil {
+	if err := s.db.Raw(ctx, "SELECT * FROM records WHERE did = ? AND nsid = ? "+cursorquery+" ORDER BY created_at "+sort+" limit ?", nil, params...).Scan(&records).Error; err != nil {
 		s.logger.Error("error getting records", "error", err)
 		return helpers.ServerError(e, nil)
 	}

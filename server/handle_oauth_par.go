@@ -19,6 +19,8 @@ type OauthParResponse struct {
 }
 
 func (s *Server) handleOauthPar(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	var parRequest provider.ParRequest
 	if err := e.Bind(&parRequest); err != nil {
 		s.logger.Error("error binding for par request", "error", err)
@@ -86,7 +88,7 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 		ExpiresAt:  eat,
 	}
 
-	if err := s.db.Create(authRequest, nil).Error; err != nil {
+	if err := s.db.Create(ctx, authRequest, nil).Error; err != nil {
 		s.logger.Error("error creating auth request in db", "error", err)
 		return helpers.ServerError(e, nil)
 	}

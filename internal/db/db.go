@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"sync"
 
 	"gorm.io/gorm"
@@ -19,47 +20,47 @@ func NewDB(cli *gorm.DB) *DB {
 	}
 }
 
-func (db *DB) Create(value any, clauses []clause.Expression) *gorm.DB {
+func (db *DB) Create(ctx context.Context, value any, clauses []clause.Expression) *gorm.DB {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.cli.Clauses(clauses...).Create(value)
+	return db.cli.WithContext(ctx).Clauses(clauses...).Create(value)
 }
 
-func (db *DB) Save(value any, clauses []clause.Expression) *gorm.DB {
+func (db *DB) Save(ctx context.Context, value any, clauses []clause.Expression) *gorm.DB {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.cli.Clauses(clauses...).Save(value)
+	return db.cli.WithContext(ctx).Clauses(clauses...).Save(value)
 }
 
-func (db *DB) Exec(sql string, clauses []clause.Expression, values ...any) *gorm.DB {
+func (db *DB) Exec(ctx context.Context, sql string, clauses []clause.Expression, values ...any) *gorm.DB {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.cli.Clauses(clauses...).Exec(sql, values...)
+	return db.cli.WithContext(ctx).Clauses(clauses...).Exec(sql, values...)
 }
 
-func (db *DB) Raw(sql string, clauses []clause.Expression, values ...any) *gorm.DB {
-	return db.cli.Clauses(clauses...).Raw(sql, values...)
+func (db *DB) Raw(ctx context.Context, sql string, clauses []clause.Expression, values ...any) *gorm.DB {
+	return db.cli.WithContext(ctx).Clauses(clauses...).Raw(sql, values...)
 }
 
 func (db *DB) AutoMigrate(models ...any) error {
 	return db.cli.AutoMigrate(models...)
 }
 
-func (db *DB) Delete(value any, clauses []clause.Expression) *gorm.DB {
+func (db *DB) Delete(ctx context.Context, value any, clauses []clause.Expression) *gorm.DB {
 	db.mu.Lock()
 	defer db.mu.Unlock()
-	return db.cli.Clauses(clauses...).Delete(value)
+	return db.cli.WithContext(ctx).Clauses(clauses...).Delete(value)
 }
 
-func (db *DB) First(dest any, conds ...any) *gorm.DB {
-	return db.cli.First(dest, conds...)
+func (db *DB) First(ctx context.Context, dest any, conds ...any) *gorm.DB {
+	return db.cli.WithContext(ctx).First(dest, conds...)
 }
 
 // TODO: this isn't actually good. we can commit even if the db is locked here. this is probably okay for the time being, but need to figure
 // out a better solution. right now we only do this whenever we're importing a repo though so i'm mostly not worried, but it's still bad.
 // e.g. when we do apply writes we should also be using a transcation but we don't right now
-func (db *DB) BeginDangerously() *gorm.DB {
-	return db.cli.Begin()
+func (db *DB) BeginDangerously(ctx context.Context) *gorm.DB {
+	return db.cli.WithContext(ctx).Begin()
 }
 
 func (db *DB) Lock() {

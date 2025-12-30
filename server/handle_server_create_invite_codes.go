@@ -22,6 +22,8 @@ type ComAtprotoServerCreateInviteCodesItem struct {
 }
 
 func (s *Server) handleCreateInviteCodes(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	var req ComAtprotoServerCreateInviteCodesRequest
 	if err := e.Bind(&req); err != nil {
 		s.logger.Error("error binding", "error", err)
@@ -50,7 +52,7 @@ func (s *Server) handleCreateInviteCodes(e echo.Context) error {
 			ic := uuid.NewString()
 			ics = append(ics, ic)
 
-			if err := s.db.Create(&models.InviteCode{
+			if err := s.db.Create(ctx, &models.InviteCode{
 				Code:              ic,
 				Did:               did,
 				RemainingUseCount: req.UseCount,

@@ -14,12 +14,14 @@ type ComAtprotoSyncGetRepoStatusResponse struct {
 
 // TODO: make this actually do the right thing
 func (s *Server) handleSyncGetRepoStatus(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	did := e.QueryParam("did")
 	if did == "" {
 		return helpers.InputError(e, nil)
 	}
 
-	urepo, err := s.getRepoActorByDid(did)
+	urepo, err := s.getRepoActorByDid(ctx, did)
 	if err != nil {
 		return err
 	}

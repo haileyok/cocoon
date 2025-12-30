@@ -10,12 +10,14 @@ import (
 )
 
 func (s *Server) handleServerRequestAccountDelete(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	urepo := e.Get("repo").(*models.RepoActor)
 
 	token := fmt.Sprintf("%s-%s", helpers.RandomVarchar(5), helpers.RandomVarchar(5))
 	expiresAt := time.Now().UTC().Add(15 * time.Minute)
 
-	if err := s.db.Exec("UPDATE repos SET account_delete_code = ?, account_delete_code_expires_at = ? WHERE did = ?", nil, token, expiresAt, urepo.Repo.Did).Error; err != nil {
+	if err := s.db.Exec(ctx, "UPDATE repos SET account_delete_code = ?, account_delete_code_expires_at = ? WHERE did = ?", nil, token, expiresAt, urepo.Repo.Did).Error; err != nil {
 		s.logger.Error("error setting deletion token", "error", err)
 		return helpers.ServerError(e, nil)
 	}

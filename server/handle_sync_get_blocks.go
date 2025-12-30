@@ -35,7 +35,7 @@ func (s *Server) handleGetBlocks(e echo.Context) error {
 		cids = append(cids, c)
 	}
 
-	urepo, err := s.getRepoActorByDid(req.Did)
+	urepo, err := s.getRepoActorByDid(ctx, req.Did)
 	if err != nil {
 		return helpers.ServerError(e, nil)
 	}

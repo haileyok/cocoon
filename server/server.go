@@ -729,7 +729,7 @@ func (s *Server) backupRoutine() {
 }
 
 func (s *Server) UpdateRepo(ctx context.Context, did string, root cid.Cid, rev string) error {
-	if err := s.db.Exec("UPDATE repos SET root = ?, rev = ? WHERE did = ?", nil, root.Bytes(), rev, did).Error; err != nil {
+	if err := s.db.Exec(ctx, "UPDATE repos SET root = ?, rev = ? WHERE did = ?", nil, root.Bytes(), rev, did).Error; err != nil {
 		return err
 	}
 

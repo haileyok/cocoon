@@ -45,7 +45,7 @@ func (bs *SqliteBlockstore) Get(ctx context.Context, cid cid.Cid) (blocks.Block,
 		return maybeBlock, nil
 	}
 
-	if err := bs.db.Raw("SELECT * FROM blocks WHERE did = ? AND cid = ?", nil, bs.did, cid.Bytes()).Scan(&block).Error; err != nil {
+	if err := bs.db.Raw(ctx, "SELECT * FROM blocks WHERE did = ? AND cid = ?", nil, bs.did, cid.Bytes()).Scan(&block).Error; err != nil {
 		return nil, err
 	}
 
@@ -71,7 +71,7 @@ func (bs *SqliteBlockstore) Put(ctx context.Context, block blocks.Block) error {
 		Value: block.RawData(),
 	}
 
-	if err := bs.db.Create(&b, []clause.Expression{clause.OnConflict{
+	if err := bs.db.Create(ctx, &b, []clause.Expression{clause.OnConflict{
 		Columns:   []clause.Column{{Name: "did"}, {Name: "cid"}},
 		UpdateAll: true,
 	}}).Error; err != nil {
@@ -94,7 +94,7 @@ func (bs *SqliteBlockstore) GetSize(context.Context, cid.Cid) (int, error) {
 }
 
 func (bs *SqliteBlockstore) PutMany(ctx context.Context, blocks []blocks.Block) error {
-	tx := bs.db.BeginDangerously()
+	tx := bs.db.BeginDangerously(ctx)
 
 	for _, block := range blocks {
 		bs.inserts[block.Cid()] = block

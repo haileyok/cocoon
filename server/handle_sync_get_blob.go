@@ -17,6 +17,8 @@ import (
 )
 
 func (s *Server) handleSyncGetBlob(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	did := e.QueryParam("did")
 	if did == "" {
 		return helpers.InputError(e, nil)
@@ -32,7 +34,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
-	urepo, err := s.getRepoActorByDid(did)
+	urepo, err := s.getRepoActorByDid(ctx, did)
 	if err != nil {
 		s.logger.Error("could not find user for requested blob", "error", err)
 		return helpers.InputError(e, nil)
@@ -46,7 +48,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 	}
 
 	var blob models.Blob
-	if err := s.db.Raw("SELECT * FROM blobs WHERE did = ? AND cid = ?", nil, did, c.Bytes()).Scan(&blob).Error; err != nil {
+	if err := s.db.Raw(ctx, "SELECT * FROM blobs WHERE did = ? AND cid = ?", nil, did, c.Bytes()).Scan(&blob).Error; err != nil {
 		s.logger.Error("error looking up blob", "error", err)
 		return helpers.ServerError(e, nil)
 	}
@@ -55,7 +57,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 
 	if blob.Storage == "sqlite" {
 		var parts []models.BlobPart
-		if err := s.db.Raw("SELECT * FROM blob_parts WHERE blob_id = ? ORDER BY idx", nil, blob.ID).Scan(&parts).Error; err != nil {
+		if err := s.db.Raw(ctx, "SELECT * FROM blob_parts WHERE blob_id = ? ORDER BY idx", nil, blob.ID).Scan(&parts).Error; err != nil {
 			s.logger.Error("error getting blob parts", "error", err)
 			return helpers.ServerError(e, nil)
 		}

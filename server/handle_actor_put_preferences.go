@@ -10,6 +10,8 @@ import (
 // This is kinda lame. Not great to implement app.bsky in the pds, but alas
 
 func (s *Server) handleActorPutPreferences(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	repo := e.Get("repo").(*models.RepoActor)
 
 	var prefs map[string]any
@@ -22,7 +24,7 @@ func (s *Server) handleActorPutPreferences(e echo.Context) error {
 		return err
 	}
 
-	if err := s.db.Exec("UPDATE repos SET preferences = ? WHERE did = ?", nil, b, repo.Repo.Did).Error; err != nil {
+	if err := s.db.Exec(ctx, "UPDATE repos SET preferences = ? WHERE did = ?", nil, b, repo.Repo.Did).Error; err != nil {
 		return err
 	}
 

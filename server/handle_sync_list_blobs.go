@@ -14,6 +14,8 @@ type ComAtprotoSyncListBlobsResponse struct {
 }
 
 func (s *Server) handleSyncListBlobs(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	did := e.QueryParam("did")
 	if did == "" {
 		return helpers.InputError(e, nil)
@@ -35,7 +37,7 @@ func (s *Server) handleSyncListBlobs(e echo.Context) error {
 	}
 	params = append(params, limit)
 
-	urepo, err := s.getRepoActorByDid(did)
+	urepo, err := s.getRepoActorByDid(ctx, did)
 	if err != nil {
 		s.logger.Error("could not find user for requested blobs", "error", err)
 		return helpers.InputError(e, nil)
@@ -49,7 +51,7 @@ func (s *Server) handleSyncListBlobs(e echo.Context) error {
 	}
 
 	var blobs []models.Blob
-	if err := s.db.Raw("SELECT * FROM blobs WHERE did = ? "+cursorquery+" ORDER BY created_at DESC LIMIT ?", nil, params...).Scan(&blobs).Error; err != nil {
+	if err := s.db.Raw(ctx, "SELECT * FROM blobs WHERE did = ? "+cursorquery+" ORDER BY created_at DESC LIMIT ?", nil, params...).Scan(&blobs).Error; err != nil {
 		s.logger.Error("error getting records", "error", err)
 		return helpers.ServerError(e, nil)
 	}

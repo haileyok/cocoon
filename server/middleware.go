@@ -37,6 +37,8 @@ func (s *Server) handleAdminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 
 func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(e echo.Context) error {
+		ctx := e.Request().Context()
+
 		authheader := e.Request().Header.Get("authorization")
 		if authheader == "" {
 			return e.JSON(401, map[string]string{"error": "Unauthorized"})
@@ -78,7 +80,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 			}
 			did = maybeDid
 
-			maybeRepo, err := s.getRepoActorByDid(did)
+			maybeRepo, err := s.getRepoActorByDid(ctx, did)
 			if err != nil {
 				s.logger.Error("error fetching repo", "error", err)
 				return helpers.ServerError(e, nil)
@@ -159,7 +161,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 				Found bool
 			}
 			var result Result
-			if err := s.db.Raw("SELECT EXISTS(SELECT 1 FROM "+table+" WHERE token = ?) AS found", nil, tokenstr).Scan(&result).Error; err != nil {
+			if err := s.db.Raw(ctx, "SELECT EXISTS(SELECT 1 FROM "+table+" WHERE token = ?) AS found", nil, tokenstr).Scan(&result).Error; err != nil {
 				if err == gorm.ErrRecordNotFound {
 					return helpers.InvalidTokenError(e)
 				}
@@ -184,7 +186,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 		}
 
 		if repo == nil {
-			maybeRepo, err := s.getRepoActorByDid(claims["sub"].(string))
+			maybeRepo, err := s.getRepoActorByDid(ctx, claims["sub"].(string))
 			if err != nil {
 				s.logger.Error("error fetching repo", "error", err)
 				return helpers.ServerError(e, nil)
@@ -207,6 +209,8 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 
 func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(e echo.Context) error {
+		ctx := e.Request().Context()
+
 		authheader := e.Request().Header.Get("authorization")
 		if authheader == "" {
 			return e.JSON(401, map[string]string{"error": "Unauthorized"})
@@ -243,7 +247,7 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		}
 
 		var oauthToken provider.OauthToken
-		if err := s.db.Raw("SELECT * FROM oauth_tokens WHERE token = ?", nil, accessToken).Scan(&oauthToken).Error; err != nil {
+		if err := s.db.Raw(ctx, "SELECT * FROM oauth_tokens WHERE token = ?", nil, accessToken).Scan(&oauthToken).Error; err != nil {
 			s.logger.Error("error finding access token in db", "error", err)
 			return helpers.InputError(e, nil)
 		}
@@ -266,7 +270,7 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 			})
 		}
 
-		repo, err := s.getRepoActorByDid(oauthToken.Sub)
+		repo, err := s.getRepoActorByDid(ctx, oauthToken.Sub)
 		if err != nil {
 			s.logger.Error("could not find actor in db", "error", err)
 			return helpers.ServerError(e, nil)

@@ -32,6 +32,8 @@ type ComAtprotoServerCreateSessionResponse struct {
 }
 
 func (s *Server) handleCreateSession(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	var req ComAtprotoServerCreateSessionRequest
 	if err := e.Bind(&req); err != nil {
 		s.logger.Error("error binding request", "endpoint", "com.atproto.server.serverCreateSession", "error", err)
@@ -65,11 +67,11 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 	var err error
 	switch idtype {
 	case "did":
-		err = s.db.Raw("SELECT r.*, a.* FROM repos r LEFT JOIN actors a ON r.did = a.did WHERE r.did = ?", nil, req.Identifier).Scan(&repo).Error
+		err = s.db.Raw(ctx, "SELECT r.*, a.* FROM repos r LEFT JOIN actors a ON r.did = a.did WHERE r.did = ?", nil, req.Identifier).Scan(&repo).Error
 	case "handle":
-		err = s.db.Raw("SELECT r.*, a.* FROM actors a LEFT JOIN repos r ON a.did = r.did WHERE a.handle = ?", nil, req.Identifier).Scan(&repo).Error
+		err = s.db.Raw(ctx, "SELECT r.*, a.* FROM actors a LEFT JOIN repos r ON a.did = r.did WHERE a.handle = ?", nil, req.Identifier).Scan(&repo).Error
 	case "email":
-		err = s.db.Raw("SELECT r.*, a.* FROM repos r LEFT JOIN actors a ON r.did = a.did WHERE r.email = ?", nil, req.Identifier).Scan(&repo).Error
+		err = s.db.Raw(ctx, "SELECT r.*, a.* FROM repos r LEFT JOIN actors a ON r.did = a.did WHERE r.email = ?", nil, req.Identifier).Scan(&repo).Error
 	}
 
 	if err != nil {
@@ -88,7 +90,7 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 		return helpers.InputError(e, to.StringPtr("InvalidRequest"))
 	}
 
-	sess, err := s.createSession(&repo.Repo)
+	sess, err := s.createSession(ctx, &repo.Repo)
 	if err != nil {
 		s.logger.Error("error creating session", "error", err)
 		return helpers.ServerError(e, nil)

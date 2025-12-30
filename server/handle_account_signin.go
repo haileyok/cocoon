@@ -14,13 +14,15 @@ import (
 	"gorm.io/gorm"
 )
 
-type OauthSigninRequest struct {
+type OauthSigninInput struct {
 	Username    string `form:"username"`
 	Password    string `form:"password"`
 	QueryParams string `form:"query_params"`
 }
 
 func (s *Server) getSessionRepoOrErr(e echo.Context) (*models.RepoActor, *sessions.Session, error) {
+	ctx := e.Request().Context()
+
 	sess, err := session.Get("session", e)
 	if err != nil {
 		return nil, nil, err
@@ -31,7 +33,7 @@ func (s *Server) getSessionRepoOrErr(e echo.Context) (*models.RepoActor, *sessio
 		return nil, sess, errors.New("did was not set in session")
 	}
 
-	repo, err := s.getRepoActorByDid(did)
+	repo, err := s.getRepoActorByDid(ctx, did)
 	if err != nil {
 		return nil, sess, err
 	}
@@ -60,7 +62,9 @@ func (s *Server) handleAccountSigninGet(e echo.Context) error {
 }
 
 func (s *Server) handleAccountSigninPost(e echo.Context) error {
-	var req OauthSigninRequest
+	ctx := e.Request().Context()
+
+	var req OauthSigninInput
 	if err := e.Bind(&req); err != nil {
 		s.logger.Error("error binding sign in req", "error", err)
 		return helpers.ServerError(e, nil)
@@ -83,11 +87,11 @@ func (s *Server) handleAccountSigninPost(e echo.Context) error {
 	var err error
 	switch idtype {
 	case "did":
-		err = s.db.Raw("SELECT r.*, a.* FROM repos r LEFT JOIN actors a ON r.did = a.did WHERE r.did = ?", nil, req.Username).Scan(&repo).Error
+		err = s.db.Raw(ctx, "SELECT r.*, a.* FROM repos r LEFT JOIN actors a ON r.did = a.did WHERE r.did = ?", nil, req.Username).Scan(&repo).Error
 	case "handle":
-		err = s.db.Raw("SELECT r.*, a.* FROM actors a LEFT JOIN repos r ON a.did = r.did WHERE a.handle = ?", nil, req.Username).Scan(&repo).Error
+		err = s.db.Raw(ctx, "SELECT r.*, a.* FROM actors a LEFT JOIN repos r ON a.did = r.did WHERE a.handle = ?", nil, req.Username).Scan(&repo).Error
 	case "email":
-		err = s.db.Raw("SELECT r.*, a.* FROM repos r LEFT JOIN actors a ON r.did = a.did WHERE r.email = ?", nil, req.Username).Scan(&repo).Error
+		err = s.db.Raw(ctx, "SELECT r.*, a.* FROM repos r LEFT JOIN actors a ON r.did = a.did WHERE r.email = ?", nil, req.Username).Scan(&repo).Error
 	}
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {

@@ -14,6 +14,8 @@ type ComAtprotoRepoGetRecordResponse struct {
 }
 
 func (s *Server) handleRepoGetRecord(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	repo := e.QueryParam("repo")
 	collection := e.QueryParam("collection")
 	rkey := e.QueryParam("rkey")
@@ -32,7 +34,7 @@ func (s *Server) handleRepoGetRecord(e echo.Context) error {
 	}
 
 	var record models.Record
-	if err := s.db.Raw("SELECT * FROM records WHERE did = ? AND nsid = ? AND rkey = ?"+cidquery, nil, params...).Scan(&record).Error; err != nil {
+	if err := s.db.Raw(ctx, "SELECT * FROM records WHERE did = ? AND nsid = ? AND rkey = ?"+cidquery, nil, params...).Scan(&record).Error; err != nil {
 		// TODO: handle error nicely
 		return err
 	}

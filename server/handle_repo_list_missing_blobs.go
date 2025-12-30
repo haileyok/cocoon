@@ -22,6 +22,8 @@ type ComAtprotoRepoListMissingBlobsRecordBlob struct {
 }
 
 func (s *Server) handleListMissingBlobs(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	urepo := e.Get("repo").(*models.RepoActor)
 
 	limitStr := e.QueryParam("limit")
@@ -35,7 +37,7 @@ func (s *Server) handleListMissingBlobs(e echo.Context) error {
 	}
 
 	var records []models.Record
-	if err := s.db.Raw("SELECT * FROM records WHERE did = ?", nil, urepo.Repo.Did).Scan(&records).Error; err != nil {
+	if err := s.db.Raw(ctx, "SELECT * FROM records WHERE did = ?", nil, urepo.Repo.Did).Scan(&records).Error; err != nil {
 		s.logger.Error("failed to get records for listMissingBlobs", "error", err)
 		return helpers.ServerError(e, nil)
 	}
@@ -69,7 +71,7 @@ func (s *Server) handleListMissingBlobs(e echo.Context) error {
 		}
 
 		var count int64
-		if err := s.db.Raw("SELECT COUNT(*) FROM blobs WHERE did = ? AND cid = ?", nil, urepo.Repo.Did, ref.cid.Bytes()).Scan(&count).Error; err != nil {
+		if err := s.db.Raw(ctx, "SELECT COUNT(*) FROM blobs WHERE did = ? AND cid = ?", nil, urepo.Repo.Did, ref.cid.Bytes()).Scan(&count).Error; err != nil {
 			continue
 		}
 

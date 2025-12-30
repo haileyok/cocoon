@@ -67,6 +67,8 @@ func (s *Server) handleWellKnown(e echo.Context) error {
 }
 
 func (s *Server) handleAtprotoDid(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	host := e.Request().Host
 	if host == "" {
 		return helpers.InputError(e, to.StringPtr("Invalid handle."))
@@ -84,7 +86,7 @@ func (s *Server) handleAtprotoDid(e echo.Context) error {
 		return e.NoContent(404)
 	}
 
-	actor, err := s.getActorByHandle(host)
+	actor, err := s.getActorByHandle(ctx, host)
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return e.NoContent(404)

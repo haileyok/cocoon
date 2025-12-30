@@ -92,7 +92,7 @@ func (s *Server) handleSignPlcOperation(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.db.Exec("UPDATE repos SET plc_operation_code = NULL, plc_operation_code_expires_at = NULL WHERE did = ?", nil, repo.Repo.Did).Error; err != nil {
+	if err := s.db.Exec(ctx, "UPDATE repos SET plc_operation_code = NULL, plc_operation_code_expires_at = NULL WHERE did = ?", nil, repo.Repo.Did).Error; err != nil {
 		s.logger.Error("error updating repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}

@@ -38,6 +38,8 @@ type OauthTokenResponse struct {
 }
 
 func (s *Server) handleOauthToken(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	var req OauthTokenRequest
 	if err := e.Bind(&req); err != nil {
 		s.logger.Error("error binding token request", "error", err)
@@ -84,7 +86,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 
 		var authReq provider.OauthAuthorizationRequest
 		// get the lil guy and delete him
-		if err := s.db.Raw("DELETE FROM oauth_authorization_requests WHERE code = ? RETURNING *", nil, *req.Code).Scan(&authReq).Error; err != nil {
+		if err := s.db.Raw(ctx, "DELETE FROM oauth_authorization_requests WHERE code = ? RETURNING *", nil, *req.Code).Scan(&authReq).Error; err != nil {
 			s.logger.Error("error finding authorization request", "error", err)
 			return helpers.ServerError(e, nil)
 		}
@@ -128,7 +130,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr("code_challenge parameter wasn't provided"))
 		}
 
-		repo, err := s.getRepoActorByDid(*authReq.Sub)
+		repo, err := s.getRepoActorByDid(ctx, *authReq.Sub)
 		if err != nil {
 			helpers.InputError(e, to.StringPtr("unable to find actor"))
 		}
@@ -159,7 +161,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return err
 		}
 
-		if err := s.db.Create(&provider.OauthToken{
+		if err := s.db.Create(ctx, &provider.OauthToken{
 			ClientId:     authReq.ClientId,
 			ClientAuth:   *clientAuth,
 			Parameters:   authReq.Parameters,
@@ -199,7 +201,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		var oauthToken provider.OauthToken
-		if err := s.db.Raw("SELECT * FROM oauth_tokens WHERE refresh_token = ?", nil, req.RefreshToken).Scan(&oauthToken).Error; err != nil {
+		if err := s.db.Raw(ctx, "SELECT * FROM oauth_tokens WHERE refresh_token = ?", nil, req.RefreshToken).Scan(&oauthToken).Error; err != nil {
 			s.logger.Error("error finding oauth token by refresh token", "error", err, "refresh_token", req.RefreshToken)
 			return helpers.ServerError(e, nil)
 		}
@@ -257,7 +259,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return err
 		}
 
-		if err := s.db.Exec("UPDATE oauth_tokens SET token = ?, refresh_token = ?, expires_at = ?, updated_at = ? WHERE refresh_token = ?", nil, accessString, nextRefreshToken, eat, now, *req.RefreshToken).Error; err != nil {
+		if err := s.db.Exec(ctx, "UPDATE oauth_tokens SET token = ?, refresh_token = ?, expires_at = ?, updated_at = ? WHERE refresh_token = ?", nil, accessString, nextRefreshToken, eat, now, *req.RefreshToken).Error; err != nil {
 			s.logger.Error("error updating token", "error", err)
 			return helpers.ServerError(e, nil)
 		}

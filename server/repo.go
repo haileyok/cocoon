@@ -181,7 +181,7 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		case OpTypeDelete:
 			// try to find the old record in the database
 			var old models.Record
-			if err := rm.db.Raw("SELECT value FROM records WHERE did = ? AND nsid = ? AND rkey = ?", nil, urepo.Did, op.Collection, op.Rkey).Scan(&old).Error; err != nil {
+			if err := rm.db.Raw(ctx, "SELECT value FROM records WHERE did = ? AND nsid = ? AND rkey = ?", nil, urepo.Did, op.Collection, op.Rkey).Scan(&old).Error; err != nil {
 				return nil, err
 			}
 
@@ -323,7 +323,7 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		var cids []cid.Cid
 		// whenever there is cid present, we know it's a create (dumb)
 		if entry.Cid != "" {
-			if err := rm.s.db.Create(&entry, []clause.Expression{clause.OnConflict{
+			if err := rm.s.db.Create(ctx, &entry, []clause.Expression{clause.OnConflict{
 				Columns:   []clause.Column{{Name: "did"}, {Name: "nsid"}, {Name: "rkey"}},
 				UpdateAll: true,
 			}}).Error; err != nil {
@@ -331,7 +331,7 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 			}
 
 			// increment the given blob refs, yay
-			cids, err = rm.incrementBlobRefs(urepo, entry.Value)
+			cids, err = rm.incrementBlobRefs(ctx, urepo, entry.Value)
 			if err != nil {
 				return nil, err
 			}
@@ -339,12 +339,12 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 			// as i noted above this is dumb. but we delete whenever the cid is nil. it works solely becaue the pkey
 			// is did + collection + rkey. i still really want to separate that out, or use a different type to make
 			// this less confusing/easy to read. alas, its 2 am and yea no
-			if err := rm.s.db.Delete(&entry, nil).Error; err != nil {
+			if err := rm.s.db.Delete(ctx, &entry, nil).Error; err != nil {
 				return nil, err
 			}
 
 			// TODO:
-			cids, err = rm.decrementBlobRefs(urepo, entry.Value)
+			cids, err = rm.decrementBlobRefs(ctx, urepo, entry.Value)
 			if err != nil {
 				return nil, err
 			}
@@ -411,14 +411,14 @@ func (rm *RepoMan) getRecordProof(ctx context.Context, urepo models.Repo, collec
 	return c, bs.GetReadLog(), nil
 }
 
-func (rm *RepoMan) incrementBlobRefs(urepo models.Repo, cbor []byte) ([]cid.Cid, error) {
+func (rm *RepoMan) incrementBlobRefs(ctx context.Context, urepo models.Repo, cbor []byte) ([]cid.Cid, error) {
 	cids, err := getBlobCidsFromCbor(cbor)
 	if err != nil {
 		return nil, err
 	}
 
 	for _, c := range cids {
-		if err := rm.db.Exec("UPDATE blobs SET ref_count = ref_count + 1 WHERE did = ? AND cid = ?", nil, urepo.Did, c.Bytes()).Error; err != nil {
+		if err := rm.db.Exec(ctx, "UPDATE blobs SET ref_count = ref_count + 1 WHERE did = ? AND cid = ?", nil, urepo.Did, c.Bytes()).Error; err != nil {
 			return nil, err
 		}
 	}
@@ -426,7 +426,7 @@ func (rm *RepoMan) incrementBlobRefs(urepo models.Repo, cbor []byte) ([]cid.Cid,
 	return cids, nil
 }
 
-func (rm *RepoMan) decrementBlobRefs(urepo models.Repo, cbor []byte) ([]cid.Cid, error) {
+func (rm *RepoMan) decrementBlobRefs(ctx context.Context, urepo models.Repo, cbor []byte) ([]cid.Cid, error) {
 	cids, err := getBlobCidsFromCbor(cbor)
 	if err != nil {
 		return nil, err
@@ -437,17 +437,17 @@ func (rm *RepoMan) decrementBlobRefs(urepo models.Repo, cbor []byte) ([]cid.Cid,
 			ID    uint
 			Count int
 		}
-		if err := rm.db.Raw("UPDATE blobs SET ref_count = ref_count - 1 WHERE did = ? AND cid = ? RETURNING id, ref_count", nil, urepo.Did, c.Bytes()).Scan(&res).Error; err != nil {
+		if err := rm.db.Raw(ctx, "UPDATE blobs SET ref_count = ref_count - 1 WHERE did = ? AND cid = ? RETURNING id, ref_count", nil, urepo.Did, c.Bytes()).Scan(&res).Error; err != nil {
 			return nil, err
 		}
 
 		// TODO: this does _not_ handle deletions of blobs that are on s3 storage!!!! we need to get the blob, see what
 		// storage it is in, and clean up s3!!!!
 		if res.Count == 0 {
-			if err := rm.db.Exec("DELETE FROM blobs WHERE id = ?", nil, res.ID).Error; err != nil {
+			if err := rm.db.Exec(ctx, "DELETE FROM blobs WHERE id = ?", nil, res.ID).Error; err != nil {
 				return nil, err
 			}
-			if err := rm.db.Exec("DELETE FROM blob_parts WHERE blob_id = ?", nil, res.ID).Error; err != nil {
+			if err := rm.db.Exec(ctx, "DELETE FROM blob_parts WHERE blob_id = ?", nil, res.ID).Error; err != nil {
 				return nil, err
 			}
 		}

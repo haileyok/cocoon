@@ -13,6 +13,8 @@ import (
 )
 
 func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	reqUri := e.QueryParam("request_uri")
 	if reqUri == "" {
 		// render page for logged out dev
@@ -38,7 +40,7 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 	}
 
 	var req provider.OauthAuthorizationRequest
-	if err := s.db.Raw("SELECT * FROM oauth_authorization_requests WHERE request_id = ?", nil, reqId).Scan(&req).Error; err != nil {
+	if err := s.db.Raw(ctx, "SELECT * FROM oauth_authorization_requests WHERE request_id = ?", nil, reqId).Scan(&req).Error; err != nil {
 		return helpers.ServerError(e, to.StringPtr(err.Error()))
 	}
 
@@ -72,6 +74,8 @@ type OauthAuthorizePostRequest struct {
 }
 
 func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	repo, _, err := s.getSessionRepoOrErr(e)
 	if err != nil {
 		return e.Redirect(303, "/account/signin")
@@ -89,7 +93,7 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 	}
 
 	var authReq provider.OauthAuthorizationRequest
-	if err := s.db.Raw("SELECT * FROM oauth_authorization_requests WHERE request_id = ?", nil, reqId).Scan(&authReq).Error; err != nil {
+	if err := s.db.Raw(ctx, "SELECT * FROM oauth_authorization_requests WHERE request_id = ?", nil, reqId).Scan(&authReq).Error; err != nil {
 		return helpers.ServerError(e, to.StringPtr(err.Error()))
 	}
 
@@ -113,7 +117,7 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 
 	code := oauth.GenerateCode()
 
-	if err := s.db.Exec("UPDATE oauth_authorization_requests SET sub = ?, code = ?, accepted = ?, ip = ? WHERE request_id = ?", nil, repo.Repo.Did, code, true, e.RealIP(), reqId).Error; err != nil {
+	if err := s.db.Exec(ctx, "UPDATE oauth_authorization_requests SET sub = ?, code = ?, accepted = ?, ip = ? WHERE request_id = ?", nil, repo.Repo.Did, code, true, e.RealIP(), reqId).Error; err != nil {
 		s.logger.Error("error updating authorization request", "error", err)
 		return helpers.ServerError(e, nil)
 	}

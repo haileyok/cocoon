@@ -10,12 +10,14 @@ import (
 )
 
 func (s *Server) handleIdentityRequestPlcOperationSignature(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	urepo := e.Get("repo").(*models.RepoActor)
 
 	code := fmt.Sprintf("%s-%s", helpers.RandomVarchar(5), helpers.RandomVarchar(5))
 	eat := time.Now().Add(10 * time.Minute).UTC()
 
-	if err := s.db.Exec("UPDATE repos SET plc_operation_code = ?, plc_operation_code_expires_at = ? WHERE did = ?", nil, code, eat, urepo.Repo.Did).Error; err != nil {
+	if err := s.db.Exec(ctx, "UPDATE repos SET plc_operation_code = ?, plc_operation_code_expires_at = ? WHERE did = ?", nil, code, eat, urepo.Repo.Did).Error; err != nil {
 		s.logger.Error("error updating user", "error", err)
 		return helpers.ServerError(e, nil)
 	}

@@ -36,6 +36,8 @@ type ComAtprotoServerCreateAccountResponse struct {
 }
 
 func (s *Server) handleCreateAccount(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	var request ComAtprotoServerCreateAccountRequest
 
 	if err := e.Bind(&request); err != nil {
@@ -68,11 +70,11 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 			}
 		}
 	}
-	
+
 	var signupDid string
 	if request.Did != nil {
-		signupDid = *request.Did;
-		
+		signupDid = *request.Did
+
 		token := strings.TrimSpace(strings.Replace(e.Request().Header.Get("authorization"), "Bearer ", "", 1))
 		if token == "" {
 			return helpers.UnauthorizedError(e, to.StringPtr("must authenticate to use an existing did"))
@@ -90,7 +92,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 	}
 
 	// see if the handle is already taken
-	actor, err := s.getActorByHandle(request.Handle)
+	actor, err := s.getActorByHandle(ctx, request.Handle)
 	if err != nil && err != gorm.ErrRecordNotFound {
 		s.logger.Error("error looking up handle in db", "endpoint", "com.atproto.server.createAccount", "error", err)
 		return helpers.ServerError(e, nil)
@@ -109,7 +111,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr("InvalidInviteCode"))
 		}
 
-		if err := s.db.Raw("SELECT * FROM invite_codes WHERE code = ?", nil, request.InviteCode).Scan(&ic).Error; err != nil {
+		if err := s.db.Raw(ctx, "SELECT * FROM invite_codes WHERE code = ?", nil, request.InviteCode).Scan(&ic).Error; err != nil {
 			if err == gorm.ErrRecordNotFound {
 				return helpers.InputError(e, to.StringPtr("InvalidInviteCode"))
 			}
@@ -123,7 +125,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 	}
 
 	// see if the email is already taken
-	existingRepo, err := s.getRepoByEmail(request.Email)
+	existingRepo, err := s.getRepoByEmail(ctx, request.Email)
 	if err != nil && err != gorm.ErrRecordNotFound {
 		s.logger.Error("error looking up email in db", "endpoint", "com.atproto.server.createAccount", "error", err)
 		return helpers.ServerError(e, nil)
@@ -137,7 +139,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 	var k *atcrypto.PrivateKeyK256
 
 	if signupDid != "" {
-		reservedKey, err := s.getReservedKey(signupDid)
+		reservedKey, err := s.getReservedKey(ctx, signupDid)
 		if err != nil {
 			s.logger.Error("error looking up reserved key", "error", err)
 		}
@@ -148,7 +150,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 				k = nil
 			} else {
 				defer func() {
-					if delErr := s.deleteReservedKey(reservedKey.KeyDid, reservedKey.Did); delErr != nil {
+					if delErr := s.deleteReservedKey(ctx, reservedKey.KeyDid, reservedKey.Did); delErr != nil {
 						s.logger.Error("error deleting reserved key", "error", delErr)
 					}
 				}()
@@ -199,17 +201,17 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 			Handle: request.Handle,
 		}
 
-		if err := s.db.Create(&urepo, nil).Error; err != nil {
+		if err := s.db.Create(ctx, &urepo, nil).Error; err != nil {
 			s.logger.Error("error inserting new repo", "error", err)
 			return helpers.ServerError(e, nil)
 		}
-	
-		if err := s.db.Create(&actor, nil).Error; err != nil {
+
+		if err := s.db.Create(ctx, &actor, nil).Error; err != nil {
 			s.logger.Error("error inserting new actor", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 	} else {
-		if err := s.db.Save(&actor, nil).Error; err != nil {
+		if err := s.db.Save(ctx, &actor, nil).Error; err != nil {
 			s.logger.Error("error inserting new actor", "error", err)
 			return helpers.ServerError(e, nil)
 		}
@@ -241,13 +243,13 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 	}
 
 	if s.config.RequireInvite {
-		if err := s.db.Raw("UPDATE invite_codes SET remaining_use_count = remaining_use_count - 1 WHERE code = ?", nil, request.InviteCode).Scan(&ic).Error; err != nil {
+		if err := s.db.Raw(ctx, "UPDATE invite_codes SET remaining_use_count = remaining_use_count - 1 WHERE code = ?", nil, request.InviteCode).Scan(&ic).Error; err != nil {
 			s.logger.Error("error decrementing use count", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 	}
 
-	sess, err := s.createSession(&urepo)
+	sess, err := s.createSession(ctx, &urepo)
 	if err != nil {
 		s.logger.Error("error creating new session", "error", err)
 		return helpers.ServerError(e, nil)

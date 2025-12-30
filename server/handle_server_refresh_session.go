@@ -16,20 +16,22 @@ type ComAtprotoServerRefreshSessionResponse struct {
 }
 
 func (s *Server) handleRefreshSession(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	token := e.Get("token").(string)
 	repo := e.Get("repo").(*models.RepoActor)
 
-	if err := s.db.Exec("DELETE FROM refresh_tokens WHERE token = ?", nil, token).Error; err != nil {
+	if err := s.db.Exec(ctx, "DELETE FROM refresh_tokens WHERE token = ?", nil, token).Error; err != nil {
 		s.logger.Error("error getting refresh token from db", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := s.db.Exec("DELETE FROM tokens WHERE refresh_token = ?", nil, token).Error; err != nil {
+	if err := s.db.Exec(ctx, "DELETE FROM tokens WHERE refresh_token = ?", nil, token).Error; err != nil {
 		s.logger.Error("error deleting access token from db", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	sess, err := s.createSession(&repo.Repo)
+	sess, err := s.createSession(ctx, &repo.Repo)
 	if err != nil {
 		s.logger.Error("error creating new session for refresh", "error", err)
 		return helpers.ServerError(e, nil)

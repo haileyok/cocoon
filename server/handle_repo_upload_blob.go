@@ -32,6 +32,8 @@ type ComAtprotoRepoUploadBlobResponse struct {
 }
 
 func (s *Server) handleRepoUploadBlob(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	urepo := e.Get("repo").(*models.RepoActor)
 
 	mime := e.Request().Header.Get("content-type")
@@ -51,7 +53,7 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 		Storage:   storage,
 	}
 
-	if err := s.db.Create(&blob, nil).Error; err != nil {
+	if err := s.db.Create(ctx, &blob, nil).Error; err != nil {
 		s.logger.Error("error creating new blob in db", "error", err)
 		return helpers.ServerError(e, nil)
 	}
@@ -84,7 +86,7 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 				Data:   data,
 			}
 
-			if err := s.db.Create(&blobPart, nil).Error; err != nil {
+			if err := s.db.Create(ctx, &blobPart, nil).Error; err != nil {
 				s.logger.Error("error adding blob part to db", "error", err)
 				return helpers.ServerError(e, nil)
 			}
@@ -131,7 +133,7 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 		}
 	}
 
-	if err := s.db.Exec("UPDATE blobs SET cid = ? WHERE id = ?", nil, c.Bytes(), blob.ID).Error; err != nil {
+	if err := s.db.Exec(ctx, "UPDATE blobs SET cid = ? WHERE id = ?", nil, c.Bytes(), blob.ID).Error; err != nil {
 		// there should probably be somme handling here if this fails...
 		s.logger.Error("error updating blob", "error", err)
 		return helpers.ServerError(e, nil)

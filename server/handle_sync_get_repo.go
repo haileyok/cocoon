@@ -13,12 +13,14 @@ import (
 )
 
 func (s *Server) handleSyncGetRepo(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	did := e.QueryParam("did")
 	if did == "" {
 		return helpers.InputError(e, nil)
 	}
 
-	urepo, err := s.getRepoActorByDid(did)
+	urepo, err := s.getRepoActorByDid(ctx, did)
 	if err != nil {
 		return err
 	}
@@ -41,7 +43,7 @@ func (s *Server) handleSyncGetRepo(e echo.Context) error {
 	}
 
 	var blocks []models.Block
-	if err := s.db.Raw("SELECT * FROM blocks WHERE did = ? ORDER BY rev ASC", nil, urepo.Repo.Did).Scan(&blocks).Error; err != nil {
+	if err := s.db.Raw(ctx, "SELECT * FROM blocks WHERE did = ? ORDER BY rev ASC", nil, urepo.Repo.Did).Scan(&blocks).Error; err != nil {
 		return err
 	}
 
