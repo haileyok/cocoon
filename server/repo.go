@@ -104,7 +104,7 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 
 	dbs := rm.s.getBlockstore(urepo.Did)
 	bs := recording_blockstore.New(dbs)
-	r, err := repo.OpenRepo(context.TODO(), bs, rootcid)
+	r, err := repo.OpenRepo(ctx, bs, rootcid)
 
 	var results []ApplyWriteResult
 
@@ -196,7 +196,7 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 			})
 
 			// delete the record from the repo
-			err := r.DeleteRecord(context.TODO(), op.Collection+"/"+*op.Rkey)
+			err := r.DeleteRecord(ctx, fmt.Sprintf("%s/%s", op.Collection, *op.Rkey))
 			if err != nil {
 				return nil, err
 			}
@@ -264,7 +264,7 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 	}
 
 	// get a diff of the changes to the repo
-	diffops, err := r.DiffSince(context.TODO(), rootcid)
+	diffops, err := r.DiffSince(ctx, rootcid)
 	if err != nil {
 		return nil, err
 	}
