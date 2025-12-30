@@ -6,7 +6,7 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-type ComAtprotoRepoApplyWritesRequest struct {
+type ComAtprotoRepoApplyWritesInput struct {
 	Repo       string                          `json:"repo" validate:"required,atproto-did"`
 	Validate   *bool                           `json:"bool,omitempty"`
 	Writes     []ComAtprotoRepoApplyWritesItem `json:"writes"`
@@ -20,15 +20,15 @@ type ComAtprotoRepoApplyWritesItem struct {
 	Value      *MarshalableMap `json:"value,omitempty"`
 }
 
-type ComAtprotoRepoApplyWritesResponse struct {
+type ComAtprotoRepoApplyWritesOutput struct {
 	Commit  RepoCommit         `json:"commit"`
 	Results []ApplyWriteResult `json:"results"`
 }
 
 func (s *Server) handleApplyWrites(e echo.Context) error {
-	repo := e.Get("repo").(*models.RepoActor)
+	ctx := e.Request().Context()
 
-	var req ComAtprotoRepoApplyWritesRequest
+	var req ComAtprotoRepoApplyWritesInput
 	if err := e.Bind(&req); err != nil {
 		s.logger.Error("error binding", "error", err)
 		return helpers.ServerError(e, nil)
@@ -39,12 +39,14 @@ func (s *Server) handleApplyWrites(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
+	repo := e.Get("repo").(*models.RepoActor)
+
 	if repo.Repo.Did != req.Repo {
 		s.logger.Warn("mismatched repo/auth")
 		return helpers.InputError(e, nil)
 	}
 
-	ops := []Op{}
+	ops := make([]Op, 0, len(req.Writes))
 	for _, item := range req.Writes {
 		ops = append(ops, Op{
 			Type:       OpType(item.Type),
@@ -54,7 +56,7 @@ func (s *Server) handleApplyWrites(e echo.Context) error {
 		})
 	}
 
-	results, err := s.repoman.applyWrites(repo.Repo, ops, req.SwapCommit)
+	results, err := s.repoman.applyWrites(ctx, repo.Repo, ops, req.SwapCommit)
 	if err != nil {
 		s.logger.Error("error applying writes", "error", err)
 		return helpers.ServerError(e, nil)
@@ -66,7 +68,7 @@ func (s *Server) handleApplyWrites(e echo.Context) error {
 		results[i].Commit = nil
 	}
 
-	return e.JSON(200, ComAtprotoRepoApplyWritesResponse{
+	return e.JSON(200, ComAtprotoRepoApplyWritesOutput{
 		Commit:  commit,
 		Results: results,
 	})

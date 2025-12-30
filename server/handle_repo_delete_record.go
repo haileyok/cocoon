@@ -6,7 +6,7 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-type ComAtprotoRepoDeleteRecordRequest struct {
+type ComAtprotoRepoDeleteRecordInput struct {
 	Repo       string  `json:"repo" validate:"required,atproto-did"`
 	Collection string  `json:"collection" validate:"required,atproto-nsid"`
 	Rkey       string  `json:"rkey" validate:"required,atproto-rkey"`
@@ -15,9 +15,11 @@ type ComAtprotoRepoDeleteRecordRequest struct {
 }
 
 func (s *Server) handleDeleteRecord(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	repo := e.Get("repo").(*models.RepoActor)
 
-	var req ComAtprotoRepoDeleteRecordRequest
+	var req ComAtprotoRepoDeleteRecordInput
 	if err := e.Bind(&req); err != nil {
 		s.logger.Error("error binding", "error", err)
 		return helpers.ServerError(e, nil)
@@ -33,7 +35,7 @@ func (s *Server) handleDeleteRecord(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
-	results, err := s.repoman.applyWrites(repo.Repo, []Op{
+	results, err := s.repoman.applyWrites(ctx, repo.Repo, []Op{
 		{
 			Type:       OpTypeDelete,
 			Collection: req.Collection,

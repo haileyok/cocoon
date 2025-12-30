@@ -6,7 +6,7 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-type ComAtprotoRepoPutRecordRequest struct {
+type ComAtprotoRepoPutRecordInput struct {
 	Repo       string         `json:"repo" validate:"required,atproto-did"`
 	Collection string         `json:"collection" validate:"required,atproto-nsid"`
 	Rkey       string         `json:"rkey" validate:"required,atproto-rkey"`
@@ -17,9 +17,11 @@ type ComAtprotoRepoPutRecordRequest struct {
 }
 
 func (s *Server) handlePutRecord(e echo.Context) error {
+	ctx := e.Request().Context()
+
 	repo := e.Get("repo").(*models.RepoActor)
 
-	var req ComAtprotoRepoPutRecordRequest
+	var req ComAtprotoRepoPutRecordInput
 	if err := e.Bind(&req); err != nil {
 		s.logger.Error("error binding", "error", err)
 		return helpers.ServerError(e, nil)
@@ -40,7 +42,7 @@ func (s *Server) handlePutRecord(e echo.Context) error {
 		optype = OpTypeUpdate
 	}
 
-	results, err := s.repoman.applyWrites(repo.Repo, []Op{
+	results, err := s.repoman.applyWrites(ctx, repo.Repo, []Op{
 		{
 			Type:       optype,
 			Collection: req.Collection,
