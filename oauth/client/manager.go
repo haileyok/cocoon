@@ -72,7 +72,6 @@ func (cm *Manager) GetClient(ctx context.Context, clientId string) (*Client, err
 			}
 
 			jwks = k
-		} else if metadata.JWKS != nil {
 		} else if metadata.JWKSURI != nil {
 			maybeJwks, err := cm.getClientJwks(ctx, clientId, *metadata.JWKSURI)
 			if err != nil {
