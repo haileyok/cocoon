@@ -17,12 +17,13 @@ type ComAtprotoServerResetPasswordRequest struct {
 
 func (s *Server) handleServerResetPassword(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleServerResetPassword")
 
 	urepo := e.Get("repo").(*models.RepoActor)
 
 	var req ComAtprotoServerResetPasswordRequest
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("error binding", "error", err)
+		logger.Error("error binding", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -44,12 +45,12 @@ func (s *Server) handleServerResetPassword(e echo.Context) error {
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), 10)
 	if err != nil {
-		s.logger.Error("error creating hash", "error", err)
+		logger.Error("error creating hash", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	if err := s.db.Exec(ctx, "UPDATE repos SET password_reset_code = NULL, password_reset_code_expires_at = NULL, password = ? WHERE did = ?", nil, hash, urepo.Repo.Did).Error; err != nil {
-		s.logger.Error("error updating repo", "error", err)
+		logger.Error("error updating repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

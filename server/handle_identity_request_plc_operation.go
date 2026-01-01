@@ -11,6 +11,7 @@ import (
 
 func (s *Server) handleIdentityRequestPlcOperationSignature(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleIdentityRequestPlcOperationSignature")
 
 	urepo := e.Get("repo").(*models.RepoActor)
 
@@ -18,12 +19,12 @@ func (s *Server) handleIdentityRequestPlcOperationSignature(e echo.Context) erro
 	eat := time.Now().Add(10 * time.Minute).UTC()
 
 	if err := s.db.Exec(ctx, "UPDATE repos SET plc_operation_code = ?, plc_operation_code_expires_at = ? WHERE did = ?", nil, code, eat, urepo.Repo.Did).Error; err != nil {
-		s.logger.Error("error updating user", "error", err)
+		logger.Error("error updating user", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	if err := s.sendPlcTokenReset(urepo.Email, urepo.Handle, code); err != nil {
-		s.logger.Error("error sending mail", "error", err)
+		logger.Error("error sending mail", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

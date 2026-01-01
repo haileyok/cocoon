@@ -21,6 +21,7 @@ type ComAtprotoRepoDescribeRepoResponse struct {
 
 func (s *Server) handleDescribeRepo(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleDescribeRepo")
 
 	did := e.QueryParam("repo")
 	repo, err := s.getRepoActorByDid(ctx, did)
@@ -29,7 +30,7 @@ func (s *Server) handleDescribeRepo(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr("RepoNotFound"))
 		}
 
-		s.logger.Error("error looking up repo", "error", err)
+		logger.Error("error looking up repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -37,7 +38,7 @@ func (s *Server) handleDescribeRepo(e echo.Context) error {
 
 	diddoc, err := s.passport.FetchDoc(e.Request().Context(), repo.Repo.Did)
 	if err != nil {
-		s.logger.Error("error fetching diddoc", "error", err)
+		logger.Error("error fetching diddoc", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -67,7 +68,7 @@ func (s *Server) handleDescribeRepo(e echo.Context) error {
 
 	var records []models.Record
 	if err := s.db.Raw(ctx, "SELECT DISTINCT(nsid) FROM records WHERE did = ?", nil, repo.Repo.Did).Scan(&records).Error; err != nil {
-		s.logger.Error("error getting collections", "error", err)
+		logger.Error("error getting collections", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

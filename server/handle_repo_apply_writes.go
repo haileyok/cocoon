@@ -27,22 +27,23 @@ type ComAtprotoRepoApplyWritesOutput struct {
 
 func (s *Server) handleApplyWrites(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleRepoApplyWrites")
 
 	var req ComAtprotoRepoApplyWritesInput
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("error binding", "error", err)
+		logger.Error("error binding", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	if err := e.Validate(req); err != nil {
-		s.logger.Error("error validating", "error", err)
+		logger.Error("error validating", "error", err)
 		return helpers.InputError(e, nil)
 	}
 
 	repo := e.Get("repo").(*models.RepoActor)
 
 	if repo.Repo.Did != req.Repo {
-		s.logger.Warn("mismatched repo/auth")
+		logger.Warn("mismatched repo/auth")
 		return helpers.InputError(e, nil)
 	}
 
@@ -58,7 +59,7 @@ func (s *Server) handleApplyWrites(e echo.Context) error {
 
 	results, err := s.repoman.applyWrites(ctx, repo.Repo, ops, req.SwapCommit)
 	if err != nil {
-		s.logger.Error("error applying writes", "error", err)
+		logger.Error("error applying writes", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

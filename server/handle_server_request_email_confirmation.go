@@ -12,6 +12,7 @@ import (
 
 func (s *Server) handleServerRequestEmailConfirmation(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleServerRequestEmailConfirm")
 
 	urepo := e.Get("repo").(*models.RepoActor)
 
@@ -23,12 +24,12 @@ func (s *Server) handleServerRequestEmailConfirmation(e echo.Context) error {
 	eat := time.Now().Add(10 * time.Minute).UTC()
 
 	if err := s.db.Exec(ctx, "UPDATE repos SET email_verification_code = ?, email_verification_code_expires_at = ? WHERE did = ?", nil, code, eat, urepo.Repo.Did).Error; err != nil {
-		s.logger.Error("error updating user", "error", err)
+		logger.Error("error updating user", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	if err := s.sendEmailVerification(urepo.Email, urepo.Handle, code); err != nil {
-		s.logger.Error("error sending mail", "error", err)
+		logger.Error("error sending mail", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

@@ -39,6 +39,7 @@ import (
 	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/haileyok/cocoon/plc"
 	"github.com/ipfs/go-cid"
+	"github.com/labstack/echo-contrib/echoprometheus"
 	echo_session "github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -89,11 +90,12 @@ type Server struct {
 }
 
 type Args struct {
+	Logger *slog.Logger
+
 	Addr            string
 	DbName          string
 	DbType          string
 	DatabaseURL     string
-	Logger          *slog.Logger
 	Version         string
 	Did             string
 	Hostname        string
@@ -209,6 +211,12 @@ func (t *TemplateRenderer) Render(w io.Writer, name string, data any, c echo.Con
 }
 
 func New(args *Args) (*Server, error) {
+	if args.Logger == nil {
+		args.Logger = slog.Default()
+	}
+
+	logger := args.Logger.With("name", "New")
+
 	if args.Addr == "" {
 		return nil, fmt.Errorf("addr must be set")
 	}
@@ -237,10 +245,6 @@ func New(args *Args) (*Server, error) {
 		return nil, fmt.Errorf("admin password must be set")
 	}
 
-	if args.Logger == nil {
-		args.Logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{}))
-	}
-
 	if args.SessionSecret == "" {
 		panic("SESSION SECRET WAS NOT SET. THIS IS REQUIRED. ")
 	}
@@ -248,8 +252,9 @@ func New(args *Args) (*Server, error) {
 	e := echo.New()
 
 	e.Pre(middleware.RemoveTrailingSlash())
-	e.Pre(slogecho.New(args.Logger))
+	e.Pre(slogecho.New(args.Logger.With("component", "slogecho")))
 	e.Use(echo_session.Middleware(sessions.NewCookieStore([]byte(args.SessionSecret))))
+	e.Use(echoprometheus.NewMiddleware("cocoon"))
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins:     []string{"*"},
 		AllowHeaders:     []string{"*"},
@@ -311,13 +316,13 @@ func New(args *Args) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to connect to postgres: %w", err)
 		}
-		args.Logger.Info("connected to PostgreSQL database")
+		logger.Info("connected to PostgreSQL database")
 	default:
 		gdb, err = gorm.Open(sqlite.Open(args.DbName), &gorm.Config{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to open sqlite database: %w", err)
 		}
-		args.Logger.Info("connected to SQLite database", "path", args.DbName)
+		logger.Info("connected to SQLite database", "path", args.DbName)
 	}
 	dbw := db.NewDB(gdb)
 
@@ -360,7 +365,7 @@ func New(args *Args) (*Server, error) {
 	var nonceSecret []byte
 	maybeSecret, err := os.ReadFile("nonce.secret")
 	if err != nil && !os.IsNotExist(err) {
-		args.Logger.Error("error attempting to read nonce secret", "error", err)
+		logger.Error("error attempting to read nonce secret", "error", err)
 	} else {
 		nonceSecret = maybeSecret
 	}
@@ -398,17 +403,17 @@ func New(args *Args) (*Server, error) {
 			Hostname: args.Hostname,
 			ClientManagerArgs: client.ManagerArgs{
 				Cli:    oauthCli,
-				Logger: args.Logger,
+				Logger: args.Logger.With("component", "oauth-client-manager"),
 			},
 			DpopManagerArgs: dpop.ManagerArgs{
 				NonceSecret:           nonceSecret,
 				NonceRotationInterval: constants.NonceMaxRotationInterval / 3,
 				OnNonceSecretCreated: func(newNonce []byte) {
 					if err := os.WriteFile("nonce.secret", newNonce, 0644); err != nil {
-						args.Logger.Error("error writing new nonce secret", "error", err)
+						logger.Error("error writing new nonce secret", "error", err)
 					}
 				},
-				Logger:   args.Logger,
+				Logger:   args.Logger.With("component", "dpop-manager"),
 				Hostname: args.Hostname,
 			},
 		}),
@@ -535,9 +540,11 @@ func (s *Server) addRoutes() {
 }
 
 func (s *Server) Serve(ctx context.Context) error {
+	logger := s.logger.With("name", "Serve")
+
 	s.addRoutes()
 
-	s.logger.Info("migrating...")
+	logger.Info("migrating...")
 
 	s.db.AutoMigrate(
 		&models.Actor{},
@@ -554,7 +561,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		&provider.OauthAuthorizationRequest{},
 	)
 
-	s.logger.Info("starting cocoon")
+	logger.Info("starting cocoon")
 
 	go func() {
 		if err := s.httpd.ListenAndServe(); err != nil {
@@ -566,7 +573,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	go func() {
 		if err := s.requestCrawl(ctx); err != nil {
-			s.logger.Error("error requesting crawls", "err", err)
+			logger.Error("error requesting crawls", "err", err)
 		}
 	}()
 
@@ -584,7 +591,7 @@ func (s *Server) requestCrawl(ctx context.Context) error {
 
 	logger.Info("requesting crawl with configured relays")
 
-	if time.Now().Sub(s.lastRequestCrawl) <= 1*time.Minute {
+	if time.Since(s.lastRequestCrawl) <= 1*time.Minute {
 		return fmt.Errorf("a crawl request has already been made within the last minute")
 	}
 
@@ -607,18 +614,20 @@ func (s *Server) requestCrawl(ctx context.Context) error {
 }
 
 func (s *Server) doBackup() {
+	logger := s.logger.With("name", "doBackup")
+
 	if s.dbType == "postgres" {
-		s.logger.Info("skipping S3 backup - PostgreSQL backups should be handled externally (pg_dump, managed database backups, etc.)")
+		logger.Info("skipping S3 backup - PostgreSQL backups should be handled externally (pg_dump, managed database backups, etc.)")
 		return
 	}
 
 	start := time.Now()
 
-	s.logger.Info("beginning backup to s3...")
+	logger.Info("beginning backup to s3...")
 
 	var buf bytes.Buffer
 	if err := func() error {
-		s.logger.Info("reading database bytes...")
+		logger.Info("reading database bytes...")
 		s.db.Lock()
 		defer s.db.Unlock()
 
@@ -634,12 +643,12 @@ func (s *Server) doBackup() {
 
 		return nil
 	}(); err != nil {
-		s.logger.Error("error backing up database", "error", err)
+		logger.Error("error backing up database", "error", err)
 		return
 	}
 
 	if err := func() error {
-		s.logger.Info("sending to s3...")
+		logger.Info("sending to s3...")
 
 		currTime := time.Now().Format("2006-01-02_15-04-05")
 		key := "cocoon-backup-" + currTime + ".db"
@@ -669,11 +678,11 @@ func (s *Server) doBackup() {
 			return fmt.Errorf("error uploading file to s3: %w", err)
 		}
 
-		s.logger.Info("finished uploading backup to s3", "key", key, "duration", time.Now().Sub(start).Seconds())
+		logger.Info("finished uploading backup to s3", "key", key, "duration", time.Now().Sub(start).Seconds())
 
 		return nil
 	}(); err != nil {
-		s.logger.Error("error uploading database backup", "error", err)
+		logger.Error("error uploading database backup", "error", err)
 		return
 	}
 
@@ -681,27 +690,29 @@ func (s *Server) doBackup() {
 }
 
 func (s *Server) backupRoutine() {
+	logger := s.logger.With("name", "backupRoutine")
+
 	if s.s3Config == nil || !s.s3Config.BackupsEnabled {
 		return
 	}
 
 	if s.s3Config.Region == "" {
-		s.logger.Warn("no s3 region configured but backups are enabled. backups will not run.")
+		logger.Warn("no s3 region configured but backups are enabled. backups will not run.")
 		return
 	}
 
 	if s.s3Config.Bucket == "" {
-		s.logger.Warn("no s3 bucket configured but backups are enabled. backups will not run.")
+		logger.Warn("no s3 bucket configured but backups are enabled. backups will not run.")
 		return
 	}
 
 	if s.s3Config.AccessKey == "" {
-		s.logger.Warn("no s3 access key configured but backups are enabled. backups will not run.")
+		logger.Warn("no s3 access key configured but backups are enabled. backups will not run.")
 		return
 	}
 
 	if s.s3Config.SecretKey == "" {
-		s.logger.Warn("no s3 secret key configured but backups are enabled. backups will not run.")
+		logger.Warn("no s3 secret key configured but backups are enabled. backups will not run.")
 		return
 	}
 

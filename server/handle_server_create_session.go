@@ -33,10 +33,11 @@ type ComAtprotoServerCreateSessionResponse struct {
 
 func (s *Server) handleCreateSession(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleServerCreateSession")
 
 	var req ComAtprotoServerCreateSessionRequest
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("error binding request", "endpoint", "com.atproto.server.serverCreateSession", "error", err)
+		logger.Error("error binding request", "endpoint", "com.atproto.server.serverCreateSession", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -79,20 +80,20 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr("InvalidRequest"))
 		}
 
-		s.logger.Error("erorr looking up repo", "endpoint", "com.atproto.server.createSession", "error", err)
+		logger.Error("erorr looking up repo", "endpoint", "com.atproto.server.createSession", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(repo.Password), []byte(req.Password)); err != nil {
 		if err != bcrypt.ErrMismatchedHashAndPassword {
-			s.logger.Error("erorr comparing hash and password", "error", err)
+			logger.Error("erorr comparing hash and password", "error", err)
 		}
 		return helpers.InputError(e, to.StringPtr("InvalidRequest"))
 	}
 
 	sess, err := s.createSession(ctx, &repo.Repo)
 	if err != nil {
-		s.logger.Error("error creating session", "error", err)
+		logger.Error("error creating session", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

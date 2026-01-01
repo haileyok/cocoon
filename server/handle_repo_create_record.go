@@ -18,22 +18,23 @@ type ComAtprotoRepoCreateRecordInput struct {
 
 func (s *Server) handleCreateRecord(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleCreateRecord")
 
 	repo := e.Get("repo").(*models.RepoActor)
 
 	var req ComAtprotoRepoCreateRecordInput
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("error binding", "error", err)
+		logger.Error("error binding", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	if err := e.Validate(req); err != nil {
-		s.logger.Error("error validating", "error", err)
+		logger.Error("error validating", "error", err)
 		return helpers.InputError(e, nil)
 	}
 
 	if repo.Repo.Did != req.Repo {
-		s.logger.Warn("mismatched repo/auth")
+		logger.Warn("mismatched repo/auth")
 		return helpers.InputError(e, nil)
 	}
 
@@ -53,7 +54,7 @@ func (s *Server) handleCreateRecord(e echo.Context) error {
 		},
 	}, req.SwapCommit)
 	if err != nil {
-		s.logger.Error("error applying writes", "error", err)
+		logger.Error("error applying writes", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

@@ -21,6 +21,7 @@ type ComAtprotoServerCheckAccountStatusResponse struct {
 
 func (s *Server) handleServerCheckAccountStatus(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleServerCheckAccountStatus")
 
 	urepo := e.Get("repo").(*models.RepoActor)
 
@@ -33,7 +34,7 @@ func (s *Server) handleServerCheckAccountStatus(e echo.Context) error {
 
 	rootcid, err := cid.Cast(urepo.Root)
 	if err != nil {
-		s.logger.Error("error casting cid", "error", err)
+		logger.Error("error casting cid", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 	resp.RepoCommit = rootcid.String()
@@ -44,21 +45,21 @@ func (s *Server) handleServerCheckAccountStatus(e echo.Context) error {
 
 	var blockCtResp CountResp
 	if err := s.db.Raw(ctx, "SELECT COUNT(*) AS ct FROM blocks WHERE did = ?", nil, urepo.Repo.Did).Scan(&blockCtResp).Error; err != nil {
-		s.logger.Error("error getting block count", "error", err)
+		logger.Error("error getting block count", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 	resp.RepoBlocks = blockCtResp.Ct
 
 	var recCtResp CountResp
 	if err := s.db.Raw(ctx, "SELECT COUNT(*) AS ct FROM records WHERE did = ?", nil, urepo.Repo.Did).Scan(&recCtResp).Error; err != nil {
-		s.logger.Error("error getting record count", "error", err)
+		logger.Error("error getting record count", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 	resp.IndexedRecords = recCtResp.Ct
 
 	var blobCtResp CountResp
 	if err := s.db.Raw(ctx, "SELECT COUNT(*) AS ct FROM blobs WHERE did = ?", nil, urepo.Repo.Did).Scan(&blobCtResp).Error; err != nil {
-		s.logger.Error("error getting record count", "error", err)
+		logger.Error("error getting record count", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 	resp.ExpectedBlobs = blobCtResp.Ct

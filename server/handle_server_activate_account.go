@@ -19,17 +19,18 @@ type ComAtprotoServerActivateAccountRequest struct {
 
 func (s *Server) handleServerActivateAccount(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleServerActivateAccount")
 
 	var req ComAtprotoServerDeactivateAccountRequest
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("error binding", "error", err)
+		logger.Error("error binding", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	urepo := e.Get("repo").(*models.RepoActor)
 
 	if err := s.db.Exec(ctx, "UPDATE repos SET deactivated = ? WHERE did = ?", nil, false, urepo.Repo.Did).Error; err != nil {
-		s.logger.Error("error updating account status to deactivated", "error", err)
+		logger.Error("error updating account status to deactivated", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

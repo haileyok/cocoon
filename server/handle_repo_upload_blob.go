@@ -33,6 +33,7 @@ type ComAtprotoRepoUploadBlobResponse struct {
 
 func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleRepoUploadBlob")
 
 	urepo := e.Get("repo").(*models.RepoActor)
 
@@ -54,7 +55,7 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 	}
 
 	if err := s.db.Create(ctx, &blob, nil).Error; err != nil {
-		s.logger.Error("error creating new blob in db", "error", err)
+		logger.Error("error creating new blob in db", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -71,7 +72,7 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 				break
 			}
 		} else if err != nil && err != io.ErrUnexpectedEOF {
-			s.logger.Error("error reading blob", "error", err)
+			logger.Error("error reading blob", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -87,7 +88,7 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 			}
 
 			if err := s.db.Create(ctx, &blobPart, nil).Error; err != nil {
-				s.logger.Error("error adding blob part to db", "error", err)
+				logger.Error("error adding blob part to db", "error", err)
 				return helpers.ServerError(e, nil)
 			}
 		}
@@ -100,7 +101,7 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 
 	c, err := cid.NewPrefixV1(cid.Raw, multihash.SHA2_256).Sum(fulldata.Bytes())
 	if err != nil {
-		s.logger.Error("error creating cid prefix", "error", err)
+		logger.Error("error creating cid prefix", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -117,7 +118,7 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 
 		sess, err := session.NewSession(config)
 		if err != nil {
-			s.logger.Error("error creating aws session", "error", err)
+			logger.Error("error creating aws session", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -128,14 +129,14 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 			Key:    aws.String(fmt.Sprintf("blobs/%s/%s", urepo.Repo.Did, c.String())),
 			Body:   bytes.NewReader(fulldata.Bytes()),
 		}); err != nil {
-			s.logger.Error("error uploading blob to s3", "error", err)
+			logger.Error("error uploading blob to s3", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 	}
 
 	if err := s.db.Exec(ctx, "UPDATE blobs SET cid = ? WHERE id = ?", nil, c.Bytes(), blob.ID).Error; err != nil {
 		// there should probably be somme handling here if this fails...
-		s.logger.Error("error updating blob", "error", err)
+		logger.Error("error updating blob", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

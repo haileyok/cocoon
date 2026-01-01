@@ -8,15 +8,17 @@ import (
 )
 
 func (s *Server) handleGetRecommendedDidCredentials(e echo.Context) error {
+	logger := s.logger.With("name", "handleIdentityGetRecommendedDidCredentials")
+
 	repo := e.Get("repo").(*models.RepoActor)
 	k, err := atcrypto.ParsePrivateBytesK256(repo.SigningKey)
 	if err != nil {
-		s.logger.Error("error parsing key", "error", err)
+		logger.Error("error parsing key", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 	creds, err := s.plcClient.CreateDidCredentials(k, "", repo.Actor.Handle)
 	if err != nil {
-		s.logger.Error("error crating did credentials", "error", err)
+		logger.Error("error crating did credentials", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

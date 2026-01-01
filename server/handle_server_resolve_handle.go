@@ -10,6 +10,8 @@ import (
 )
 
 func (s *Server) handleResolveHandle(e echo.Context) error {
+	logger := s.logger.With("name", "handleServerResolveHandle")
+
 	type Resp struct {
 		Did string `json:"did"`
 	}
@@ -28,7 +30,7 @@ func (s *Server) handleResolveHandle(e echo.Context) error {
 	ctx := context.WithValue(e.Request().Context(), "skip-cache", true)
 	did, err := s.passport.ResolveHandle(ctx, parsed.String())
 	if err != nil {
-		s.logger.Error("error resolving handle", "error", err)
+		logger.Error("error resolving handle", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

@@ -20,10 +20,11 @@ type ServerReserveSigningKeyResponse struct {
 
 func (s *Server) handleServerReserveSigningKey(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleServerReserveSigningKey")
 
 	var req ServerReserveSigningKeyRequest
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("could not bind reserve signing key request", "error", err)
+		logger.Error("could not bind reserve signing key request", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -38,13 +39,13 @@ func (s *Server) handleServerReserveSigningKey(e echo.Context) error {
 
 	k, err := atcrypto.GeneratePrivateKeyK256()
 	if err != nil {
-		s.logger.Error("error creating signing key", "endpoint", "com.atproto.server.reserveSigningKey", "error", err)
+		logger.Error("error creating signing key", "endpoint", "com.atproto.server.reserveSigningKey", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	pubKey, err := k.PublicKey()
 	if err != nil {
-		s.logger.Error("error getting public key", "endpoint", "com.atproto.server.reserveSigningKey", "error", err)
+		logger.Error("error getting public key", "endpoint", "com.atproto.server.reserveSigningKey", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -58,11 +59,11 @@ func (s *Server) handleServerReserveSigningKey(e echo.Context) error {
 	}
 
 	if err := s.db.Create(ctx, &reservedKey, nil).Error; err != nil {
-		s.logger.Error("error storing reserved key", "endpoint", "com.atproto.server.reserveSigningKey", "error", err)
+		logger.Error("error storing reserved key", "endpoint", "com.atproto.server.reserveSigningKey", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	s.logger.Info("reserved signing key", "keyDid", keyDid, "forDid", req.Did)
+	logger.Info("reserved signing key", "keyDid", keyDid, "forDid", req.Did)
 
 	return e.JSON(200, ServerReserveSigningKeyResponse{
 		SigningKey: keyDid,

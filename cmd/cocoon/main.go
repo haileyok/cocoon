@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/bluesky-social/go-util/pkg/telemetry"
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/haileyok/cocoon/internal/helpers"
@@ -154,6 +155,8 @@ func main() {
 				Name:    "fallback-proxy",
 				EnvVars: []string{"COCOON_FALLBACK_PROXY"},
 			},
+			telemetry.CLIFlagDebug,
+			telemetry.CLIFlagMetricsListenAddress,
 		},
 		Commands: []*cli.Command{
 			runServe,
@@ -177,7 +180,11 @@ var runServe = &cli.Command{
 	Flags: []cli.Flag{},
 	Action: func(cmd *cli.Context) error {
 
+		logger := telemetry.StartLogger(cmd)
+		telemetry.StartMetrics(cmd)
+
 		s, err := server.New(&server.Args{
+			Logger:          logger,
 			Addr:            cmd.String("addr"),
 			DbName:          cmd.String("db-name"),
 			DbType:          cmd.String("db-type"),
