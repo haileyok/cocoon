@@ -20,7 +20,7 @@ var (
 		Namespace: NAMESPACE,
 		Name:      "relay_sends",
 		Help:      "number of events sent to a relay, by host",
-	}, []string{"host"})
+	}, []string{"host", "kind"})
 
 	RepoOperations = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: NAMESPACE,

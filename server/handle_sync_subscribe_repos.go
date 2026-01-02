@@ -42,7 +42,7 @@ func (s *Server) handleSyncSubscribeRepos(e echo.Context) error {
 	for evt := range evts {
 		func() {
 			defer func() {
-				metrics.RelaySends.WithLabelValues(header.MsgType).Inc()
+				metrics.RelaySends.WithLabelValues(ident, header.MsgType).Inc()
 			}()
 
 			wc, err := conn.NextWriter(websocket.BinaryMessage)
