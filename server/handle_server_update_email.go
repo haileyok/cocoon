@@ -33,7 +33,7 @@ func (s *Server) handleServerUpdateEmail(e echo.Context) error {
 	// To disable email auth factor a token is required.
 	// To enable email auth factor a token is not required.
 	// If updating an email address, a token will be sent anyway
-	if urepo.EmailAuthFactor && req.EmailAuthFactor == false && req.Token == "" {
+	if urepo.TwoFactorType != models.TwoFactorTypeNone && req.EmailAuthFactor == false && req.Token == "" {
 		return helpers.InvalidTokenError(e)
 	}
 
@@ -51,7 +51,12 @@ func (s *Server) handleServerUpdateEmail(e echo.Context) error {
 		}
 	}
 
-	query := "UPDATE repos SET email_update_code = NULL, email_update_code_expires_at = NULL, email_auth_factor = ?,  email = ?"
+	twoFactorType := models.TwoFactorTypeNone
+	if req.EmailAuthFactor {
+		twoFactorType = models.TwoFactorTypeEmail
+	}
+
+	query := "UPDATE repos SET email_update_code = NULL, email_update_code_expires_at = NULL, two_factor_type = ?,  email = ?"
 
 	if urepo.Email != req.Email {
 		query += ",email_confirmed_at = NULL"
@@ -59,7 +64,7 @@ func (s *Server) handleServerUpdateEmail(e echo.Context) error {
 
 	query += " WHERE did = ?"
 
-	if err := s.db.Exec(ctx, query, nil, req.EmailAuthFactor, req.Email, urepo.Repo.Did).Error; err != nil {
+	if err := s.db.Exec(ctx, query, nil, twoFactorType, req.Email, urepo.Repo.Did).Error; err != nil {
 		logger.Error("error updating repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}

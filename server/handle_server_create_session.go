@@ -94,34 +94,34 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 		return helpers.InputError(e, to.StringPtr("InvalidRequest"))
 	}
 
-	// if repo requires auth factor token and one hasn't been provided, return error prompting for one
-	if repo.EmailAuthFactor && (req.AuthFactorToken == nil || *req.AuthFactorToken == "") {
-		err = s.createAndSendAuthCode(ctx, repo)
+	// if repo requires 2FA token and one hasn't been provided, return error prompting for one
+	if repo.TwoFactorType != models.TwoFactorTypeNone && (req.AuthFactorToken == nil || *req.AuthFactorToken == "") {
+		err = s.createAndSendTwoFactorCode(ctx, repo)
 		if err != nil {
-			s.logger.Error("sending auth code", "error", err)
+			logger.Error("sending 2FA code", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
 		return helpers.InputError(e, to.StringPtr("AuthFactorTokenRequired"))
 	}
 
-	// if auth factor is required, now check that the one provided is valid
-	if repo.EmailAuthFactor {
-		if repo.AuthCode == nil || repo.AuthCodeExpiresAt == nil {
-			err = s.createAndSendAuthCode(ctx, repo)
+	// if 2FA is required, now check that the one provided is valid
+	if repo.TwoFactorType != models.TwoFactorTypeNone {
+		if repo.TwoFactorCode == nil || repo.TwoFactorCodeExpiresAt == nil {
+			err = s.createAndSendTwoFactorCode(ctx, repo)
 			if err != nil {
-				logger.Error("sending auth code", "error", err)
+				logger.Error("sending 2FA code", "error", err)
 				return helpers.ServerError(e, nil)
 			}
 
 			return helpers.InputError(e, to.StringPtr("AuthFactorTokenRequired"))
 		}
 
-		if *repo.AuthCode != *req.AuthFactorToken {
+		if *repo.TwoFactorCode != *req.AuthFactorToken {
 			return helpers.InvalidTokenError(e)
 		}
 
-		if time.Now().UTC().After(*repo.AuthCodeExpiresAt) {
+		if time.Now().UTC().After(*repo.TwoFactorCodeExpiresAt) {
 			return helpers.ExpiredTokenError(e)
 		}
 	}
@@ -139,21 +139,24 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 		Did:             repo.Repo.Did,
 		Email:           repo.Email,
 		EmailConfirmed:  repo.EmailConfirmedAt != nil,
-		EmailAuthFactor: repo.EmailAuthFactor,
+		EmailAuthFactor: repo.TwoFactorType != models.TwoFactorTypeNone,
 		Active:          repo.Active(),
 		Status:          repo.Status(),
 	})
 }
 
-func (s *Server) createAndSendAuthCode(ctx context.Context, repo models.RepoActor) error {
+func (s *Server) createAndSendTwoFactorCode(ctx context.Context, repo models.RepoActor) error {
+	// TODO: when implementing a new type of 2FA there should be some logic in here to send the
+	// right type of code
+
 	code := fmt.Sprintf("%s-%s", helpers.RandomVarchar(5), helpers.RandomVarchar(5))
 	eat := time.Now().Add(10 * time.Minute).UTC()
 
-	if err := s.db.Exec(ctx, "UPDATE repos SET auth_code = ?, auth_code_expires_at = ? WHERE did = ?", nil, code, eat, repo.Repo.Did).Error; err != nil {
+	if err := s.db.Exec(ctx, "UPDATE repos SET two_factor_code = ?, two_factor_code_expires_at = ? WHERE did = ?", nil, code, eat, repo.Repo.Did).Error; err != nil {
 		return fmt.Errorf("updating repo: %w", err)
 	}
 
-	if err := s.sendAuthCode(repo.Email, repo.Handle, code); err != nil {
+	if err := s.sendTwoFactorCode(repo.Email, repo.Handle, code); err != nil {
 		return fmt.Errorf("sending email: %w", err)
 	}
 

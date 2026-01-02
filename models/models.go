@@ -8,6 +8,13 @@ import (
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
 )
 
+type TwoFactorType string
+
+var (
+	TwoFactorTypeNone  = TwoFactorType("none")
+	TwoFactorTypeEmail = TwoFactorType("email")
+)
+
 type Repo struct {
 	Did                            string `gorm:"primaryKey"`
 	CreatedAt                      time.Time
@@ -29,9 +36,9 @@ type Repo struct {
 	Root                           []byte
 	Preferences                    []byte
 	Deactivated                    bool
-	EmailAuthFactor                bool
-	AuthCode                       *string
-	AuthCodeExpiresAt              *time.Time
+	TwoFactorCode                  *string
+	TwoFactorCodeExpiresAt         *time.Time
+	TwoFactorType                  TwoFactorType `gorm:"default:none"`
 }
 
 func (r *Repo) SignFor(ctx context.Context, did string, msg []byte) ([]byte, error) {

@@ -97,7 +97,7 @@ func (s *Server) sendEmailVerification(email, handle, code string) error {
 	return nil
 }
 
-func (s *Server) sendAuthCode(email, handle, code string) error {
+func (s *Server) sendTwoFactorCode(email, handle, code string) error {
 	if s.mail == nil {
 		return nil
 	}

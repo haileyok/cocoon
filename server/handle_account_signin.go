@@ -123,9 +123,9 @@ func (s *Server) handleAccountSigninPost(e echo.Context) error {
 		return e.Redirect(303, "/account/signin"+queryParams)
 	}
 
-	// if repo requires auth factor token and one hasn't been provided, return error prompting for one
-	if repo.EmailAuthFactor && req.AuthFactorToken == "" {
-		err = s.createAndSendAuthCode(ctx, repo)
+	// if repo requires 2FA token and one hasn't been provided, return error prompting for one
+	if repo.TwoFactorType != models.TwoFactorTypeNone && req.AuthFactorToken == "" {
+		err = s.createAndSendTwoFactorCode(ctx, repo)
 		if err != nil {
 			sess.AddFlash("Something went wrong!", "error")
 			sess.Save(e.Request(), e.Response())
@@ -137,10 +137,10 @@ func (s *Server) handleAccountSigninPost(e echo.Context) error {
 		return e.Redirect(303, "/account/signin"+queryParams)
 	}
 
-	// if auth factor is required, now check that the one provided is valid
-	if repo.EmailAuthFactor {
-		if repo.AuthCode == nil || repo.AuthCodeExpiresAt == nil {
-			err = s.createAndSendAuthCode(ctx, repo)
+	// if 2FAis required, now check that the one provided is valid
+	if repo.TwoFactorType != models.TwoFactorTypeNone {
+		if repo.TwoFactorCode == nil || repo.TwoFactorCodeExpiresAt == nil {
+			err = s.createAndSendTwoFactorCode(ctx, repo)
 			if err != nil {
 				sess.AddFlash("Something went wrong!", "error")
 				sess.Save(e.Request(), e.Response())
@@ -152,11 +152,11 @@ func (s *Server) handleAccountSigninPost(e echo.Context) error {
 			return e.Redirect(303, "/account/signin"+queryParams)
 		}
 
-		if *repo.AuthCode != req.AuthFactorToken {
+		if *repo.TwoFactorCode != req.AuthFactorToken {
 			return helpers.InvalidTokenError(e)
 		}
 
-		if time.Now().UTC().After(*repo.AuthCodeExpiresAt) {
+		if time.Now().UTC().After(*repo.TwoFactorCodeExpiresAt) {
 			return helpers.ExpiredTokenError(e)
 		}
 	}
