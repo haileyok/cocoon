@@ -2,7 +2,9 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -82,6 +84,39 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 
 		logger.Error("erorr looking up repo", "endpoint", "com.atproto.server.createSession", "error", err)
 		return helpers.ServerError(e, nil)
+	}
+
+	// if repo requires auth factor token and one hasn't been provided, return error prompting for one
+	if repo.EmailAuthFactor && (req.AuthFactorToken == nil || *req.AuthFactorToken == "") {
+		code := fmt.Sprintf("%s-%s", helpers.RandomVarchar(5), helpers.RandomVarchar(5))
+		eat := time.Now().Add(10 * time.Minute).UTC()
+
+		if err := s.db.Exec(ctx, "UPDATE repos SET email_update_code = ?, email_update_code_expires_at = ? WHERE did = ?", nil, code, eat, repo.Repo.Did).Error; err != nil {
+			s.logger.Error("error updating repo", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+
+		if err := s.sendEmailUpdate(repo.Email, repo.Handle, code); err != nil {
+			s.logger.Error("error sending email", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+
+		return helpers.InputError(e, to.StringPtr("AuthFactorTokenRequired"))
+	}
+
+	// if auth factor is required, now check that the one provided is valid
+	if repo.EmailAuthFactor {
+		if repo.EmailUpdateCode == nil || repo.EmailUpdateCodeExpiresAt == nil {
+			return helpers.InvalidTokenError(e)
+		}
+
+		if *repo.EmailUpdateCode != *req.AuthFactorToken {
+			return helpers.InvalidTokenError(e)
+		}
+
+		if time.Now().UTC().After(*repo.EmailUpdateCodeExpiresAt) {
+			return helpers.ExpiredTokenError(e)
+		}
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(repo.Password), []byte(req.Password)); err != nil {
