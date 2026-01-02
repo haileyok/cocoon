@@ -21,4 +21,10 @@ var (
 		Name:      "relay_sends",
 		Help:      "number of events sent to a relay, by host",
 	}, []string{"host"})
+
+	RepoOperations = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: NAMESPACE,
+		Name:      "repo_operations",
+		Help:      "number of operations made against repos",
+	}, []string{"kind"})
 )

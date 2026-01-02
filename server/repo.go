@@ -17,6 +17,7 @@ import (
 	lexutil "github.com/bluesky-social/indigo/lex/util"
 	"github.com/bluesky-social/indigo/repo"
 	"github.com/haileyok/cocoon/internal/db"
+	"github.com/haileyok/cocoon/metrics"
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/recording_blockstore"
 	blocks "github.com/ipfs/go-block-format"
@@ -249,6 +250,12 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 	newroot, rev, err := r.Commit(ctx, urepo.SignFor)
 	if err != nil {
 		return nil, err
+	}
+
+	for _, result := range results {
+		if result.Type != nil {
+			metrics.RepoOperations.WithLabelValues(*result.Type).Inc()
+		}
 	}
 
 	// create a buffer for dumping our new cbor into
