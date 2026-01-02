@@ -123,6 +123,21 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 			rr, _ := secp256k1.NewScalarFromBytes((*[32]byte)(rBytes))
 			ss, _ := secp256k1.NewScalarFromBytes((*[32]byte)(sBytes))
 
+			if repo == nil {
+				sub, ok := claims["sub"].(string)
+				if !ok {
+					s.logger.Error("no sub claim in ES256K token and repo not set")
+					return helpers.InvalidTokenError(e)
+				}
+				maybeRepo, err := s.getRepoActorByDid(ctx, sub)
+				if err != nil {
+					s.logger.Error("error fetching repo for ES256K verification", "error", err)
+					return helpers.ServerError(e, nil)
+				}
+				repo = maybeRepo
+				did = sub
+			}
+
 			sk, err := secp256k1secec.NewPrivateKey(repo.SigningKey)
 			if err != nil {
 				s.logger.Error("can't load private key", "error", err)
