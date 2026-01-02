@@ -87,6 +87,13 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
+	if err := bcrypt.CompareHashAndPassword([]byte(repo.Password), []byte(req.Password)); err != nil {
+		if err != bcrypt.ErrMismatchedHashAndPassword {
+			logger.Error("erorr comparing hash and password", "error", err)
+		}
+		return helpers.InputError(e, to.StringPtr("InvalidRequest"))
+	}
+
 	// if repo requires auth factor token and one hasn't been provided, return error prompting for one
 	if repo.EmailAuthFactor && (req.AuthFactorToken == nil || *req.AuthFactorToken == "") {
 		err = s.createAndSendAuthCode(ctx, repo)
@@ -103,7 +110,7 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 		if repo.AuthCode == nil || repo.AuthCodeExpiresAt == nil {
 			err = s.createAndSendAuthCode(ctx, repo)
 			if err != nil {
-				s.logger.Error("sending auth code", "error", err)
+				logger.Error("sending auth code", "error", err)
 				return helpers.ServerError(e, nil)
 			}
 
@@ -117,13 +124,6 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 		if time.Now().UTC().After(*repo.AuthCodeExpiresAt) {
 			return helpers.ExpiredTokenError(e)
 		}
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(repo.Password), []byte(req.Password)); err != nil {
-		if err != bcrypt.ErrMismatchedHashAndPassword {
-			logger.Error("erorr comparing hash and password", "error", err)
-		}
-		return helpers.InputError(e, to.StringPtr("InvalidRequest"))
 	}
 
 	sess, err := s.createSession(ctx, &repo.Repo)

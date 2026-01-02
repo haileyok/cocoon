@@ -26,6 +26,10 @@
           type="password"
           placeholder="Password"
         />
+        {{ if .flashes.tokenrequired  }}
+        <br />
+        <input name="token" id="token" placeholder="Enter your 2FA token" />
+        {{ end }}
         <input name="query_params" type="hidden" value="{{ .QueryParams }}" />
         <button class="primary" type="submit" value="Login">Login</button>
       </form>
