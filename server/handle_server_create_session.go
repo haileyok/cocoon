@@ -104,7 +104,7 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 		Did:             repo.Repo.Did,
 		Email:           repo.Email,
 		EmailConfirmed:  repo.EmailConfirmedAt != nil,
-		EmailAuthFactor: false,
+		EmailAuthFactor: repo.EmailAuthFactor,
 		Active:          repo.Active(),
 		Status:          repo.Status(),
 	})

@@ -23,7 +23,7 @@ func (s *Server) handleGetSession(e echo.Context) error {
 		Did:             repo.Repo.Did,
 		Email:           repo.Email,
 		EmailConfirmed:  repo.EmailConfirmedAt != nil,
-		EmailAuthFactor: false, // TODO: todo todo
+		EmailAuthFactor: repo.EmailAuthFactor,
 		Active:          repo.Active(),
 		Status:          repo.Status(),
 	})
