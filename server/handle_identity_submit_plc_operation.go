@@ -21,11 +21,13 @@ type ComAtprotoSubmitPlcOperationRequest struct {
 }
 
 func (s *Server) handleSubmitPlcOperation(e echo.Context) error {
+	logger := s.logger.With("name", "handleIdentitySubmitPlcOperation")
+
 	repo := e.Get("repo").(*models.RepoActor)
 
 	var req ComAtprotoSubmitPlcOperationRequest
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("error binding", "error", err)
+		logger.Error("error binding", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -40,12 +42,12 @@ func (s *Server) handleSubmitPlcOperation(e echo.Context) error {
 
 	k, err := atcrypto.ParsePrivateBytesK256(repo.SigningKey)
 	if err != nil {
-		s.logger.Error("error parsing key", "error", err)
+		logger.Error("error parsing key", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 	required, err := s.plcClient.CreateDidCredentials(k, "", repo.Actor.Handle)
 	if err != nil {
-		s.logger.Error("error crating did credentials", "error", err)
+		logger.Error("error crating did credentials", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -72,7 +74,7 @@ func (s *Server) handleSubmitPlcOperation(e echo.Context) error {
 	}
 
 	if err := s.passport.BustDoc(context.TODO(), repo.Repo.Did); err != nil {
-		s.logger.Warn("error busting did doc", "error", err)
+		logger.Warn("error busting did doc", "error", err)
 	}
 
 	s.evtman.AddEvent(context.TODO(), &events.XRPCStreamEvent{

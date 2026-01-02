@@ -32,7 +32,7 @@ func runFirehoseConsumer(relayHost string) error {
 
 	u.Path = "xrpc/com.atproto.sync.subscribeRepos"
 	conn, _, err := dialer.Dial(u.String(), http.Header{
-		"User-Agent": []string{fmt.Sprintf("hot-topic/0.0.0")},
+		"User-Agent": []string{"cocoon-test/0.0.0"},
 	})
 	if err != nil {
 		return fmt.Errorf("subscribing to firehose failed (dialing): %w", err)

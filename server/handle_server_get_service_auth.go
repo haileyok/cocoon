@@ -25,9 +25,11 @@ type ServerGetServiceAuthRequest struct {
 }
 
 func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
+	logger := s.logger.With("name", "handleServerGetServiceAuth")
+
 	var req ServerGetServiceAuthRequest
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("could not bind service auth request", "error", err)
+		logger.Error("could not bind service auth request", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -64,7 +66,7 @@ func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
 	}
 	hj, err := json.Marshal(header)
 	if err != nil {
-		s.logger.Error("error marshaling header", "error", err)
+		logger.Error("error marshaling header", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -82,7 +84,7 @@ func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
 	}
 	pj, err := json.Marshal(payload)
 	if err != nil {
-		s.logger.Error("error marashaling payload", "error", err)
+		logger.Error("error marashaling payload", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -93,13 +95,13 @@ func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
 
 	sk, err := secp256k1secec.NewPrivateKey(repo.SigningKey)
 	if err != nil {
-		s.logger.Error("can't load private key", "error", err)
+		logger.Error("can't load private key", "error", err)
 		return err
 	}
 
 	R, S, _, err := sk.SignRaw(rand.Reader, hash[:])
 	if err != nil {
-		s.logger.Error("error signing", "error", err)
+		logger.Error("error signing", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

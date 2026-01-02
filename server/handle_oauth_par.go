@@ -20,15 +20,16 @@ type OauthParResponse struct {
 
 func (s *Server) handleOauthPar(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleOauthPar")
 
 	var parRequest provider.ParRequest
 	if err := e.Bind(&parRequest); err != nil {
-		s.logger.Error("error binding for par request", "error", err)
+		logger.Error("error binding for par request", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	if err := e.Validate(parRequest); err != nil {
-		s.logger.Error("missing parameters for par request", "error", err)
+		logger.Error("missing parameters for par request", "error", err)
 		return helpers.InputError(e, nil)
 	}
 
@@ -45,7 +46,7 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 				"error": "use_dpop_nonce",
 			})
 		}
-		s.logger.Error("error getting dpop proof", "error", err)
+		logger.Error("error getting dpop proof", "error", err)
 		return helpers.InputError(e, nil)
 	}
 
@@ -55,7 +56,7 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 		AllowMissingDpopProof: true,
 	})
 	if err != nil {
-		s.logger.Error("error authenticating client", "client_id", parRequest.ClientID, "error", err)
+		logger.Error("error authenticating client", "client_id", parRequest.ClientID, "error", err)
 		return helpers.InputError(e, to.StringPtr(err.Error()))
 	}
 
@@ -66,13 +67,13 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 	} else {
 		if !client.Metadata.DpopBoundAccessTokens {
 			msg := "dpop bound access tokens are not enabled for this client"
-			s.logger.Error(msg)
+			logger.Error(msg)
 			return helpers.InputError(e, &msg)
 		}
 
 		if dpopProof.JKT != *parRequest.DpopJkt {
 			msg := "supplied dpop jkt does not match header dpop jkt"
-			s.logger.Error(msg)
+			logger.Error(msg)
 			return helpers.InputError(e, &msg)
 		}
 	}
@@ -89,7 +90,7 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 	}
 
 	if err := s.db.Create(ctx, authRequest, nil).Error; err != nil {
-		s.logger.Error("error creating auth request in db", "error", err)
+		logger.Error("error creating auth request in db", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

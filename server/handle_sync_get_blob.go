@@ -18,6 +18,7 @@ import (
 
 func (s *Server) handleSyncGetBlob(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleSyncGetBlob")
 
 	did := e.QueryParam("did")
 	if did == "" {
@@ -36,7 +37,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 
 	urepo, err := s.getRepoActorByDid(ctx, did)
 	if err != nil {
-		s.logger.Error("could not find user for requested blob", "error", err)
+		logger.Error("could not find user for requested blob", "error", err)
 		return helpers.InputError(e, nil)
 	}
 
@@ -49,7 +50,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 
 	var blob models.Blob
 	if err := s.db.Raw(ctx, "SELECT * FROM blobs WHERE did = ? AND cid = ?", nil, did, c.Bytes()).Scan(&blob).Error; err != nil {
-		s.logger.Error("error looking up blob", "error", err)
+		logger.Error("error looking up blob", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -58,7 +59,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 	if blob.Storage == "sqlite" {
 		var parts []models.BlobPart
 		if err := s.db.Raw(ctx, "SELECT * FROM blob_parts WHERE blob_id = ? ORDER BY idx", nil, blob.ID).Scan(&parts).Error; err != nil {
-			s.logger.Error("error getting blob parts", "error", err)
+			logger.Error("error getting blob parts", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -68,7 +69,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 		}
 	} else if blob.Storage == "s3" {
 		if !(s.s3Config != nil && s.s3Config.BlobstoreEnabled) {
-			s.logger.Error("s3 storage disabled")
+			logger.Error("s3 storage disabled")
 			return helpers.ServerError(e, nil)
 		}
 
@@ -91,7 +92,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 
 		sess, err := session.NewSession(config)
 		if err != nil {
-			s.logger.Error("error creating aws session", "error", err)
+			logger.Error("error creating aws session", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -100,7 +101,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 			Bucket: aws.String(s.s3Config.Bucket),
 			Key:    aws.String(blobKey),
 		}); err != nil {
-			s.logger.Error("error getting blob from s3", "error", err)
+			logger.Error("error getting blob from s3", "error", err)
 			return helpers.ServerError(e, nil)
 		} else {
 			read := 0
@@ -114,7 +115,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 						break
 					}
 				} else if err != nil && err != io.ErrUnexpectedEOF {
-					s.logger.Error("error reading blob", "error", err)
+					logger.Error("error reading blob", "error", err)
 					return helpers.ServerError(e, nil)
 				}
 
@@ -125,7 +126,7 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 			}
 		}
 	} else {
-		s.logger.Error("unknown storage", "storage", blob.Storage)
+		logger.Error("unknown storage", "storage", blob.Storage)
 		return helpers.ServerError(e, nil)
 	}
 

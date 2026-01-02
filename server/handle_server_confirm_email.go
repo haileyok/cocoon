@@ -16,12 +16,13 @@ type ComAtprotoServerConfirmEmailRequest struct {
 
 func (s *Server) handleServerConfirmEmail(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleServerConfirmEmail")
 
 	urepo := e.Get("repo").(*models.RepoActor)
 
 	var req ComAtprotoServerConfirmEmailRequest
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("error binding", "error", err)
+		logger.Error("error binding", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -44,7 +45,7 @@ func (s *Server) handleServerConfirmEmail(e echo.Context) error {
 	now := time.Now().UTC()
 
 	if err := s.db.Exec(ctx, "UPDATE repos SET email_verification_code = NULL, email_verification_code_expires_at = NULL, email_confirmed_at = ? WHERE did = ?", nil, now, urepo.Repo.Did).Error; err != nil {
-		s.logger.Error("error updating user", "error", err)
+		logger.Error("error updating user", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

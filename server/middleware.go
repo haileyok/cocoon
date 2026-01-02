@@ -38,6 +38,7 @@ func (s *Server) handleAdminMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(e echo.Context) error {
 		ctx := e.Request().Context()
+		logger := s.logger.With("name", "handleLegacySessionMiddleware")
 
 		authheader := e.Request().Header.Get("authorization")
 		if authheader == "" {
@@ -69,20 +70,20 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 		if hasLxm {
 			pts := strings.Split(e.Request().URL.String(), "/")
 			if lxm != pts[len(pts)-1] {
-				s.logger.Error("service auth lxm incorrect", "lxm", lxm, "expected", pts[len(pts)-1], "error", err)
+				logger.Error("service auth lxm incorrect", "lxm", lxm, "expected", pts[len(pts)-1], "error", err)
 				return helpers.InputError(e, nil)
 			}
 
 			maybeDid, ok := claims["iss"].(string)
 			if !ok {
-				s.logger.Error("no iss in service auth token", "error", err)
+				logger.Error("no iss in service auth token", "error", err)
 				return helpers.InputError(e, nil)
 			}
 			did = maybeDid
 
 			maybeRepo, err := s.getRepoActorByDid(ctx, did)
 			if err != nil {
-				s.logger.Error("error fetching repo", "error", err)
+				logger.Error("error fetching repo", "error", err)
 				return helpers.ServerError(e, nil)
 			}
 			repo = maybeRepo
@@ -96,7 +97,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 				return s.privateKey.Public(), nil
 			})
 			if err != nil {
-				s.logger.Error("error parsing jwt", "error", err)
+				logger.Error("error parsing jwt", "error", err)
 				return helpers.ExpiredTokenError(e)
 			}
 
@@ -109,12 +110,12 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 			hash := sha256.Sum256([]byte(signingInput))
 			sigBytes, err := base64.RawURLEncoding.DecodeString(kpts[2])
 			if err != nil {
-				s.logger.Error("error decoding signature bytes", "error", err)
+				logger.Error("error decoding signature bytes", "error", err)
 				return helpers.ServerError(e, nil)
 			}
 
 			if len(sigBytes) != 64 {
-				s.logger.Error("incorrect sigbytes length", "length", len(sigBytes))
+				logger.Error("incorrect sigbytes length", "length", len(sigBytes))
 				return helpers.ServerError(e, nil)
 			}
 
@@ -140,19 +141,19 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 
 			sk, err := secp256k1secec.NewPrivateKey(repo.SigningKey)
 			if err != nil {
-				s.logger.Error("can't load private key", "error", err)
+				logger.Error("can't load private key", "error", err)
 				return err
 			}
 
 			pubKey, ok := sk.Public().(*secp256k1secec.PublicKey)
 			if !ok {
-				s.logger.Error("error getting public key from sk")
+				logger.Error("error getting public key from sk")
 				return helpers.ServerError(e, nil)
 			}
 
 			verified := pubKey.VerifyRaw(hash[:], rr, ss)
 			if !verified {
-				s.logger.Error("error verifying", "error", err)
+				logger.Error("error verifying", "error", err)
 				return helpers.ServerError(e, nil)
 			}
 		}
@@ -181,7 +182,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 					return helpers.InvalidTokenError(e)
 				}
 
-				s.logger.Error("error getting token from db", "error", err)
+				logger.Error("error getting token from db", "error", err)
 				return helpers.ServerError(e, nil)
 			}
 
@@ -192,7 +193,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 
 		exp, ok := claims["exp"].(float64)
 		if !ok {
-			s.logger.Error("error getting iat from token")
+			logger.Error("error getting iat from token")
 			return helpers.ServerError(e, nil)
 		}
 
@@ -203,7 +204,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 		if repo == nil {
 			maybeRepo, err := s.getRepoActorByDid(ctx, claims["sub"].(string))
 			if err != nil {
-				s.logger.Error("error fetching repo", "error", err)
+				logger.Error("error fetching repo", "error", err)
 				return helpers.ServerError(e, nil)
 			}
 			repo = maybeRepo
@@ -225,6 +226,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(e echo.Context) error {
 		ctx := e.Request().Context()
+		logger := s.logger.With("name", "handleOauthSessionMiddleware")
 
 		authheader := e.Request().Header.Get("authorization")
 		if authheader == "" {
@@ -257,13 +259,13 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 					"error": "use_dpop_nonce",
 				})
 			}
-			s.logger.Error("invalid dpop proof", "error", err)
+			logger.Error("invalid dpop proof", "error", err)
 			return helpers.InputError(e, nil)
 		}
 
 		var oauthToken provider.OauthToken
 		if err := s.db.Raw(ctx, "SELECT * FROM oauth_tokens WHERE token = ?", nil, accessToken).Scan(&oauthToken).Error; err != nil {
-			s.logger.Error("error finding access token in db", "error", err)
+			logger.Error("error finding access token in db", "error", err)
 			return helpers.InputError(e, nil)
 		}
 
@@ -272,7 +274,7 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		}
 
 		if *oauthToken.Parameters.DpopJkt != proof.JKT {
-			s.logger.Error("jkt mismatch", "token", oauthToken.Parameters.DpopJkt, "proof", proof.JKT)
+			logger.Error("jkt mismatch", "token", oauthToken.Parameters.DpopJkt, "proof", proof.JKT)
 			return helpers.InputError(e, to.StringPtr("dpop jkt mismatch"))
 		}
 
@@ -287,7 +289,7 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 
 		repo, err := s.getRepoActorByDid(ctx, oauthToken.Sub)
 		if err != nil {
-			s.logger.Error("could not find actor in db", "error", err)
+			logger.Error("could not find actor in db", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 

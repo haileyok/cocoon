@@ -47,7 +47,7 @@ func (s *Server) getAtprotoProxyEndpointFromRequest(e echo.Context) (string, str
 }
 
 func (s *Server) handleProxy(e echo.Context) error {
-	lgr := s.logger.With("handler", "handleProxy")
+	logger := s.logger.With("handler", "handleProxy")
 
 	repo, isAuthed := e.Get("repo").(*models.RepoActor)
 
@@ -58,7 +58,7 @@ func (s *Server) handleProxy(e echo.Context) error {
 
 	endpoint, svcDid, err := s.getAtprotoProxyEndpointFromRequest(e)
 	if err != nil {
-		lgr.Error("could not get atproto proxy", "error", err)
+		logger.Error("could not get atproto proxy", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -90,7 +90,7 @@ func (s *Server) handleProxy(e echo.Context) error {
 		}
 		hj, err := json.Marshal(header)
 		if err != nil {
-			lgr.Error("error marshaling header", "error", err)
+			logger.Error("error marshaling header", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -118,7 +118,7 @@ func (s *Server) handleProxy(e echo.Context) error {
 		}
 		pj, err := json.Marshal(payload)
 		if err != nil {
-			lgr.Error("error marashaling payload", "error", err)
+			logger.Error("error marashaling payload", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -129,13 +129,13 @@ func (s *Server) handleProxy(e echo.Context) error {
 
 		sk, err := secp256k1secec.NewPrivateKey(repo.SigningKey)
 		if err != nil {
-			lgr.Error("can't load private key", "error", err)
+			logger.Error("can't load private key", "error", err)
 			return err
 		}
 
 		R, S, _, err := sk.SignRaw(rand.Reader, hash[:])
 		if err != nil {
-			lgr.Error("error signing", "error", err)
+			logger.Error("error signing", "error", err)
 		}
 
 		rBytes := R.Bytes()

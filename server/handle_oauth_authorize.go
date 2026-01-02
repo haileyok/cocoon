@@ -75,6 +75,7 @@ type OauthAuthorizePostRequest struct {
 
 func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleOauthAuthorizePost")
 
 	repo, _, err := s.getSessionRepoOrErr(e)
 	if err != nil {
@@ -83,7 +84,7 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 
 	var req OauthAuthorizePostRequest
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("error binding authorize post request", "error", err)
+		logger.Error("error binding authorize post request", "error", err)
 		return helpers.InputError(e, nil)
 	}
 
@@ -118,7 +119,7 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 	code := oauth.GenerateCode()
 
 	if err := s.db.Exec(ctx, "UPDATE oauth_authorization_requests SET sub = ?, code = ?, accepted = ?, ip = ? WHERE request_id = ?", nil, repo.Repo.Did, code, true, e.RealIP(), reqId).Error; err != nil {
-		s.logger.Error("error updating authorization request", "error", err)
+		logger.Error("error updating authorization request", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

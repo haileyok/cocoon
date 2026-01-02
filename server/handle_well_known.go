@@ -68,6 +68,7 @@ func (s *Server) handleWellKnown(e echo.Context) error {
 
 func (s *Server) handleAtprotoDid(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleAtprotoDid")
 
 	host := e.Request().Host
 	if host == "" {
@@ -91,7 +92,7 @@ func (s *Server) handleAtprotoDid(e echo.Context) error {
 		if err == gorm.ErrRecordNotFound {
 			return e.NoContent(404)
 		}
-		s.logger.Error("error looking up actor by handle", "error", err)
+		logger.Error("error looking up actor by handle", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

@@ -7,6 +7,7 @@ import (
 	"github.com/bluesky-social/indigo/events"
 	"github.com/bluesky-social/indigo/lex/util"
 	"github.com/btcsuite/websocket"
+	"github.com/haileyok/cocoon/metrics"
 	"github.com/labstack/echo/v4"
 )
 
@@ -24,6 +25,11 @@ func (s *Server) handleSyncSubscribeRepos(e echo.Context) error {
 	logger = logger.With("ident", ident)
 	logger.Info("new connection established")
 
+	metrics.RelaysConnected.WithLabelValues(ident).Inc()
+	defer func() {
+		metrics.RelaysConnected.WithLabelValues(ident).Dec()
+	}()
+
 	evts, cancel, err := s.evtman.Subscribe(ctx, ident, func(evt *events.XRPCStreamEvent) bool {
 		return true
 	}, nil)
@@ -34,53 +40,59 @@ func (s *Server) handleSyncSubscribeRepos(e echo.Context) error {
 
 	header := events.EventHeader{Op: events.EvtKindMessage}
 	for evt := range evts {
-		wc, err := conn.NextWriter(websocket.BinaryMessage)
-		if err != nil {
-			logger.Error("error writing message to relay", "err", err)
-			break
-		}
+		func() {
+			defer func() {
+				metrics.RelaySends.WithLabelValues(header.MsgType).Inc()
+			}()
 
-		if ctx.Err() != nil {
-			logger.Error("context error", "err", err)
-			break
-		}
+			wc, err := conn.NextWriter(websocket.BinaryMessage)
+			if err != nil {
+				logger.Error("error writing message to relay", "err", err)
+				return
+			}
 
-		var obj util.CBOR
-		switch {
-		case evt.Error != nil:
-			header.Op = events.EvtKindErrorFrame
-			obj = evt.Error
-		case evt.RepoCommit != nil:
-			header.MsgType = "#commit"
-			obj = evt.RepoCommit
-		case evt.RepoIdentity != nil:
-			header.MsgType = "#identity"
-			obj = evt.RepoIdentity
-		case evt.RepoAccount != nil:
-			header.MsgType = "#account"
-			obj = evt.RepoAccount
-		case evt.RepoInfo != nil:
-			header.MsgType = "#info"
-			obj = evt.RepoInfo
-		default:
-			logger.Warn("unrecognized event kind")
-			return nil
-		}
+			if ctx.Err() != nil {
+				logger.Error("context error", "err", err)
+				return
+			}
 
-		if err := header.MarshalCBOR(wc); err != nil {
-			logger.Error("failed to write header to relay", "err", err)
-			break
-		}
+			var obj util.CBOR
+			switch {
+			case evt.Error != nil:
+				header.Op = events.EvtKindErrorFrame
+				obj = evt.Error
+			case evt.RepoCommit != nil:
+				header.MsgType = "#commit"
+				obj = evt.RepoCommit
+			case evt.RepoIdentity != nil:
+				header.MsgType = "#identity"
+				obj = evt.RepoIdentity
+			case evt.RepoAccount != nil:
+				header.MsgType = "#account"
+				obj = evt.RepoAccount
+			case evt.RepoInfo != nil:
+				header.MsgType = "#info"
+				obj = evt.RepoInfo
+			default:
+				logger.Warn("unrecognized event kind")
+				return
+			}
 
-		if err := obj.MarshalCBOR(wc); err != nil {
-			logger.Error("failed to write event to relay", "err", err)
-			break
-		}
+			if err := header.MarshalCBOR(wc); err != nil {
+				logger.Error("failed to write header to relay", "err", err)
+				return
+			}
 
-		if err := wc.Close(); err != nil {
-			logger.Error("failed to flush-close our event write", "err", err)
-			break
-		}
+			if err := obj.MarshalCBOR(wc); err != nil {
+				logger.Error("failed to write event to relay", "err", err)
+				return
+			}
+
+			if err := wc.Close(); err != nil {
+				logger.Error("failed to flush-close our event write", "err", err)
+				return
+			}
+		}()
 	}
 
 	// we should tell the relay to request a new crawl at this point if we got disconnected

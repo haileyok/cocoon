@@ -39,10 +39,11 @@ type OauthTokenResponse struct {
 
 func (s *Server) handleOauthToken(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleOauthToken")
 
 	var req OauthTokenRequest
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("error binding token request", "error", err)
+		logger.Error("error binding token request", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -58,7 +59,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 				"error": "use_dpop_nonce",
 			})
 		}
-		s.logger.Error("error getting dpop proof", "error", err)
+		logger.Error("error getting dpop proof", "error", err)
 		return helpers.InputError(e, nil)
 	}
 
@@ -66,7 +67,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		AllowMissingDpopProof: true,
 	})
 	if err != nil {
-		s.logger.Error("error authenticating client", "client_id", req.ClientID, "error", err)
+		logger.Error("error authenticating client", "client_id", req.ClientID, "error", err)
 		return helpers.InputError(e, to.StringPtr(err.Error()))
 	}
 
@@ -87,7 +88,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		var authReq provider.OauthAuthorizationRequest
 		// get the lil guy and delete him
 		if err := s.db.Raw(ctx, "DELETE FROM oauth_authorization_requests WHERE code = ? RETURNING *", nil, *req.Code).Scan(&authReq).Error; err != nil {
-			s.logger.Error("error finding authorization request", "error", err)
+			logger.Error("error finding authorization request", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -112,7 +113,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			case "S256":
 				inputChal, err := base64.RawURLEncoding.DecodeString(*authReq.Parameters.CodeChallenge)
 				if err != nil {
-					s.logger.Error("error decoding code challenge", "error", err)
+					logger.Error("error decoding code challenge", "error", err)
 					return helpers.ServerError(e, nil)
 				}
 
@@ -173,7 +174,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			RefreshToken: refreshToken,
 			Ip:           authReq.Ip,
 		}, nil).Error; err != nil {
-			s.logger.Error("error creating token in db", "error", err)
+			logger.Error("error creating token in db", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -202,7 +203,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 
 		var oauthToken provider.OauthToken
 		if err := s.db.Raw(ctx, "SELECT * FROM oauth_tokens WHERE refresh_token = ?", nil, req.RefreshToken).Scan(&oauthToken).Error; err != nil {
-			s.logger.Error("error finding oauth token by refresh token", "error", err, "refresh_token", req.RefreshToken)
+			logger.Error("error finding oauth token by refresh token", "error", err, "refresh_token", req.RefreshToken)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -260,7 +261,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		if err := s.db.Exec(ctx, "UPDATE oauth_tokens SET token = ?, refresh_token = ?, expires_at = ?, updated_at = ? WHERE refresh_token = ?", nil, accessString, nextRefreshToken, eat, now, *req.RefreshToken).Error; err != nil {
-			s.logger.Error("error updating token", "error", err)
+			logger.Error("error updating token", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 

@@ -14,6 +14,7 @@ import (
 
 func (s *Server) handleSyncGetRecord(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleSyncGetRecord")
 
 	did := e.QueryParam("did")
 	collection := e.QueryParam("collection")
@@ -21,7 +22,7 @@ func (s *Server) handleSyncGetRecord(e echo.Context) error {
 
 	var urepo models.Repo
 	if err := s.db.Raw(ctx, "SELECT * FROM repos WHERE did = ?", nil, did).Scan(&urepo).Error; err != nil {
-		s.logger.Error("error getting repo", "error", err)
+		logger.Error("error getting repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -38,13 +39,13 @@ func (s *Server) handleSyncGetRecord(e echo.Context) error {
 	})
 
 	if _, err := carstore.LdWrite(buf, hb); err != nil {
-		s.logger.Error("error writing to car", "error", err)
+		logger.Error("error writing to car", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	for _, blk := range blocks {
 		if _, err := carstore.LdWrite(buf, blk.Cid().Bytes(), blk.RawData()); err != nil {
-			s.logger.Error("error writing to car", "error", err)
+			logger.Error("error writing to car", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 	}

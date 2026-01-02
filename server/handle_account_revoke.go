@@ -11,10 +11,11 @@ type AccountRevokeInput struct {
 
 func (s *Server) handleAccountRevoke(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleAcocuntRevoke")
 
 	var req AccountRevokeInput
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("could not bind account revoke request", "error", err)
+		logger.Error("could not bind account revoke request", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -24,7 +25,7 @@ func (s *Server) handleAccountRevoke(e echo.Context) error {
 	}
 
 	if err := s.db.Exec(ctx, "DELETE FROM oauth_tokens WHERE sub = ? AND token = ?", nil, repo.Repo.Did, req.Token).Error; err != nil {
-		s.logger.Error("couldnt delete oauth session for account", "did", repo.Repo.Did, "token", req.Token, "error", err)
+		logger.Error("couldnt delete oauth session for account", "did", repo.Repo.Did, "token", req.Token, "error", err)
 		sess.AddFlash("Unable to revoke session. See server logs for more details.", "error")
 		sess.Save(e.Request(), e.Response())
 		return e.Redirect(303, "/account")

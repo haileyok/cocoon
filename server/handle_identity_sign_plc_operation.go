@@ -27,11 +27,13 @@ type ComAtprotoSignPlcOperationResponse struct {
 }
 
 func (s *Server) handleSignPlcOperation(e echo.Context) error {
+	logger := s.logger.With("name", "handleSignPlcOperation")
+
 	repo := e.Get("repo").(*models.RepoActor)
 
 	var req ComAtprotoSignPlcOperationRequest
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("error binding", "error", err)
+		logger.Error("error binding", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -54,7 +56,7 @@ func (s *Server) handleSignPlcOperation(e echo.Context) error {
 	ctx := context.WithValue(e.Request().Context(), "skip-cache", true)
 	log, err := identity.FetchDidAuditLog(ctx, nil, repo.Repo.Did)
 	if err != nil {
-		s.logger.Error("error fetching doc", "error", err)
+		logger.Error("error fetching doc", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -83,17 +85,17 @@ func (s *Server) handleSignPlcOperation(e echo.Context) error {
 
 	k, err := atcrypto.ParsePrivateBytesK256(repo.SigningKey)
 	if err != nil {
-		s.logger.Error("error parsing signing key", "error", err)
+		logger.Error("error parsing signing key", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	if err := s.plcClient.SignOp(k, &op); err != nil {
-		s.logger.Error("error signing plc operation", "error", err)
+		logger.Error("error signing plc operation", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	if err := s.db.Exec(ctx, "UPDATE repos SET plc_operation_code = NULL, plc_operation_code_expires_at = NULL WHERE did = ?", nil, repo.Repo.Did).Error; err != nil {
-		s.logger.Error("error updating repo", "error", err)
+		logger.Error("error updating repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

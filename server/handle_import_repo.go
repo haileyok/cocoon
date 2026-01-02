@@ -19,12 +19,13 @@ import (
 
 func (s *Server) handleRepoImportRepo(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleImportRepo")
 
 	urepo := e.Get("repo").(*models.RepoActor)
 
 	b, err := io.ReadAll(e.Request().Body)
 	if err != nil {
-		s.logger.Error("could not read bytes in import request", "error", err)
+		logger.Error("could not read bytes in import request", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -32,20 +33,20 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 
 	cs, err := car.NewCarReader(bytes.NewReader(b))
 	if err != nil {
-		s.logger.Error("could not read car in import request", "error", err)
+		logger.Error("could not read car in import request", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	orderedBlocks := []blocks.Block{}
 	currBlock, err := cs.Next()
 	if err != nil {
-		s.logger.Error("could not get first block from car", "error", err)
+		logger.Error("could not get first block from car", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 	currBlockCt := 1
 
 	for currBlock != nil {
-		s.logger.Info("someone is importing their repo", "block", currBlockCt)
+		logger.Info("someone is importing their repo", "block", currBlockCt)
 		orderedBlocks = append(orderedBlocks, currBlock)
 		next, _ := cs.Next()
 		currBlock = next
@@ -55,13 +56,13 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 	slices.Reverse(orderedBlocks)
 
 	if err := bs.PutMany(context.TODO(), orderedBlocks); err != nil {
-		s.logger.Error("could not insert blocks", "error", err)
+		logger.Error("could not insert blocks", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	r, err := repo.OpenRepo(context.TODO(), bs, cs.Header.Roots[0])
 	if err != nil {
-		s.logger.Error("could not open repo", "error", err)
+		logger.Error("could not open repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -76,7 +77,7 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		cidStr := cid.String()
 		b, err := bs.Get(context.TODO(), cid)
 		if err != nil {
-			s.logger.Error("record bytes don't exist in blockstore", "error", err)
+			logger.Error("record bytes don't exist in blockstore", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -96,7 +97,7 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		return nil
 	}); err != nil {
 		tx.Rollback()
-		s.logger.Error("record bytes don't exist in blockstore", "error", err)
+		logger.Error("record bytes don't exist in blockstore", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -104,12 +105,12 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 
 	root, rev, err := r.Commit(context.TODO(), urepo.SignFor)
 	if err != nil {
-		s.logger.Error("error committing", "error", err)
+		logger.Error("error committing", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	if err := s.UpdateRepo(context.TODO(), urepo.Repo.Did, root, rev); err != nil {
-		s.logger.Error("error updating repo after commit", "error", err)
+		logger.Error("error updating repo after commit", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

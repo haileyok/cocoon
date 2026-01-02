@@ -16,12 +16,13 @@ type ComAtprotoServerUpdateEmailRequest struct {
 
 func (s *Server) handleServerUpdateEmail(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleServerUpdateEmail")
 
 	urepo := e.Get("repo").(*models.RepoActor)
 
 	var req ComAtprotoServerUpdateEmailRequest
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("error binding", "error", err)
+		logger.Error("error binding", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -42,7 +43,7 @@ func (s *Server) handleServerUpdateEmail(e echo.Context) error {
 	}
 
 	if err := s.db.Exec(ctx, "UPDATE repos SET email_update_code = NULL, email_update_code_expires_at = NULL, email_confirmed_at = NULL,  email = ? WHERE did = ?", nil, req.Email, urepo.Repo.Did).Error; err != nil {
-		s.logger.Error("error updating repo", "error", err)
+		logger.Error("error updating repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

@@ -11,6 +11,7 @@ import (
 
 func (s *Server) handleServerRequestAccountDelete(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleServerRequestAccountDelete")
 
 	urepo := e.Get("repo").(*models.RepoActor)
 
@@ -18,13 +19,13 @@ func (s *Server) handleServerRequestAccountDelete(e echo.Context) error {
 	expiresAt := time.Now().UTC().Add(15 * time.Minute)
 
 	if err := s.db.Exec(ctx, "UPDATE repos SET account_delete_code = ?, account_delete_code_expires_at = ? WHERE did = ?", nil, token, expiresAt, urepo.Repo.Did).Error; err != nil {
-		s.logger.Error("error setting deletion token", "error", err)
+		logger.Error("error setting deletion token", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	if urepo.Email != "" {
 		if err := s.sendAccountDeleteEmail(urepo.Email, urepo.Actor.Handle, token); err != nil {
-			s.logger.Error("error sending account deletion email", "error", err)
+			logger.Error("error sending account deletion email", "error", err)
 		}
 	}
 

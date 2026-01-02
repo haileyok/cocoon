@@ -22,11 +22,13 @@ type ComAtprotoIdentityUpdateHandleRequest struct {
 }
 
 func (s *Server) handleIdentityUpdateHandle(e echo.Context) error {
+	logger := s.logger.With("name", "handleIdentityUpdateHandle")
+
 	repo := e.Get("repo").(*models.RepoActor)
 
 	var req ComAtprotoIdentityUpdateHandleRequest
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("error binding", "error", err)
+		logger.Error("error binding", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
@@ -41,7 +43,7 @@ func (s *Server) handleIdentityUpdateHandle(e echo.Context) error {
 	if strings.HasPrefix(repo.Repo.Did, "did:plc:") {
 		log, err := identity.FetchDidAuditLog(ctx, nil, repo.Repo.Did)
 		if err != nil {
-			s.logger.Error("error fetching doc", "error", err)
+			logger.Error("error fetching doc", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -68,7 +70,7 @@ func (s *Server) handleIdentityUpdateHandle(e echo.Context) error {
 
 		k, err := atcrypto.ParsePrivateBytesK256(repo.SigningKey)
 		if err != nil {
-			s.logger.Error("error parsing signing key", "error", err)
+			logger.Error("error parsing signing key", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -82,7 +84,7 @@ func (s *Server) handleIdentityUpdateHandle(e echo.Context) error {
 	}
 
 	if err := s.passport.BustDoc(context.TODO(), repo.Repo.Did); err != nil {
-		s.logger.Warn("error busting did doc", "error", err)
+		logger.Warn("error busting did doc", "error", err)
 	}
 
 	s.evtman.AddEvent(context.TODO(), &events.XRPCStreamEvent{
@@ -95,7 +97,7 @@ func (s *Server) handleIdentityUpdateHandle(e echo.Context) error {
 	})
 
 	if err := s.db.Exec(ctx, "UPDATE actors SET handle = ? WHERE did = ?", nil, req.Handle, repo.Repo.Did).Error; err != nil {
-		s.logger.Error("error updating handle in db", "error", err)
+		logger.Error("error updating handle in db", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

@@ -14,7 +14,7 @@ type jtiCache struct {
 }
 
 func newJTICache(size int) *jtiCache {
-	cache := cache.NewCache[string, bool]().WithTTL(24 * time.Hour).WithLRU().WithTTL(constants.JTITtl)
+	cache := cache.NewCache[string, bool]().WithTTL(24 * time.Hour).WithLRU().WithTTL(constants.JTITtl).WithMaxKeys(size)
 	return &jtiCache{
 		cache: cache,
 		mu:    sync.Mutex{},

@@ -23,15 +23,16 @@ type ComAtprotoServerCreateInviteCodesItem struct {
 
 func (s *Server) handleCreateInviteCodes(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleServerCreateInviteCodes")
 
 	var req ComAtprotoServerCreateInviteCodesRequest
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("error binding", "error", err)
+		logger.Error("error binding", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
 	if err := e.Validate(req); err != nil {
-		s.logger.Error("error validating", "error", err)
+		logger.Error("error validating", "error", err)
 		return helpers.InputError(e, nil)
 	}
 
@@ -57,7 +58,7 @@ func (s *Server) handleCreateInviteCodes(e echo.Context) error {
 				Did:               did,
 				RemainingUseCount: req.UseCount,
 			}, nil).Error; err != nil {
-				s.logger.Error("error creating invite code", "error", err)
+				logger.Error("error creating invite code", "error", err)
 				return helpers.ServerError(e, nil)
 			}
 		}

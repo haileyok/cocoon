@@ -63,10 +63,11 @@ func (s *Server) handleAccountSigninGet(e echo.Context) error {
 
 func (s *Server) handleAccountSigninPost(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleAccountSigninPost")
 
 	var req OauthSigninInput
 	if err := e.Bind(&req); err != nil {
-		s.logger.Error("error binding sign in req", "error", err)
+		logger.Error("error binding sign in req", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

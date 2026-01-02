@@ -14,6 +14,7 @@ import (
 
 func (s *Server) handleSyncGetRepo(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleSyncGetRepo")
 
 	did := e.QueryParam("did")
 	if did == "" {
@@ -38,7 +39,7 @@ func (s *Server) handleSyncGetRepo(e echo.Context) error {
 	buf := new(bytes.Buffer)
 
 	if _, err := carstore.LdWrite(buf, hb); err != nil {
-		s.logger.Error("error writing to car", "error", err)
+		logger.Error("error writing to car", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 

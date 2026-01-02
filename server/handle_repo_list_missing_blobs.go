@@ -23,6 +23,7 @@ type ComAtprotoRepoListMissingBlobsRecordBlob struct {
 
 func (s *Server) handleListMissingBlobs(e echo.Context) error {
 	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleListMissingBlos")
 
 	urepo := e.Get("repo").(*models.RepoActor)
 
@@ -38,7 +39,7 @@ func (s *Server) handleListMissingBlobs(e echo.Context) error {
 
 	var records []models.Record
 	if err := s.db.Raw(ctx, "SELECT * FROM records WHERE did = ?", nil, urepo.Repo.Did).Scan(&records).Error; err != nil {
-		s.logger.Error("failed to get records for listMissingBlobs", "error", err)
+		logger.Error("failed to get records for listMissingBlobs", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
