@@ -96,3 +96,22 @@ func (s *Server) sendEmailVerification(email, handle, code string) error {
 
 	return nil
 }
+
+func (s *Server) sendAuthCode(email, handle, code string) error {
+	if s.mail == nil {
+		return nil
+	}
+
+	s.mailLk.Lock()
+	defer s.mailLk.Unlock()
+
+	s.mail.To(email)
+	s.mail.Subject("2FA code for " + s.config.Hostname)
+	s.mail.Plain().Set(fmt.Sprintf("Hello %s. Your 2FA code is %s. This code will expire in ten minutes.", handle, code))
+
+	if err := s.mail.Send(); err != nil {
+		return err
+	}
+
+	return nil
+}

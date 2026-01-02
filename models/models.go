@@ -30,6 +30,8 @@ type Repo struct {
 	Preferences                    []byte
 	Deactivated                    bool
 	EmailAuthFactor                bool
+	AuthCode                       *string
+	AuthCodeExpiresAt              *time.Time
 }
 
 func (r *Repo) SignFor(ctx context.Context, did string, msg []byte) ([]byte, error) {

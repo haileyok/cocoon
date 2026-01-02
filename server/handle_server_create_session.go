@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -88,16 +89,9 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 
 	// if repo requires auth factor token and one hasn't been provided, return error prompting for one
 	if repo.EmailAuthFactor && (req.AuthFactorToken == nil || *req.AuthFactorToken == "") {
-		code := fmt.Sprintf("%s-%s", helpers.RandomVarchar(5), helpers.RandomVarchar(5))
-		eat := time.Now().Add(10 * time.Minute).UTC()
-
-		if err := s.db.Exec(ctx, "UPDATE repos SET email_update_code = ?, email_update_code_expires_at = ? WHERE did = ?", nil, code, eat, repo.Repo.Did).Error; err != nil {
-			s.logger.Error("error updating repo", "error", err)
-			return helpers.ServerError(e, nil)
-		}
-
-		if err := s.sendEmailUpdate(repo.Email, repo.Handle, code); err != nil {
-			s.logger.Error("error sending email", "error", err)
+		err = s.createAndSendAuthCode(ctx, repo)
+		if err != nil {
+			s.logger.Error("sending auth code", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
@@ -106,15 +100,21 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 
 	// if auth factor is required, now check that the one provided is valid
 	if repo.EmailAuthFactor {
-		if repo.EmailUpdateCode == nil || repo.EmailUpdateCodeExpiresAt == nil {
+		if repo.AuthCode == nil || repo.AuthCodeExpiresAt == nil {
+			err = s.createAndSendAuthCode(ctx, repo)
+			if err != nil {
+				s.logger.Error("sending auth code", "error", err)
+				return helpers.ServerError(e, nil)
+			}
+
+			return helpers.InputError(e, to.StringPtr("AuthFactorTokenRequired"))
+		}
+
+		if *repo.AuthCode != *req.AuthFactorToken {
 			return helpers.InvalidTokenError(e)
 		}
 
-		if *repo.EmailUpdateCode != *req.AuthFactorToken {
-			return helpers.InvalidTokenError(e)
-		}
-
-		if time.Now().UTC().After(*repo.EmailUpdateCodeExpiresAt) {
+		if time.Now().UTC().After(*repo.AuthCodeExpiresAt) {
 			return helpers.ExpiredTokenError(e)
 		}
 	}
@@ -143,4 +143,19 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 		Active:          repo.Active(),
 		Status:          repo.Status(),
 	})
+}
+
+func (s *Server) createAndSendAuthCode(ctx context.Context, repo models.RepoActor) error {
+	code := fmt.Sprintf("%s-%s", helpers.RandomVarchar(5), helpers.RandomVarchar(5))
+	eat := time.Now().Add(10 * time.Minute).UTC()
+
+	if err := s.db.Exec(ctx, "UPDATE repos SET auth_code = ?, auth_code_expires_at = ? WHERE did = ?", nil, code, eat, repo.Repo.Did).Error; err != nil {
+		return fmt.Errorf("updating repo: %w", err)
+	}
+
+	if err := s.sendAuthCode(repo.Email, repo.Handle, code); err != nil {
+		return fmt.Errorf("sending email: %w", err)
+	}
+
+	return nil
 }
