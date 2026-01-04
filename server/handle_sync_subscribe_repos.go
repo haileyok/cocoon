@@ -12,7 +12,9 @@ import (
 )
 
 func (s *Server) handleSyncSubscribeRepos(e echo.Context) error {
-	ctx := e.Request().Context()
+	ctx, cancel := context.WithCancel(e.Request().Context())
+	defer cancel()
+
 	logger := s.logger.With("component", "subscribe-repos-websocket")
 
 	conn, err := websocket.Upgrade(e.Response().Writer, e.Request(), e.Response().Header(), 1<<10, 1<<10)
@@ -30,13 +32,23 @@ func (s *Server) handleSyncSubscribeRepos(e echo.Context) error {
 		metrics.RelaysConnected.WithLabelValues(ident).Dec()
 	}()
 
-	evts, cancel, err := s.evtman.Subscribe(ctx, ident, func(evt *events.XRPCStreamEvent) bool {
+	evts, evtManCancel, err := s.evtman.Subscribe(ctx, ident, func(evt *events.XRPCStreamEvent) bool {
 		return true
 	}, nil)
 	if err != nil {
 		return err
 	}
-	defer cancel()
+	defer evtManCancel()
+
+	// drop the connection whenever a subscriber disconnects from the socket, we should get errors
+	go func() {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				logger.Warn("websocket error", "err", err)
+				cancel()
+			}
+		}
+	}()
 
 	header := events.EventHeader{Op: events.EvtKindMessage}
 	for evt := range evts {
@@ -97,11 +109,13 @@ func (s *Server) handleSyncSubscribeRepos(e echo.Context) error {
 
 	// we should tell the relay to request a new crawl at this point if we got disconnected
 	// use a new context since the old one might be cancelled at this point
-	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := s.requestCrawl(ctx); err != nil {
-		logger.Error("error requesting crawls", "err", err)
-	}
+	go func() {
+		retryCtx, retryCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer retryCancel()
+		if err := s.requestCrawl(retryCtx); err != nil {
+			logger.Error("error requesting crawls", "err", err)
+		}
+	}()
 
 	return nil
 }
