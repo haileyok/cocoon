@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 	"time"
@@ -8,35 +9,96 @@ import (
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/oauth"
+	"github.com/haileyok/cocoon/oauth/constants"
 	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/labstack/echo/v4"
 )
 
+type HandleOauthAuthorizeGetInput struct {
+	RequestUri string `query:"request_uri"`
+}
+
 func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 	ctx := e.Request().Context()
 
-	reqUri := e.QueryParam("request_uri")
-	if reqUri == "" {
-		// render page for logged out dev
-		if s.config.Version == "dev" {
-			return e.Render(200, "authorize.html", map[string]any{
-				"Scopes":     []string{"atproto", "transition:generic"},
-				"AppName":    "DEV MODE AUTHORIZATION PAGE",
-				"Handle":     "paula.cocoon.social",
-				"RequestUri": "",
-			})
+	logger := s.logger.With("name", "handleOauthAuthorizeGet")
+
+	var input HandleOauthAuthorizeGetInput
+	if err := e.Bind(&input); err != nil {
+		logger.Error("error binding request", "err", err)
+		return fmt.Errorf("error binding request")
+	}
+
+	var reqId string
+	if input.RequestUri != "" {
+		id, err := oauth.DecodeRequestUri(input.RequestUri)
+		if err != nil {
+			logger.Error("no request uri found in input", "url", e.Request().URL.String())
+			return helpers.InputError(e, to.StringPtr("no request uri"))
 		}
-		return helpers.InputError(e, to.StringPtr("no request uri"))
+		reqId = id
+	} else {
+		var parRequest provider.ParRequest
+		if err := e.Bind(&parRequest); err != nil {
+			s.logger.Error("error binding for standard auth request", "error", err)
+			return helpers.InputError(e, to.StringPtr("InvalidRequest"))
+		}
+
+		if err := e.Validate(parRequest); err != nil {
+			// render page for logged out dev
+			if s.config.Version == "dev" && parRequest.ClientID == "" {
+				return e.Render(200, "authorize.html", map[string]any{
+					"Scopes":     []string{"atproto", "transition:generic"},
+					"AppName":    "DEV MODE AUTHORIZATION PAGE",
+					"Handle":     "paula.cocoon.social",
+					"RequestUri": "",
+				})
+			}
+			return helpers.InputError(e, to.StringPtr("no request uri and invalid parameters"))
+		}
+
+		client, clientAuth, err := s.oauthProvider.AuthenticateClient(ctx, parRequest.AuthenticateClientRequestBase, nil, &provider.AuthenticateClientOptions{
+			AllowMissingDpopProof: true,
+		})
+		if err != nil {
+			s.logger.Error("error authenticating client in standard request", "client_id", parRequest.ClientID, "error", err)
+			return helpers.ServerError(e, to.StringPtr(err.Error()))
+		}
+
+		if parRequest.DpopJkt == nil {
+			if client.Metadata.DpopBoundAccessTokens {
+			}
+		} else {
+			if !client.Metadata.DpopBoundAccessTokens {
+				msg := "dpop bound access tokens are not enabled for this client"
+				return helpers.InputError(e, &msg)
+			}
+		}
+
+		eat := time.Now().Add(constants.ParExpiresIn)
+		id := oauth.GenerateRequestId()
+
+		authRequest := &provider.OauthAuthorizationRequest{
+			RequestId:  id,
+			ClientId:   client.Metadata.ClientID,
+			ClientAuth: *clientAuth,
+			Parameters: parRequest,
+			ExpiresAt:  eat,
+		}
+
+		if err := s.db.Create(ctx, authRequest, nil).Error; err != nil {
+			s.logger.Error("error creating auth request in db", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+
+		input.RequestUri = oauth.EncodeRequestUri(id)
+		reqId = id
+
 	}
 
 	repo, _, err := s.getSessionRepoOrErr(e)
 	if err != nil {
 		return e.Redirect(303, "/account/signin?"+e.QueryParams().Encode())
-	}
-
-	reqId, err := oauth.DecodeRequestUri(reqUri)
-	if err != nil {
-		return helpers.InputError(e, to.StringPtr(err.Error()))
 	}
 
 	var req provider.OauthAuthorizationRequest
@@ -60,7 +122,7 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 	data := map[string]any{
 		"Scopes":      scopes,
 		"AppName":     appName,
-		"RequestUri":  reqUri,
+		"RequestUri":  input.RequestUri,
 		"QueryParams": e.QueryParams().Encode(),
 		"Handle":      repo.Actor.Handle,
 	}
@@ -129,8 +191,22 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 	q.Set("code", code)
 
 	hashOrQuestion := "?"
-	if authReq.ClientAuth.Method != "private_key_jwt" {
-		hashOrQuestion = "#"
+	if authReq.Parameters.ResponseMode != nil {
+		switch *authReq.Parameters.ResponseMode {
+		case "fragment":
+			hashOrQuestion = "#"
+		case "query":
+			// do nothing
+			break
+		default:
+			if authReq.Parameters.ResponseType != "code" {
+				hashOrQuestion = "#"
+			}
+		}
+	} else {
+		if authReq.Parameters.ResponseType != "code" {
+			hashOrQuestion = "#"
+		}
 	}
 
 	return e.Redirect(303, authReq.Parameters.RedirectURI+hashOrQuestion+q.Encode())
