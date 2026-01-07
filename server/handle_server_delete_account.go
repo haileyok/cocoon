@@ -69,7 +69,7 @@ func (s *Server) handleServerDeleteAccount(e echo.Context) error {
 		})
 	}
 
-	tx := s.db.BeginDangerously(ctx)
+	tx := s.db.Begin(ctx)
 	if tx.Error != nil {
 		logger.Error("error starting transaction", "error", tx.Error)
 		return helpers.ServerError(e, nil)
