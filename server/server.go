@@ -322,6 +322,9 @@ func New(args *Args) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to open sqlite database: %w", err)
 		}
+		gdb.Exec("PRAGMA journal_mode=WAL")
+		gdb.Exec("PRAGMA synchronous=NORMAL")
+
 		logger.Info("connected to SQLite database", "path", args.DbName)
 	}
 	dbw := db.NewDB(gdb)
@@ -625,68 +628,55 @@ func (s *Server) doBackup() {
 
 	logger.Info("beginning backup to s3...")
 
-	var buf bytes.Buffer
-	if err := func() error {
-		logger.Info("reading database bytes...")
-		s.db.Lock()
-		defer s.db.Unlock()
+	tmpFile := fmt.Sprintf("/tmp/cocoon-backup-%s.db", time.Now().Format(time.RFC3339Nano))
+	defer os.Remove(tmpFile)
 
-		sf, err := os.Open(s.dbName)
-		if err != nil {
-			return fmt.Errorf("error opening database for backup: %w", err)
-		}
-		defer sf.Close()
-
-		if _, err := io.Copy(&buf, sf); err != nil {
-			return fmt.Errorf("error reading bytes of backup db: %w", err)
-		}
-
-		return nil
-	}(); err != nil {
-		logger.Error("error backing up database", "error", err)
+	if err := s.db.Client().Exec(fmt.Sprintf("VACUUM INTO '%s'", tmpFile)).Error; err != nil {
+		logger.Error("error creating tmp backup file", "err", err)
 		return
 	}
 
-	if err := func() error {
-		logger.Info("sending to s3...")
-
-		currTime := time.Now().Format("2006-01-02_15-04-05")
-		key := "cocoon-backup-" + currTime + ".db"
-
-		config := &aws.Config{
-			Region:      aws.String(s.s3Config.Region),
-			Credentials: credentials.NewStaticCredentials(s.s3Config.AccessKey, s.s3Config.SecretKey, ""),
-		}
-
-		if s.s3Config.Endpoint != "" {
-			config.Endpoint = aws.String(s.s3Config.Endpoint)
-			config.S3ForcePathStyle = aws.Bool(true)
-		}
-
-		sess, err := session.NewSession(config)
-		if err != nil {
-			return err
-		}
-
-		svc := s3.New(sess)
-
-		if _, err := svc.PutObject(&s3.PutObjectInput{
-			Bucket: aws.String(s.s3Config.Bucket),
-			Key:    aws.String(key),
-			Body:   bytes.NewReader(buf.Bytes()),
-		}); err != nil {
-			return fmt.Errorf("error uploading file to s3: %w", err)
-		}
-
-		logger.Info("finished uploading backup to s3", "key", key, "duration", time.Now().Sub(start).Seconds())
-
-		return nil
-	}(); err != nil {
-		logger.Error("error uploading database backup", "error", err)
+	backupData, err := os.ReadFile(tmpFile)
+	if err != nil {
+		logger.Error("error reading tmp backup file", "err", err)
 		return
 	}
 
-	os.WriteFile("last-backup.txt", []byte(time.Now().String()), 0644)
+	logger.Info("sending to s3...")
+
+	currTime := time.Now().Format("2006-01-02_15-04-05")
+	key := "cocoon-backup-" + currTime + ".db"
+
+	config := &aws.Config{
+		Region:      aws.String(s.s3Config.Region),
+		Credentials: credentials.NewStaticCredentials(s.s3Config.AccessKey, s.s3Config.SecretKey, ""),
+	}
+
+	if s.s3Config.Endpoint != "" {
+		config.Endpoint = aws.String(s.s3Config.Endpoint)
+		config.S3ForcePathStyle = aws.Bool(true)
+	}
+
+	sess, err := session.NewSession(config)
+	if err != nil {
+		logger.Error("error creating s3 session", "err", err)
+		return
+	}
+
+	svc := s3.New(sess)
+
+	if _, err := svc.PutObject(&s3.PutObjectInput{
+		Bucket: aws.String(s.s3Config.Bucket),
+		Key:    aws.String(key),
+		Body:   bytes.NewReader(backupData),
+	}); err != nil {
+		logger.Error("error uploading file to s3", "err", err)
+		return
+	}
+
+	logger.Info("finished uploading backup to s3", "key", key, "duration", time.Since(start).Seconds())
+
+	os.WriteFile("last-backup.txt", []byte(time.Now().Format(time.RFC3339Nano)), 0644)
 }
 
 func (s *Server) backupRoutine() {
@@ -721,10 +711,10 @@ func (s *Server) backupRoutine() {
 	if err != nil {
 		shouldBackupNow = true
 	} else {
-		lastBackup, err := time.Parse("2006-01-02 15:04:05.999999999 -0700 MST", string(lastBackupStr))
+		lastBackup, err := time.Parse(time.RFC3339Nano, string(lastBackupStr))
 		if err != nil {
 			shouldBackupNow = true
-		} else if time.Now().Sub(lastBackup).Seconds() > 3600 {
+		} else if time.Since(lastBackup).Seconds() > 3600 {
 			shouldBackupNow = true
 		}
 	}
