@@ -19,9 +19,9 @@ type AuthenticateClientOptions struct {
 }
 
 type AuthenticateClientRequestBase struct {
-	ClientID            string  `form:"client_id" json:"client_id" validate:"required"`
-	ClientAssertionType *string `form:"client_assertion_type" json:"client_assertion_type,omitempty"`
-	ClientAssertion     *string `form:"client_assertion" json:"client_assertion,omitempty"`
+	ClientID            string  `form:"client_id" json:"client_id" query:"client_id" validate:"required"`
+	ClientAssertionType *string `form:"client_assertion_type" json:"client_assertion_type,omitempty" query:"client_assertion_type"`
+	ClientAssertion     *string `form:"client_assertion" json:"client_assertion,omitempty" query:"client_assertion"`
 }
 
 func (p *Provider) AuthenticateClient(ctx context.Context, req AuthenticateClientRequestBase, proof *dpop.Proof, opts *AuthenticateClientOptions) (*client.Client, *ClientAuth, error) {

@@ -42,6 +42,7 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 				e.Response().Header().Set("DPoP-Nonce", nonce)
 				e.Response().Header().Add("access-control-expose-headers", "DPoP-Nonce")
 			}
+			logger.Error("nonce error: use_dpop_nonce", "headers", e.Request().Header)
 			return e.JSON(400, map[string]string{
 				"error": "use_dpop_nonce",
 			})

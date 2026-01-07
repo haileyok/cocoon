@@ -75,7 +75,6 @@ func (dm *Manager) CheckProof(reqMethod, reqUrl string, headers http.Header, acc
 	}
 
 	proof := extractProof(headers)
-
 	if proof == "" {
 		return nil, nil
 	}
@@ -197,12 +196,13 @@ func (dm *Manager) CheckProof(reqMethod, reqUrl string, headers http.Header, acc
 
 	nonce, _ := claims["nonce"].(string)
 	if nonce == "" {
-		// WARN: this _must_ be `use_dpop_nonce` for clients know they should make another request
+		// reference impl checks if self.nonce is not null before returning an error, but we always have a
+		// nonce so we do not bother checking
 		return nil, ErrUseDpopNonce
 	}
 
 	if nonce != "" && !dm.nonce.Check(nonce) {
-		// WARN: this _must_ be `use_dpop_nonce` so that clients will fetch a new nonce
+		// dpop nonce mismatch
 		return nil, ErrUseDpopNonce
 	}
 
@@ -237,7 +237,7 @@ func (dm *Manager) CheckProof(reqMethod, reqUrl string, headers http.Header, acc
 }
 
 func extractProof(headers http.Header) string {
-	dpopHeaders := headers["Dpop"]
+	dpopHeaders := headers.Values("dpop")
 	switch len(dpopHeaders) {
 	case 0:
 		return ""

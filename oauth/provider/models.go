@@ -32,14 +32,15 @@ func (ca ClientAuth) Value() (driver.Value, error) {
 
 type ParRequest struct {
 	AuthenticateClientRequestBase
-	ResponseType        string  `form:"response_type" json:"response_type" validate:"required"`
-	CodeChallenge       *string `form:"code_challenge" json:"code_challenge" validate:"required"`
-	CodeChallengeMethod string  `form:"code_challenge_method" json:"code_challenge_method" validate:"required"`
-	State               string  `form:"state" json:"state" validate:"required"`
-	RedirectURI         string  `form:"redirect_uri" json:"redirect_uri" validate:"required"`
-	Scope               string  `form:"scope" json:"scope" validate:"required"`
-	LoginHint           *string `form:"login_hint" json:"login_hint,omitempty"`
-	DpopJkt             *string `form:"dpop_jkt" json:"dpop_jkt,omitempty"`
+	ResponseType        string  `form:"response_type" json:"response_type" query:"response_type" validate:"required"`
+	CodeChallenge       *string `form:"code_challenge" json:"code_challenge" query:"code_challenge" validate:"required"`
+	CodeChallengeMethod string  `form:"code_challenge_method" json:"code_challenge_method" query:"code_challenge_method" validate:"required"`
+	State               string  `form:"state" json:"state" query:"state" validate:"required"`
+	RedirectURI         string  `form:"redirect_uri" json:"redirect_uri" query:"redirect_uri" validate:"required"`
+	Scope               string  `form:"scope" json:"scope" query:"scope" validate:"required"`
+	LoginHint           *string `form:"login_hint" query:"login_hint" json:"login_hint,omitempty"`
+	DpopJkt             *string `form:"dpop_jkt" query:"dpop_jkt" json:"dpop_jkt,omitempty"`
+	ResponseMode        *string `form:"response_mode" json:"response_mode,omitempty" query:"response_mode"`
 }
 
 func (opr *ParRequest) Scan(value any) error {
