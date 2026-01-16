@@ -76,7 +76,7 @@ func (s *Server) handleServerDeleteAccount(e echo.Context) error {
 	}
 
 	status := "error"
-	func() {
+	defer func() {
 		if status == "error" {
 			if err := tx.Rollback().Error; err != nil {
 				logger.Error("error rolling back after delete failure", "err", err)
@@ -84,47 +84,47 @@ func (s *Server) handleServerDeleteAccount(e echo.Context) error {
 		}
 	}()
 
-	if err := tx.Exec("DELETE FROM blocks WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM blocks WHERE did = ?", req.Did).Error; err != nil {
 		logger.Error("error deleting blocks", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := tx.Exec("DELETE FROM records WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM records WHERE did = ?", req.Did).Error; err != nil {
 		logger.Error("error deleting records", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := tx.Exec("DELETE FROM blobs WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM blobs WHERE did = ?", req.Did).Error; err != nil {
 		logger.Error("error deleting blobs", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := tx.Exec("DELETE FROM tokens WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM tokens WHERE did = ?", req.Did).Error; err != nil {
 		logger.Error("error deleting tokens", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := tx.Exec("DELETE FROM refresh_tokens WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM refresh_tokens WHERE did = ?", req.Did).Error; err != nil {
 		logger.Error("error deleting refresh tokens", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := tx.Exec("DELETE FROM reserved_keys WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM reserved_keys WHERE did = ?", req.Did).Error; err != nil {
 		logger.Error("error deleting reserved keys", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := tx.Exec("DELETE FROM invite_codes WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM invite_codes WHERE did = ?", req.Did).Error; err != nil {
 		logger.Error("error deleting invite codes", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := tx.Exec("DELETE FROM actors WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM actors WHERE did = ?", req.Did).Error; err != nil {
 		logger.Error("error deleting actor", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := tx.Exec("DELETE FROM repos WHERE did = ?", nil, req.Did).Error; err != nil {
+	if err := tx.Exec("DELETE FROM repos WHERE did = ?", req.Did).Error; err != nil {
 		logger.Error("error deleting repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}
