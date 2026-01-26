@@ -59,10 +59,14 @@ func (s *Server) handleSyncListBlobs(e echo.Context) error {
 
 	var cstrs []string
 	for _, b := range blobs {
+		if len(b.Cid) == 0 {
+			logger.Error("empty cid found", "blob", b)
+			continue
+		}
 		c, err := cid.Cast(b.Cid)
 		if err != nil {
 			logger.Error("error casting cid", "error", err)
-			return helpers.ServerError(e, nil)
+			continue
 		}
 		cstrs = append(cstrs, c.String())
 	}
