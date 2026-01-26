@@ -157,12 +157,6 @@ func main() {
 				Name:    "fallback-proxy",
 				EnvVars: []string{"COCOON_FALLBACK_PROXY"},
 			},
-			&cli.StringFlag{
-				Name:    "log-level",
-				Usage:   "Log level: debug, info, warn, error",
-				EnvVars: []string{"COCOON_LOG_LEVEL", "LOG_LEVEL"},
-				Value:   "info",
-			},
 			telemetry.CLIFlagDebug,
 			telemetry.CLIFlagMetricsListenAddress,
 		},
@@ -185,7 +179,14 @@ func main() {
 var runServe = &cli.Command{
 	Name:  "run",
 	Usage: "Start the cocoon PDS",
-	Flags: []cli.Flag{},
+	Flags: []cli.Flag{
+		&cli.StringFlag{
+			Name:    "log-level",
+			Usage:   "Log level: debug, info, warn, error",
+			EnvVars: []string{"COCOON_LOG_LEVEL", "LOG_LEVEL"},
+			Value:   "info",
+		},
+	},
 	Action: func(cmd *cli.Context) error {
 
 		logger := telemetry.StartLogger(cmd)
