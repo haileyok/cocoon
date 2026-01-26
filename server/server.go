@@ -115,7 +115,8 @@ type Args struct {
 
 	S3Config *S3Config
 
-	SessionSecret string
+	SessionSecret    string
+	SessionCookieKey string
 
 	BlockstoreVariant BlockstoreVariant
 	FallbackProxy     string
@@ -132,6 +133,7 @@ type config struct {
 	RequireInvite     bool
 	SmtpEmail         string
 	SmtpName          string
+	SessionCookieKey  string
 	BlockstoreVariant BlockstoreVariant
 	FallbackProxy     string
 }
@@ -392,6 +394,7 @@ func New(args *Args) (*Server, error) {
 			RequireInvite:     args.RequireInvite,
 			SmtpName:          args.SmtpName,
 			SmtpEmail:         args.SmtpEmail,
+			SessionCookieKey:  args.SessionCookieKey,
 			BlockstoreVariant: args.BlockstoreVariant,
 			FallbackProxy:     args.FallbackProxy,
 		},

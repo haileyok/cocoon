@@ -44,7 +44,7 @@ func (s *Server) validateServiceAuth(ctx context.Context, rawToken string, nsid 
 
 	parsedToken, err := jwt.ParseWithClaims(token, jwt.MapClaims{}, func(token *jwt.Token) (interface{}, error) {
 		did := syntax.DID(token.Claims.(jwt.MapClaims)["iss"].(string))
-		didDoc, err := s.passport.FetchDoc(ctx, did.String());
+		didDoc, err := s.passport.FetchDoc(ctx, did.String())
 		if err != nil {
 			return nil, fmt.Errorf("unable to resolve did %s: %s", did, err)
 		}
@@ -52,25 +52,25 @@ func (s *Server) validateServiceAuth(ctx context.Context, rawToken string, nsid 
 		verificationMethods := make([]atproto_identity.DocVerificationMethod, len(didDoc.VerificationMethods))
 		for i, verificationMethod := range didDoc.VerificationMethods {
 			verificationMethods[i] = atproto_identity.DocVerificationMethod{
-				ID: verificationMethod.Id,
-				Type: verificationMethod.Type,
+				ID:                 verificationMethod.Id,
+				Type:               verificationMethod.Type,
 				PublicKeyMultibase: verificationMethod.PublicKeyMultibase,
-				Controller: verificationMethod.Controller,
+				Controller:         verificationMethod.Controller,
 			}
 		}
 		services := make([]atproto_identity.DocService, len(didDoc.Service))
 		for i, service := range didDoc.Service {
 			services[i] = atproto_identity.DocService{
-				ID: service.Id,
-				Type: service.Type,
+				ID:              service.Id,
+				Type:            service.Type,
 				ServiceEndpoint: service.ServiceEndpoint,
 			}
 		}
 		parsedIdentity := atproto_identity.ParseIdentity(&identity.DIDDocument{
-			DID: did,
-			AlsoKnownAs: didDoc.AlsoKnownAs,
+			DID:                did,
+			AlsoKnownAs:        didDoc.AlsoKnownAs,
 			VerificationMethod: verificationMethods,
-			Service: services,
+			Service:            services,
 		})
 
 		key, err := parsedIdentity.PublicKey()

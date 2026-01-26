@@ -26,7 +26,7 @@ type OauthSigninInput struct {
 func (s *Server) getSessionRepoOrErr(e echo.Context) (*models.RepoActor, *sessions.Session, error) {
 	ctx := e.Request().Context()
 
-	sess, err := session.Get("session", e)
+	sess, err := session.Get(s.config.SessionCookieKey, e)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -75,7 +75,7 @@ func (s *Server) handleAccountSigninPost(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	sess, _ := session.Get("session", e)
+	sess, _ := session.Get(s.config.SessionCookieKey, e)
 
 	req.Username = strings.ToLower(req.Username)
 	var idtype string
