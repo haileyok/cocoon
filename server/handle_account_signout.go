@@ -7,7 +7,7 @@ import (
 )
 
 func (s *Server) handleAccountSignout(e echo.Context) error {
-	sess, err := session.Get("session", e)
+	sess, err := session.Get(s.config.SessionCookieKey, e)
 	if err != nil {
 		return err
 	}

@@ -147,6 +147,11 @@ func main() {
 				EnvVars: []string{"COCOON_SESSION_SECRET"},
 			},
 			&cli.StringFlag{
+				Name:    "session-cookie-key",
+				EnvVars: []string{"COCOON_SESSION_COOKIE_KEY"},
+				Value:   "session",
+			},
+			&cli.StringFlag{
 				Name:    "blockstore-variant",
 				EnvVars: []string{"COCOON_BLOCKSTORE_VARIANT"},
 				Value:   "sqlite",
@@ -215,6 +220,7 @@ var runServe = &cli.Command{
 				CDNUrl:           cmd.String("s3-cdn-url"),
 			},
 			SessionSecret:     cmd.String("session-secret"),
+			SessionCookieKey:  cmd.String("session-cookie-key"),
 			BlockstoreVariant: server.MustReturnBlockstoreVariant(cmd.String("blockstore-variant")),
 			FallbackProxy:     cmd.String("fallback-proxy"),
 		})
