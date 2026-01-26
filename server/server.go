@@ -92,6 +92,7 @@ type Server struct {
 type Args struct {
 	Logger *slog.Logger
 
+	LogLevel        slog.Level
 	Addr            string
 	DbName          string
 	DbType          string
@@ -122,6 +123,7 @@ type Args struct {
 }
 
 type config struct {
+	LogLevel          slog.Level
 	Version           string
 	Did               string
 	Hostname          string
@@ -210,9 +212,37 @@ func (t *TemplateRenderer) Render(w io.Writer, name string, data any, c echo.Con
 	return t.templates.ExecuteTemplate(w, name, data)
 }
 
+type filteredHandler struct {
+	level   slog.Level
+	handler slog.Handler
+}
+
+func (h *filteredHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return level >= h.level && h.handler.Enabled(ctx, level)
+}
+
+func (h *filteredHandler) Handle(ctx context.Context, r slog.Record) error {
+	return h.handler.Handle(ctx, r)
+}
+
+func (h *filteredHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &filteredHandler{level: h.level, handler: h.handler.WithAttrs(attrs)}
+}
+
+func (h *filteredHandler) WithGroup(name string) slog.Handler {
+	return &filteredHandler{level: h.level, handler: h.handler.WithGroup(name)}
+}
+
 func New(args *Args) (*Server, error) {
 	if args.Logger == nil {
 		args.Logger = slog.Default()
+	}
+
+	if args.LogLevel != 0 {
+		args.Logger = slog.New(&filteredHandler{
+			level:   args.LogLevel,
+			handler: args.Logger.Handler(),
+		})
 	}
 
 	logger := args.Logger.With("name", "New")
@@ -382,6 +412,7 @@ func New(args *Args) (*Server, error) {
 		plcClient:  plcClient,
 		privateKey: &pkey,
 		config: &config{
+			LogLevel:          args.LogLevel,
 			Version:           args.Version,
 			Did:               args.Did,
 			Hostname:          args.Hostname,
