@@ -531,7 +531,7 @@ func (s *Server) addRoutes() {
 	// temp private record routes
 	s.echo.POST("/xrpc/com.atproto.unspecced.createPrivateRecord", s.handleServerCreatePrivate, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.GET("/xrpc/com.atproto.unspecced.getPrivateRecord", s.handleServerGetPrivate, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
-	s.echo.GET()
+	s.echo.GET("/xrpc/com.atproto.unspecced.listPrivateRecords", s.handleServerListPrivate, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 
 	// stupid silly endpoints
 	s.echo.GET("/xrpc/app.bsky.actor.getPreferences", s.handleActorGetPreferences, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
