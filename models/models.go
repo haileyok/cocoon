@@ -107,6 +107,15 @@ type Record struct {
 	Value     []byte
 }
 
+type PrivateRecord struct {
+	Did       string `gorm:"primaryKey:idx_record_did_created_at;index:idx_record_did_nsid"`
+	CreatedAt string `gorm:"index;index:idx_record_did_created_at,sort:desc"`
+	Nsid      string `gorm:"primarKey;index:idx_record_did_nsid"`
+	Rkey      string `gorm:"primaryKey"`
+	Cid       string
+	Value     []byte
+}
+
 type Block struct {
 	Did   string `gorm:"primaryKey;index:idx_blocks_by_rev"`
 	Cid   []byte `gorm:"primaryKey"`

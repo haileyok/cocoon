@@ -528,6 +528,11 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/xrpc/com.atproto.repo.uploadBlob", s.handleRepoUploadBlob, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.importRepo", s.handleRepoImportRepo, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 
+	// temp private record routes
+	s.echo.POST("/xrpc/com.atproto.unspecced.createPrivateRecord", s.handleServerCreatePrivate, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.GET("/xrpc/com.atproto.unspecced.getPrivateRecord", s.handleServerGetPrivate, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.GET()
+
 	// stupid silly endpoints
 	s.echo.GET("/xrpc/app.bsky.actor.getPreferences", s.handleActorGetPreferences, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/app.bsky.actor.putPreferences", s.handleActorPutPreferences, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
@@ -560,6 +565,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		&models.Blob{},
 		&models.BlobPart{},
 		&models.ReservedKey{},
+		&models.PrivateRecord{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
 	)
