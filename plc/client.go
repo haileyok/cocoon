@@ -61,12 +61,12 @@ func (c *Client) CreateDID(sigkey *atcrypto.PrivateKeyK256, recovery string, han
 	}
 
 	op := Operation{
-		Type: "plc_operation",
+		Type:                "plc_operation",
 		VerificationMethods: creds.VerificationMethods,
-		RotationKeys: creds.RotationKeys,
-		AlsoKnownAs: creds.AlsoKnownAs,
-		Services: creds.Services,
-		Prev: nil,
+		RotationKeys:        creds.RotationKeys,
+		AlsoKnownAs:         creds.AlsoKnownAs,
+		Services:            creds.Services,
+		Prev:                nil,
 	}
 
 	if err := c.SignOp(sigkey, &op); err != nil {
