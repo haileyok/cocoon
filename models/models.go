@@ -108,9 +108,9 @@ type Record struct {
 }
 
 type PrivateRecord struct {
-	Did       string `gorm:"primaryKey:idx_record_did_created_at;index:idx_record_did_nsid"`
-	CreatedAt string `gorm:"index;index:idx_record_did_created_at,sort:desc"`
-	Nsid      string `gorm:"primarKey;index:idx_record_did_nsid"`
+	Did       string `gorm:"primaryKey:idx_private_record_did_created_at;index:idx_private_record_did_nsid"`
+	CreatedAt string `gorm:"index;index:idx_private_record_did_created_at,sort:desc"`
+	Nsid      string `gorm:"primarKey;index:idx_private_record_did_nsid"`
 	Rkey      string `gorm:"primaryKey"`
 	Cid       string
 	Value     []byte
