@@ -6,7 +6,9 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/bluesky-social/go-util/pkg/telemetry"
@@ -182,14 +184,36 @@ func main() {
 var runServe = &cli.Command{
 	Name:  "run",
 	Usage: "Start the cocoon PDS",
-	Flags: []cli.Flag{},
+	Flags: []cli.Flag{
+		&cli.StringFlag{
+			Name:    "log-level",
+			Usage:   "Log level: debug, info, warn, error",
+			EnvVars: []string{"COCOON_LOG_LEVEL", "LOG_LEVEL"},
+			Value:   "info",
+		},
+	},
 	Action: func(cmd *cli.Context) error {
 
 		logger := telemetry.StartLogger(cmd)
 		telemetry.StartMetrics(cmd)
 
+		var level slog.Level
+		switch strings.ToLower(cmd.String("log-level")) {
+		case "debug":
+			level = slog.LevelDebug
+		case "info":
+			level = slog.LevelInfo
+		case "warn":
+			level = slog.LevelWarn
+		case "error":
+			level = slog.LevelError
+		default:
+			level = slog.LevelInfo
+		}
+
 		s, err := server.New(&server.Args{
 			Logger:          logger,
+			LogLevel:        level,
 			Addr:            cmd.String("addr"),
 			DbName:          cmd.String("db-name"),
 			DbType:          cmd.String("db-type"),
