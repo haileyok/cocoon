@@ -39,7 +39,7 @@ func NewRepoMan(s *Server) *RepoMan {
 	return &RepoMan{
 		s:     s,
 		db:    s.db,
-		clock: &clock,
+		clock: clock,
 	}
 }
 
