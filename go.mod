@@ -1,12 +1,12 @@
 module github.com/haileyok/cocoon
 
-go 1.24.5
+go 1.25
 
 require (
 	github.com/Azure/go-autorest/autorest/to v0.4.1
 	github.com/aws/aws-sdk-go v1.55.7
 	github.com/bluesky-social/go-util v0.0.0-20251012040650-2ebbf57f5934
-	github.com/bluesky-social/indigo v0.0.0-20251009212240-20524de167fe
+	github.com/bluesky-social/indigo v0.0.0-20260203235305-a86f3ae1f8ec
 	github.com/btcsuite/websocket v0.0.0-20150119174127-31079b680792
 	github.com/domodwyer/mailyak/v3 v3.6.2
 	github.com/go-pkgz/expirable-cache/v3 v3.0.0
@@ -42,10 +42,10 @@ require (
 	github.com/Azure/go-autorest v14.2.0+incompatible // indirect
 	github.com/RussellLuo/slidingwindow v0.0.0-20200528002341-535bb99d338b // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
-	github.com/carlmjohnson/versioninfo v0.22.5 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.5 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.2.0 // indirect
+	github.com/earthboundkid/versioninfo/v2 v2.24.1 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
