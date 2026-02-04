@@ -136,3 +136,11 @@ type ReservedKey struct {
 	PrivateKey []byte
 	CreatedAt  time.Time `gorm:"index"`
 }
+
+type EventRecord struct {
+	Seq       int64 `gorm:"primaryKey;autoIncrement:false"`
+	CreatedAt time.Time
+	Did       string `gorm:"index"`
+	Type      string
+	Data      []byte
+}

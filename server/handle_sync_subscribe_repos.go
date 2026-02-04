@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/bluesky-social/indigo/events"
@@ -27,6 +28,17 @@ func (s *Server) handleSyncSubscribeRepos(e echo.Context) error {
 	logger = logger.With("ident", ident)
 	logger.Info("new connection established")
 
+	var since *int64
+	if cursorStr := e.QueryParam("cursor"); cursorStr != "" {
+		cursor, err := strconv.ParseInt(cursorStr, 10, 64)
+		if err != nil {
+			logger.Warn("invalid cursor parameter", "cursor", cursorStr, "err", err)
+		} else {
+			since = &cursor
+			logger.Info("subscribing with cursor", "cursor", cursor)
+		}
+	}
+
 	metrics.RelaysConnected.WithLabelValues(ident).Inc()
 	defer func() {
 		metrics.RelaysConnected.WithLabelValues(ident).Dec()
@@ -34,7 +46,7 @@ func (s *Server) handleSyncSubscribeRepos(e echo.Context) error {
 
 	evts, evtManCancel, err := s.evtman.Subscribe(ctx, ident, func(evt *events.XRPCStreamEvent) bool {
 		return true
-	}, nil)
+	}, since)
 	if err != nil {
 		return err
 	}
