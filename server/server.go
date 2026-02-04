@@ -405,6 +405,11 @@ func New(args *Args) (*Server, error) {
 		nonceSecret = maybeSecret
 	}
 
+	evtPersister, err := NewDbPersister(gdb, 72*time.Hour)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create event persister: %w", err)
+	}
+
 	s := &Server{
 		http:       h,
 		httpd:      httpd,
@@ -429,7 +434,7 @@ func New(args *Args) (*Server, error) {
 			BlockstoreVariant: args.BlockstoreVariant,
 			FallbackProxy:     args.FallbackProxy,
 		},
-		evtman:   events.NewEventManager(events.NewMemPersister()),
+		evtman:   events.NewEventManager(evtPersister),
 		passport: identity.NewPassport(h, identity.NewMemCache(10_000)),
 
 		dbName:   args.DbName,
