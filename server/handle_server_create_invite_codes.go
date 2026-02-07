@@ -44,10 +44,10 @@ func (s *Server) handleCreateInviteCodes(e echo.Context) error {
 		req.ForAccounts = to.StringSlicePtr([]string{"admin"})
 	}
 
-	var codes []ComAtprotoServerCreateInviteCodesItem
+	codes := []ComAtprotoServerCreateInviteCodesItem{}
 
 	for _, did := range *req.ForAccounts {
-		var ics []string
+		ics := []string{}
 
 		for range *req.CodeCount {
 			ic := uuid.NewString()
