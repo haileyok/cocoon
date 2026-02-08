@@ -91,6 +91,7 @@ services:
     network_mode: host
     volumes:
       - ./keys:/keys
+      - ./data:/data/cocoon
       - ./create-initial-invite.sh:/create-initial-invite.sh:ro
     environment:
       COCOON_DID: ${COCOON_DID}
