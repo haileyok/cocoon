@@ -419,9 +419,6 @@ func newDb(cmd *cli.Context) (*gorm.DB, error) {
 	case "postgres":
 		databaseURL := cmd.String("database-url")
 		if databaseURL == "" {
-			databaseURL = cmd.String("database-url")
-		}
-		if databaseURL == "" {
 			return nil, fmt.Errorf("COCOON_DATABASE_URL or DATABASE_URL must be set when using postgres")
 		}
 		return gorm.Open(postgres.Open(databaseURL), &gorm.Config{})
