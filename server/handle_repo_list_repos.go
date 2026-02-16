@@ -28,7 +28,7 @@ func (s *Server) handleListRepos(e echo.Context) error {
 		return err
 	}
 
-	var items []ComAtprotoSyncListReposRepoItem
+	items := make([]ComAtprotoSyncListReposRepoItem, 0, len(repos))
 	for _, r := range repos {
 		c, err := cid.Cast(r.Root)
 		if err != nil {
