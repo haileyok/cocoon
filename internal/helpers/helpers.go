@@ -29,7 +29,7 @@ func ServerError(e echo.Context, suffix *string) error {
 	if suffix != nil {
 		msg += ". " + *suffix
 	}
-	return genericError(e, 400, msg)
+	return genericError(e, 500, msg)
 }
 
 func UnauthorizedError(e echo.Context, suffix *string) error {
