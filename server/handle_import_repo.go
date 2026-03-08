@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	"github.com/bluesky-social/indigo/repo"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	blocks "github.com/ipfs/go-block-format"
@@ -60,7 +59,7 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	r, err := repo.OpenRepo(context.TODO(), bs, cs.Header.Roots[0])
+	r, err := openRepo(context.TODO(), bs, cs.Header.Roots[0], urepo.Repo.Did)
 	if err != nil {
 		logger.Error("could not open repo", "error", err)
 		return helpers.ServerError(e, nil)
@@ -70,8 +69,8 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 
 	clock := syntax.NewTIDClock(0)
 
-	if err := r.ForEach(context.TODO(), "", func(key string, cid cid.Cid) error {
-		pts := strings.Split(key, "/")
+	if err := r.MST.Walk(func(key []byte, cid cid.Cid) error {
+		pts := strings.Split(string(key), "/")
 		nsid := pts[0]
 		rkey := pts[1]
 		cidStr := cid.String()
@@ -103,7 +102,7 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 
 	tx.Commit()
 
-	root, rev, err := r.Commit(context.TODO(), urepo.SignFor)
+	root, rev, err := commitRepo(context.TODO(), bs, r, urepo.Repo.SigningKey)
 	if err != nil {
 		logger.Error("error committing", "error", err)
 		return helpers.ServerError(e, nil)

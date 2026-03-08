@@ -10,8 +10,10 @@ import (
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
+	atp "github.com/bluesky-social/indigo/atproto/repo"
+	"github.com/bluesky-social/indigo/atproto/repo/mst"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/bluesky-social/indigo/events"
-	"github.com/bluesky-social/indigo/repo"
 	"github.com/bluesky-social/indigo/util"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
@@ -220,9 +222,16 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 
 	if request.Did == nil || *request.Did == "" {
 		bs := s.getBlockstore(signupDid)
-		r := repo.NewRepo(context.TODO(), signupDid, bs)
 
-		root, rev, err := r.Commit(context.TODO(), urepo.SignFor)
+		clk := syntax.NewTIDClock(0)
+		r := &atp.Repo{
+			DID:         syntax.DID(signupDid),
+			Clock:       clk,
+			MST:         mst.NewEmptyTree(),
+			RecordStore: bs,
+		}
+
+		root, rev, err := commitRepo(context.TODO(), bs, r, urepo.SigningKey)
 		if err != nil {
 			logger.Error("error committing", "error", err)
 			return helpers.ServerError(e, nil)

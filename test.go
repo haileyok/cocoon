@@ -13,8 +13,8 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/bluesky-social/indigo/events"
 	"github.com/bluesky-social/indigo/events/schedulers/parallel"
+	atp "github.com/bluesky-social/indigo/atproto/repo"
 	lexutil "github.com/bluesky-social/indigo/lex/util"
-	"github.com/bluesky-social/indigo/repo"
 	"github.com/bluesky-social/indigo/repomgr"
 	"github.com/gorilla/websocket"
 )
@@ -82,7 +82,7 @@ func handleRepoCommit(evt *atproto.SyncSubscribeRepos_Commit) error {
 		panic(err)
 	}
 
-	rr, err := repo.ReadRepoFromCar(context.TODO(), bytes.NewReader(evt.Blocks))
+	_, rr, err := atp.LoadRepoFromCAR(context.TODO(), bytes.NewReader(evt.Blocks))
 	if err != nil {
 		panic(err)
 	}
@@ -98,17 +98,15 @@ func handleRepoCommit(evt *atproto.SyncSubscribeRepos_Commit) error {
 		go func() {
 			switch ek {
 			case repomgr.EvtKindCreateRecord, repomgr.EvtKindUpdateRecord:
-				rc, recordCBOR, err := rr.GetRecordBytes(context.TODO(), op.Path)
+				recordCBOR, rc, err := rr.GetRecordBytes(context.TODO(), collection, rkey)
 				if err != nil {
 					panic(err)
 				}
 
-				if op.Cid == nil || lexutil.LexLink(rc) != *op.Cid {
+				if op.Cid == nil || rc == nil || lexutil.LexLink(*rc) != *op.Cid {
 					panic("nocid")
 				}
 
-				_ = collection
-				_ = rkey
 				_ = recordCBOR
 				_ = did
 
