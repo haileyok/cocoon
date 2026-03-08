@@ -207,13 +207,12 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 
 	entries := make([]models.Record, 0, len(writes))
 	for i, op := range writes {
-		path := fmt.Sprintf("%s/%s", op.Collection, *op.Rkey)
-
 		// updates or deletes must supply an rkey
 		if op.Type != OpTypeCreate && op.Rkey == nil {
 			return nil, fmt.Errorf("invalid rkey")
 		} else if op.Type == OpTypeCreate && op.Rkey != nil {
 			// we should convert this op to an update if the rkey already exists
+			path := fmt.Sprintf("%s/%s", op.Collection, *op.Rkey)
 			existing, _ := r.MST.Get([]byte(path))
 			if existing != nil {
 				op.Type = OpTypeUpdate
@@ -222,8 +221,9 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 			// creates that don't supply an rkey will have one generated for them
 			op.Rkey = to.StringPtr(rm.clock.Next().String())
 			writes[i].Rkey = op.Rkey
-			path = fmt.Sprintf("%s/%s", op.Collection, *op.Rkey)
 		}
+
+		path := fmt.Sprintf("%s/%s", op.Collection, *op.Rkey)
 
 		// validate the record key is actually valid
 		_, err := syntax.ParseRecordKey(*op.Rkey)
