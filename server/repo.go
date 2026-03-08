@@ -249,7 +249,7 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 	var newroot cid.Cid
 	var rev string
 
-	err = rm.withRepo(ctx, urepo.Did, rootcid, func(r *atp.Repo) (cid.Cid, error) {
+	if err := rm.withRepo(ctx, urepo.Did, rootcid, func(r *atp.Repo) (cid.Cid, error) {
 		entries = make([]models.Record, 0, len(writes))
 		for i, op := range writes {
 			// updates or deletes must supply an rkey
@@ -405,8 +405,7 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		}
 
 		return newroot, nil
-	})
-	if err != nil {
+	}); err != nil {
 		return nil, err
 	}
 
@@ -558,7 +557,7 @@ func (rm *RepoMan) getRecordProof(ctx context.Context, urepo models.Repo, collec
 	var proofBlocks []blocks.Block
 	var recordCid *cid.Cid
 
-	err = rm.withRepo(ctx, urepo.Did, commitCid, func(r *atp.Repo) (cid.Cid, error) {
+	if err := rm.withRepo(ctx, urepo.Did, commitCid, func(r *atp.Repo) (cid.Cid, error) {
 		path := collection + "/" + rkey
 
 		// walk the cached in-memory tree to find the record and collect MST node CIDs on the path
@@ -598,8 +597,7 @@ func (rm *RepoMan) getRecordProof(ctx context.Context, urepo models.Repo, collec
 
 		// read-only, return same root
 		return commitCid, nil
-	})
-	if err != nil {
+	}); err != nil {
 		return cid.Undef, nil, err
 	}
 
