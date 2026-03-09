@@ -1,5 +1,5 @@
 ### Compile stage
-FROM golang:1.25.1-bookworm AS build-env
+FROM golang:1.26.1-bookworm AS build-env
 
 ADD . /dockerbuild
 WORKDIR /dockerbuild
