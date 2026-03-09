@@ -1,8 +1,8 @@
 ### Compile stage
 FROM golang:1.26.1-bookworm AS build-env
 
-ADD . /dockerbuild
 WORKDIR /dockerbuild
+ADD . .
 
 RUN GIT_VERSION=$(git describe --tags --long --always || echo "dev-local") && \
     go mod tidy && \
@@ -17,6 +17,9 @@ ENTRYPOINT ["dumb-init", "--"]
 WORKDIR /
 RUN mkdir -p data/cocoon
 COPY --from=build-env /dockerbuild/cocoon /
+
+COPY ./init-keys.sh /
+COPY ./create-initial-invite.sh /
 
 CMD ["/cocoon", "run"]
 
