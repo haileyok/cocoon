@@ -43,6 +43,7 @@ import (
 	echo_session "github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/prometheus/client_golang/prometheus"
 	slogecho "github.com/samber/slog-echo"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -71,7 +72,7 @@ type Server struct {
 	mailLk        *sync.Mutex
 	echo          *echo.Echo
 	db            *db.DB
-	plcClient     *plc.Client
+	plcClient     plc.PLCClient
 	logger        *slog.Logger
 	config        *config
 	privateKey    *ecdsa.PrivateKey
@@ -121,6 +122,19 @@ type Args struct {
 
 	BlockstoreVariant BlockstoreVariant
 	FallbackProxy     string
+
+	// Embedding overrides: load secrets in-memory, point at a custom PLC,
+	// or swap the outbound HTTP client. All optional; fall back to the
+	// file/CLI defaults when unset.
+	RotationKeyBytes []byte       // takes precedence over RotationKeyPath
+	JwkBytes         []byte       // takes precedence over JwkPath
+	NonceSecret      []byte       // if nil, reads ./nonce.secret
+	PLCUrl           string       // defaults to https://plc.directory
+	HTTPClient       *http.Client // defaults to util.RobustHTTPClient()
+
+	// Test / multi-instance overrides. Production should leave these nil.
+	PLCClient            plc.PLCClient         // replaces the real PLC client entirely; PLCUrl is ignored
+	PrometheusRegisterer prometheus.Registerer // per-instance registry to avoid global collisions
 }
 
 type config struct {
@@ -286,7 +300,14 @@ func New(args *Args) (*Server, error) {
 	e.Pre(middleware.RemoveTrailingSlash())
 	e.Pre(slogecho.New(args.Logger.With("component", "slogecho")))
 	e.Use(echo_session.Middleware(sessions.NewCookieStore([]byte(args.SessionSecret))))
-	e.Use(echoprometheus.NewMiddleware("cocoon"))
+	if args.PrometheusRegisterer != nil {
+		e.Use(echoprometheus.NewMiddlewareWithConfig(echoprometheus.MiddlewareConfig{
+			Subsystem:  "cocoon",
+			Registerer: args.PrometheusRegisterer,
+		}))
+	} else {
+		e.Use(echoprometheus.NewMiddleware("cocoon"))
+	}
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins:     []string{"*"},
 		AllowHeaders:     []string{"*"},
@@ -361,26 +382,40 @@ func New(args *Args) (*Server, error) {
 	}
 	dbw := db.NewDB(gdb)
 
-	rkbytes, err := os.ReadFile(args.RotationKeyPath)
-	if err != nil {
-		return nil, err
+	rkbytes := args.RotationKeyBytes
+	if rkbytes == nil {
+		rkbytes, err = os.ReadFile(args.RotationKeyPath)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	h := util.RobustHTTPClient()
-
-	plcClient, err := plc.NewClient(&plc.ClientArgs{
-		H:           h,
-		Service:     "https://plc.directory",
-		PdsHostname: args.Hostname,
-		RotationKey: rkbytes,
-	})
-	if err != nil {
-		return nil, err
+	h := args.HTTPClient
+	if h == nil {
+		h = util.RobustHTTPClient()
 	}
 
-	jwkbytes, err := os.ReadFile(args.JwkPath)
-	if err != nil {
-		return nil, err
+	var plcClient plc.PLCClient
+	if args.PLCClient != nil {
+		plcClient = args.PLCClient
+	} else {
+		plcClient, err = plc.NewClient(&plc.ClientArgs{
+			H:           h,
+			Service:     args.PLCUrl,
+			PdsHostname: args.Hostname,
+			RotationKey: rkbytes,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	jwkbytes := args.JwkBytes
+	if jwkbytes == nil {
+		jwkbytes, err = os.ReadFile(args.JwkPath)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	key, err := helpers.ParseJWKFromBytes(jwkbytes)
@@ -397,12 +432,14 @@ func New(args *Args) (*Server, error) {
 		Timeout: 10 * time.Second,
 	}
 
-	var nonceSecret []byte
-	maybeSecret, err := os.ReadFile("nonce.secret")
-	if err != nil && !os.IsNotExist(err) {
-		logger.Error("error attempting to read nonce secret", "error", err)
-	} else {
-		nonceSecret = maybeSecret
+	nonceSecret := args.NonceSecret
+	if nonceSecret == nil {
+		maybeSecret, err := os.ReadFile("nonce.secret")
+		if err != nil && !os.IsNotExist(err) {
+			logger.Error("error attempting to read nonce secret", "error", err)
+		} else {
+			nonceSecret = maybeSecret
+		}
 	}
 
 	evtPersister, err := NewDbPersister(gdb, 72*time.Hour)
@@ -605,9 +642,10 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	logger.Info("starting cocoon")
 
+	listenErr := make(chan error, 1)
 	go func() {
-		if err := s.httpd.ListenAndServe(); err != nil {
-			panic(err)
+		if err := s.httpd.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			listenErr <- err
 		}
 	}()
 
@@ -619,9 +657,20 @@ func (s *Server) Serve(ctx context.Context) error {
 		}
 	}()
 
-	<-ctx.Done()
+	select {
+	case err := <-listenErr:
+		return err
+	case <-ctx.Done():
+	}
 
-	fmt.Println("shut down")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := s.httpd.Shutdown(shutdownCtx); err != nil {
+		logger.Error("error shutting down http server", "err", err)
+	}
+
+	logger.Info("shut down")
 
 	return nil
 }

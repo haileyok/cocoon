@@ -10,10 +10,10 @@ import (
 	"strings"
 
 	"github.com/bluesky-social/indigo/api/atproto"
+	atp "github.com/bluesky-social/indigo/atproto/repo"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/bluesky-social/indigo/events"
 	"github.com/bluesky-social/indigo/events/schedulers/parallel"
-	atp "github.com/bluesky-social/indigo/atproto/repo"
 	lexutil "github.com/bluesky-social/indigo/lex/util"
 	"github.com/bluesky-social/indigo/repomgr"
 	"github.com/gorilla/websocket"

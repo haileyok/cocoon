@@ -18,6 +18,14 @@ import (
 	"github.com/haileyok/cocoon/identity"
 )
 
+// PLCClient is the interface used by the server for PLC directory operations.
+type PLCClient interface {
+	CreateDID(sigkey *atcrypto.PrivateKeyK256, recovery string, handle string) (string, *Operation, error)
+	CreateDidCredentials(sigkey *atcrypto.PrivateKeyK256, recovery string, handle string) (*DidCredentials, error)
+	SignOp(sigkey *atcrypto.PrivateKeyK256, op *Operation) error
+	SendOperation(ctx context.Context, did string, op *Operation) error
+}
+
 type Client struct {
 	h           *http.Client
 	service     string
