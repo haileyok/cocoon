@@ -123,14 +123,10 @@ type Args struct {
 	BlockstoreVariant BlockstoreVariant
 	FallbackProxy     string
 
-	// Embedding overrides: load secrets in-memory, point at a custom PLC,
-	// or swap the outbound HTTP client. All optional; fall back to the
-	// file/CLI defaults when unset.
-	RotationKeyBytes []byte       // takes precedence over RotationKeyPath
-	JwkBytes         []byte       // takes precedence over JwkPath
-	NonceSecret      []byte       // if nil, reads ./nonce.secret
-	PLCUrl           string       // defaults to https://plc.directory
-	HTTPClient       *http.Client // defaults to util.RobustHTTPClient()
+	// Embedding overrides: point at a custom PLC or swap the outbound
+	// HTTP client. All optional; fall back to defaults when unset.
+	PLCUrl     string       // defaults to https://plc.directory
+	HTTPClient *http.Client // defaults to util.RobustHTTPClient()
 
 	// Test / multi-instance overrides. Production should leave these nil.
 	PLCClient            plc.PLCClient         // replaces the real PLC client entirely; PLCUrl is ignored
@@ -382,12 +378,9 @@ func New(args *Args) (*Server, error) {
 	}
 	dbw := db.NewDB(gdb)
 
-	rkbytes := args.RotationKeyBytes
-	if rkbytes == nil {
-		rkbytes, err = os.ReadFile(args.RotationKeyPath)
-		if err != nil {
-			return nil, err
-		}
+	rkbytes, err := os.ReadFile(args.RotationKeyPath)
+	if err != nil {
+		return nil, err
 	}
 
 	h := args.HTTPClient
@@ -410,12 +403,9 @@ func New(args *Args) (*Server, error) {
 		}
 	}
 
-	jwkbytes := args.JwkBytes
-	if jwkbytes == nil {
-		jwkbytes, err = os.ReadFile(args.JwkPath)
-		if err != nil {
-			return nil, err
-		}
+	jwkbytes, err := os.ReadFile(args.JwkPath)
+	if err != nil {
+		return nil, err
 	}
 
 	key, err := helpers.ParseJWKFromBytes(jwkbytes)
@@ -432,14 +422,12 @@ func New(args *Args) (*Server, error) {
 		Timeout: 10 * time.Second,
 	}
 
-	nonceSecret := args.NonceSecret
-	if nonceSecret == nil {
-		maybeSecret, err := os.ReadFile("nonce.secret")
-		if err != nil && !os.IsNotExist(err) {
-			logger.Error("error attempting to read nonce secret", "error", err)
-		} else {
-			nonceSecret = maybeSecret
-		}
+	var nonceSecret []byte
+	maybeSecret, err := os.ReadFile("nonce.secret")
+	if err != nil && !os.IsNotExist(err) {
+		logger.Error("error attempting to read nonce secret", "error", err)
+	} else {
+		nonceSecret = maybeSecret
 	}
 
 	evtPersister, err := NewDbPersister(gdb, 72*time.Hour)
