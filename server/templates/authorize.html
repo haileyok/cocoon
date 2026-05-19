@@ -15,7 +15,25 @@
       <h2>Authorizing with {{ .AppName }}</h2>
       <p>
         You are signed in as <b>{{ .Handle }}</b>.
-        <a href="/account/signout?{{ .QueryParams }}">Switch Account</a>
+        <a href="/account/signout?{{ .QueryParams }}">Sign out this account</a>
+      </p>
+      {{ if gt (len .Accounts) 1 }}
+      <form action="/account/switch" method="post">
+        <input type="hidden" name="query_params" value="{{ .QueryParams }}" />
+        <input type="hidden" name="next" value="/oauth/authorize" />
+        <label for="did">Switch to another signed-in account</label>
+        <select name="did" id="did">
+          {{ range .Accounts }}
+          <option value="{{ .Repo.Did }}" {{ if eq .Repo.Did $.ActiveDid }}selected{{ end }}>
+            {{ .Handle }}
+          </option>
+          {{ end }}
+        </select>
+        <button type="submit">Switch account</button>
+      </form>
+      {{ end }}
+      <p>
+        Need a different account? <a href="/account/signin?{{ .QueryParams }}">Sign in another account</a>.
       </p>
       <p><b>{{ .AppName }}</b> is asking for you to grant it these scopes:</p>
       <ul>

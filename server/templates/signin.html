@@ -12,6 +12,9 @@
     <main class="container base-container box-shadow-container login-container">
       <h2>Sign into your account</h2>
       <p>Enter your handle and password below.</p>
+      {{ if gt (len .Accounts) 0 }}
+      <p>You currently have {{ len .Accounts }} signed-in account(s).</p>
+      {{ end }}
       {{ if .flashes.errors }}
       <div class="alert alert-danger margin-bottom-xs">
         <p>{{ index .flashes.errors 0 }}</p>

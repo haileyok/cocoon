@@ -12,8 +12,23 @@
     <main class="container base-container authorize-container margin-top-xl">
       <h2>Welcome, {{ .Repo.Handle }}</h2>
       <ul>
-        <li><a href="/account/signout">Sign Out</a></li>
+        <li><a href="/account/signout">Sign out this account</a></li>
+        <li><a href="/account/signin">Sign in another account</a></li>
       </ul>
+      {{ if gt (len .Accounts) 1 }}
+      <form action="/account/switch" method="post">
+        <input type="hidden" name="next" value="/account" />
+        <label for="did">Switch signed-in account</label>
+        <select name="did" id="did">
+          {{ range .Accounts }}
+          <option value="{{ .Repo.Did }}" {{ if eq .Repo.Did $.ActiveDid }}selected{{ end }}>
+            {{ .Handle }}
+          </option>
+          {{ end }}
+        </select>
+        <button type="submit">Switch account</button>
+      </form>
+      {{ end }}
       {{ if .flashes.successes }}
       <div class="alert alert-success margin-bottom-xs">
         <p>{{ index .flashes.successes 0 }}</p>

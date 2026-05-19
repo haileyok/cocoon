@@ -1,8 +1,10 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/haileyok/cocoon/oauth"
 	"github.com/haileyok/cocoon/oauth/constants"
 	"github.com/haileyok/cocoon/oauth/provider"
+	"github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/v4"
 )
 
@@ -52,6 +55,8 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 					"AppName":    "DEV MODE AUTHORIZATION PAGE",
 					"Handle":     "paula.cocoon.social",
 					"RequestUri": "",
+					"Accounts":   []string{},
+					"ActiveDid":  "",
 				})
 			}
 			return helpers.InputError(e, to.StringPtr("no request uri and invalid parameters"))
@@ -96,11 +101,6 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 
 	}
 
-	repo, _, err := s.getSessionRepoOrErr(e)
-	if err != nil {
-		return e.Redirect(303, "/account/signin?"+e.QueryParams().Encode())
-	}
-
 	var req provider.OauthAuthorizationRequest
 	if err := s.db.Raw(ctx, "SELECT * FROM oauth_authorization_requests WHERE request_id = ?", nil, reqId).Scan(&req).Error; err != nil {
 		return helpers.ServerError(e, to.StringPtr(err.Error()))
@@ -116,6 +116,32 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 		return helpers.ServerError(e, to.StringPtr(err.Error()))
 	}
 
+	sess, err := session.Get(s.config.SessionCookieKey, e)
+	if err != nil {
+		return helpers.ServerError(e, to.StringPtr(err.Error()))
+	}
+
+	if req.Parameters.LoginHint != nil && *req.Parameters.LoginHint != "" {
+		did, err := s.resolveLoginHintToDid(ctx, *req.Parameters.LoginHint)
+		if err != nil || !slices.Contains(getSessionDids(sess), did) {
+			return e.Redirect(303, "/account/signin?"+e.QueryParams().Encode())
+		}
+
+		setActiveSessionDid(sess, did)
+		applyAccountSessionOptions(sess, int(AccountSessionMaxAge.Seconds()))
+		if err := sess.Save(e.Request(), e.Response()); err != nil {
+			return helpers.ServerError(e, to.StringPtr(err.Error()))
+		}
+	}
+
+	repo, _, accounts, err := s.getSessionRepoAndAccountsFromSessionOrErr(e, ctx, sess)
+	if err != nil {
+		if !errors.Is(err, ErrSessionUnauthenticated) {
+			return helpers.ServerError(e, to.StringPtr(err.Error()))
+		}
+		return e.Redirect(303, "/account/signin?"+e.QueryParams().Encode())
+	}
+
 	scopes := strings.Split(req.Parameters.Scope, " ")
 	appName := client.Metadata.ClientName
 
@@ -125,6 +151,8 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 		"RequestUri":  input.RequestUri,
 		"QueryParams": e.QueryParams().Encode(),
 		"Handle":      repo.Actor.Handle,
+		"Accounts":    accounts,
+		"ActiveDid":   repo.Repo.Did,
 	}
 
 	return e.Render(200, "authorize.html", data)
@@ -141,6 +169,9 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 
 	repo, _, err := s.getSessionRepoOrErr(e)
 	if err != nil {
+		if !errors.Is(err, ErrSessionUnauthenticated) {
+			return helpers.ServerError(e, to.StringPtr(err.Error()))
+		}
 		return e.Redirect(303, "/account/signin")
 	}
 

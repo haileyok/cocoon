@@ -1,6 +1,8 @@
 package server
 
 import (
+	"errors"
+
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/labstack/echo/v4"
 )
@@ -21,6 +23,9 @@ func (s *Server) handleAccountRevoke(e echo.Context) error {
 
 	repo, sess, err := s.getSessionRepoOrErr(e)
 	if err != nil {
+		if !errors.Is(err, ErrSessionUnauthenticated) {
+			return helpers.ServerError(e, nil)
+		}
 		return e.Redirect(303, "/account/signin")
 	}
 

@@ -1,8 +1,10 @@
 package server
 
 import (
+	"errors"
 	"time"
 
+	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/oauth"
 	"github.com/haileyok/cocoon/oauth/constants"
 	"github.com/haileyok/cocoon/oauth/provider"
@@ -14,8 +16,11 @@ func (s *Server) handleAccount(e echo.Context) error {
 	ctx := e.Request().Context()
 	logger := s.logger.With("name", "handleAuth")
 
-	repo, sess, err := s.getSessionRepoOrErr(e)
+	repo, sess, accounts, err := s.getSessionRepoAndAccountsOrErr(e)
 	if err != nil {
+		if !errors.Is(err, ErrSessionUnauthenticated) {
+			return helpers.ServerError(e, nil)
+		}
 		return e.Redirect(303, "/account/signin")
 	}
 
@@ -27,7 +32,11 @@ func (s *Server) handleAccount(e echo.Context) error {
 		sess.AddFlash("Unable to fetch sessions. See server logs for more details.", "error")
 		sess.Save(e.Request(), e.Response())
 		return e.Render(200, "account.html", map[string]any{
-			"flashes": getFlashesFromSession(e, sess),
+			"Repo":      repo,
+			"Tokens":    []map[string]string{},
+			"flashes":   getFlashesFromSession(e, sess),
+			"Accounts":  accounts,
+			"ActiveDid": repo.Repo.Did,
 		})
 	}
 
@@ -69,8 +78,10 @@ func (s *Server) handleAccount(e echo.Context) error {
 	}
 
 	return e.Render(200, "account.html", map[string]any{
-		"Repo":    repo,
-		"Tokens":  tokenInfo,
-		"flashes": getFlashesFromSession(e, sess),
+		"Repo":      repo,
+		"Tokens":    tokenInfo,
+		"flashes":   getFlashesFromSession(e, sess),
+		"Accounts":  accounts,
+		"ActiveDid": repo.Repo.Did,
 	})
 }
