@@ -39,8 +39,14 @@ func (s *Server) handleCreateRecord(e echo.Context) error {
 	}
 
 	optype := OpTypeCreate
+	action := "create"
 	if req.SwapRecord != nil {
 		optype = OpTypeUpdate
+		action = "update"
+	}
+
+	if err := s.enforceRepoWrite(e, ctx, req.Collection, action); err != nil {
+		return err
 	}
 
 	results, err := s.repoman.applyWrites(ctx, repo.Repo, []Op{

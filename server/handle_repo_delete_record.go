@@ -36,6 +36,10 @@ func (s *Server) handleDeleteRecord(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
+	if err := s.enforceRepoWrite(e, ctx, req.Collection, "delete"); err != nil {
+		return err
+	}
+
 	results, err := s.repoman.applyWrites(ctx, repo.Repo, []Op{
 		{
 			Type:       OpTypeDelete,

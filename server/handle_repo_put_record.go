@@ -38,6 +38,12 @@ func (s *Server) handlePutRecord(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
+	// putRecord is an upsert, so it requires both create and update permission
+	// for the collection (matching the reference PDS).
+	if err := s.enforceRepoWrite(e, ctx, req.Collection, "create", "update"); err != nil {
+		return err
+	}
+
 	optype := OpTypeCreate
 	if req.SwapRecord != nil {
 		optype = OpTypeUpdate

@@ -37,6 +37,10 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 
 	urepo := e.Get("repo").(*models.RepoActor)
 
+	if err := s.enforceBlobUpload(e, ctx); err != nil {
+		return err
+	}
+
 	mime := e.Request().Header.Get("content-type")
 	if mime == "" {
 		mime = "application/octet-stream"

@@ -47,6 +47,18 @@ func (s *Server) handleApplyWrites(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
+	// Enforce granular write scopes per item; if any item is out of scope the
+	// entire batch is rejected before any writes are applied.
+	for _, item := range req.Writes {
+		action := applyWriteAction(item.Type)
+		if action == "" {
+			continue
+		}
+		if err := s.enforceRepoWrite(e, ctx, item.Collection, action); err != nil {
+			return err
+		}
+	}
+
 	ops := make([]Op, 0, len(req.Writes))
 	for _, item := range req.Writes {
 		ops = append(ops, Op{
