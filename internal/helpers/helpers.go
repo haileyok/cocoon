@@ -92,6 +92,12 @@ func OauthInvalidTokenError(e echo.Context) error {
 	})
 }
 
+// InvalidClientOauthError responds with a 401 "invalid_client" OAuth error,
+// used when client authentication fails (RFC 6749 5.2 / RFC 7009).
+func InvalidClientOauthError(e echo.Context, desc string) error {
+	return OauthError(e, 401, "invalid_client", desc)
+}
+
 func RandomVarchar(length int) string {
 	b := make([]rune, length)
 	for i := range b {

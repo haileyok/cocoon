@@ -57,18 +57,23 @@ func (s *Server) handleOauthRevoke(e echo.Context) error {
 		AllowMissingDpopProof: true,
 	})
 	if err != nil {
+		// Failed client authentication is invalid_client (401) per RFC 6749 5.2.
 		logger.Error("error authenticating client", "client_id", req.ClientID, "error", err)
-		return helpers.InvalidRequestOauthError(e, err.Error())
+		return helpers.InvalidClientOauthError(e, err.Error())
 	}
 
-	// Delete the token if a value was supplied. Scoping by client_id satisfies
-	// RFC 7009's requirement that the token was issued to the requesting client.
-	// A missing or unknown token is a no-op and still returns 200.
-	if req.Token != "" {
-		if err := s.db.Exec(ctx, "DELETE FROM oauth_tokens WHERE client_id = ? AND (token = ? OR refresh_token = ?)", nil, client.Metadata.ClientID, req.Token, req.Token).Error; err != nil {
-			logger.Error("error deleting token", "error", err)
-			return helpers.ServerError(e, nil)
-		}
+	// RFC 7009 2.1 requires the "token" parameter. An omitted parameter is a
+	// malformed request (distinct from a valid revocation of an unknown token).
+	if req.Token == "" {
+		return helpers.InvalidRequestOauthError(e, "`token` is required")
+	}
+
+	// Delete the token. Scoping by client_id satisfies RFC 7009's requirement
+	// that the token was issued to the requesting client. An unknown token is a
+	// no-op and still returns 200.
+	if err := s.db.Exec(ctx, "DELETE FROM oauth_tokens WHERE client_id = ? AND (token = ? OR refresh_token = ?)", nil, client.Metadata.ClientID, req.Token, req.Token).Error; err != nil {
+		logger.Error("error deleting token", "error", err)
+		return helpers.ServerError(e, nil)
 	}
 
 	return e.NoContent(200)
