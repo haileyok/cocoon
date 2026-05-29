@@ -77,6 +77,12 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 			return helpers.InvalidRequestOauthError(e, "redirect_uri is not registered for this client")
 		}
 
+		// Validate the requested scopes, resolving any include: permission sets.
+		if err := s.validateRequestedScopes(ctx, parRequest.Scope); err != nil {
+			s.logger.Error("invalid requested scope", "client_id", parRequest.ClientID, "scope", parRequest.Scope, "error", err)
+			return helpers.InvalidScopeError(e, err.Error())
+		}
+
 		if parRequest.DpopJkt == nil {
 			if client.Metadata.DpopBoundAccessTokens {
 			}

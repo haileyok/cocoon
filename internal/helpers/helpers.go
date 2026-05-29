@@ -81,6 +81,11 @@ func InvalidRequestOauthError(e echo.Context, desc string) error {
 	return OauthError(e, 400, "invalid_request", desc)
 }
 
+// InvalidScopeError responds with a 400 "invalid_scope" OAuth error.
+func InvalidScopeError(e echo.Context, desc string) error {
+	return OauthError(e, 400, "invalid_scope", desc)
+}
+
 // OauthInvalidTokenError responds with a 401 "invalid_token" error plus the
 // DPoP WWW-Authenticate challenge required by RFC 6750 / RFC 9449. Used by the
 // resource server when a presented access token is unknown or has been revoked.
