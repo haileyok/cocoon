@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/to"
@@ -59,6 +60,13 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 	if err != nil {
 		logger.Error("error authenticating client", "client_id", parRequest.ClientID, "error", err)
 		return helpers.InputError(e, to.StringPtr(err.Error()))
+	}
+
+	// The redirect_uri must exactly match one registered in the client metadata.
+	// Accepting an unregistered value would enable an open-redirect / token theft.
+	if !slices.Contains(client.Metadata.RedirectURIs, parRequest.RedirectURI) {
+		logger.Error("redirect_uri not registered for client", "client_id", parRequest.ClientID, "redirect_uri", parRequest.RedirectURI)
+		return helpers.InvalidRequestOauthError(e, "redirect_uri is not registered for this client")
 	}
 
 	if parRequest.DpopJkt == nil {

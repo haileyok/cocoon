@@ -70,6 +70,13 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 			return helpers.ServerError(e, to.StringPtr(err.Error()))
 		}
 
+		// The redirect_uri must exactly match one registered in the client
+		// metadata; an unregistered value would enable an open redirect.
+		if !slices.Contains(client.Metadata.RedirectURIs, parRequest.RedirectURI) {
+			s.logger.Error("redirect_uri not registered for client", "client_id", parRequest.ClientID, "redirect_uri", parRequest.RedirectURI)
+			return helpers.InvalidRequestOauthError(e, "redirect_uri is not registered for this client")
+		}
+
 		if parRequest.DpopJkt == nil {
 			if client.Metadata.DpopBoundAccessTokens {
 			}
