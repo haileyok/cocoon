@@ -37,6 +37,7 @@ import (
 	"github.com/haileyok/cocoon/oauth/constants"
 	"github.com/haileyok/cocoon/oauth/dpop"
 	"github.com/haileyok/cocoon/oauth/provider"
+	"github.com/haileyok/cocoon/oauth/scopes"
 	"github.com/haileyok/cocoon/plc"
 	"github.com/ipfs/go-cid"
 	"github.com/labstack/echo-contrib/echoprometheus"
@@ -77,6 +78,7 @@ type Server struct {
 	privateKey    *ecdsa.PrivateKey
 	repoman       *RepoMan
 	oauthProvider *provider.Provider
+	scopeResolver *scopes.Resolver
 	evtman        *events.EventManager
 	passport      *identity.Passport
 	fallbackProxy string
@@ -434,6 +436,8 @@ func New(args *Args) (*Server, error) {
 			BlockstoreVariant: args.BlockstoreVariant,
 			FallbackProxy:     args.FallbackProxy,
 		},
+		scopeResolver: scopes.NewResolver(oauthCli),
+
 		evtman:   events.NewEventManager(evtPersister),
 		passport: identity.NewPassport(h, identity.NewMemCache(10_000)),
 

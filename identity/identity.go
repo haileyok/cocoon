@@ -32,6 +32,29 @@ func ResolveHandleFromTXT(ctx context.Context, handle string) (string, error) {
 	return "", fmt.Errorf("handle could not be resolved via txt: no record found")
 }
 
+// ResolveLexiconAuthority resolves a Lexicon authority domain (the DNS-ordered
+// authority of an NSID, e.g. "bsky.app" for "app.bsky.feed.post") to the DID
+// that controls it, via the `_lexicon.<authority>` DNS TXT record carrying a
+// `did=` value. See https://atproto.com/specs/lexicon.
+func ResolveLexiconAuthority(ctx context.Context, authority string) (string, error) {
+	name := fmt.Sprintf("_lexicon.%s", authority)
+	recs, err := net.LookupTXT(name)
+	if err != nil {
+		return "", fmt.Errorf("lexicon authority could not be resolved via txt: %w", err)
+	}
+
+	for _, rec := range recs {
+		if strings.HasPrefix(rec, "did=") {
+			maybeDid := strings.TrimPrefix(rec, "did=")
+			if _, err := syntax.ParseDID(maybeDid); err == nil {
+				return maybeDid, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("lexicon authority %q could not be resolved via txt: no did record found", authority)
+}
+
 func ResolveHandleFromWellKnown(ctx context.Context, cli *http.Client, handle string) (string, error) {
 	ustr := fmt.Sprintf("https://%s/.well-known/atproto-did", handle)
 	req, err := http.NewRequestWithContext(
