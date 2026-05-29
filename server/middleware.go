@@ -270,7 +270,9 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		}
 
 		if oauthToken.Token == "" {
-			return helpers.InvalidTokenError(e)
+			// Unknown or revoked token. RFC 6750/RFC 9449 require a 401 with a
+			// DPoP "invalid_token" challenge rather than a 400.
+			return helpers.OauthInvalidTokenError(e)
 		}
 
 		if *oauthToken.Parameters.DpopJkt != proof.JKT {

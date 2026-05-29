@@ -66,6 +66,32 @@ func genericError(e echo.Context, code int, msg string) error {
 	})
 }
 
+// OauthError responds with a standard OAuth 2.0 error response (RFC 6749 5.2):
+// a JSON body with an "error" code and an optional "error_description".
+func OauthError(e echo.Context, status int, code, desc string) error {
+	body := map[string]string{"error": code}
+	if desc != "" {
+		body["error_description"] = desc
+	}
+	return e.JSON(status, body)
+}
+
+// InvalidRequestOauthError responds with a 400 "invalid_request" OAuth error.
+func InvalidRequestOauthError(e echo.Context, desc string) error {
+	return OauthError(e, 400, "invalid_request", desc)
+}
+
+// OauthInvalidTokenError responds with a 401 "invalid_token" error plus the
+// DPoP WWW-Authenticate challenge required by RFC 6750 / RFC 9449. Used by the
+// resource server when a presented access token is unknown or has been revoked.
+func OauthInvalidTokenError(e echo.Context) error {
+	e.Response().Header().Set("WWW-Authenticate", "DPoP error=\"invalid_token\"")
+	e.Response().Header().Add("access-control-expose-headers", "WWW-Authenticate")
+	return e.JSON(401, map[string]string{
+		"error": "invalid_token",
+	})
+}
+
 func RandomVarchar(length int) string {
 	b := make([]rune, length)
 	for i := range b {
