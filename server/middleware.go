@@ -275,7 +275,12 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 			return helpers.OauthInvalidTokenError(e)
 		}
 
-		if *oauthToken.Parameters.DpopJkt != proof.JKT {
+		if proof == nil {
+			logger.Error("missing dpop proof for oauth access token")
+			return helpers.OauthInvalidTokenError(e)
+		}
+
+		if oauthToken.Parameters.DpopJkt == nil || *oauthToken.Parameters.DpopJkt != proof.JKT {
 			logger.Error("jkt mismatch", "token", oauthToken.Parameters.DpopJkt, "proof", proof.JKT)
 			return helpers.InputError(e, to.StringPtr("dpop jkt mismatch"))
 		}

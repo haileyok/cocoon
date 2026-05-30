@@ -60,7 +60,11 @@ func (p *Provider) Authenticate(_ context.Context, req AuthenticateClientRequest
 			return nil, errors.New(`client authentication method "private_key_jwt" requires a "client_assertion`)
 		}
 
-		if req.ClientAssertionType == nil || *req.ClientAssertionType != constants.ClientAssertionTypeJwtBearer {
+		if req.ClientAssertionType == nil {
+			return nil, errors.New(`client authentication method "private_key_jwt" requires a "client_assertion_type"`)
+		}
+
+		if *req.ClientAssertionType != constants.ClientAssertionTypeJwtBearer {
 			return nil, fmt.Errorf("unsupported client_assertion_type %s", *req.ClientAssertionType)
 		}
 
