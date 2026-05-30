@@ -33,10 +33,9 @@ func (s *Server) handleOauthRevoke(e echo.Context) error {
 		return helpers.InvalidRequestOauthError(e, "could not parse request")
 	}
 
-	// DPoP is optional for this endpoint. CheckProof returns (nil, nil) when no
-	// DPoP header is present, in which case we authenticate the client without a
-	// proof (AllowMissingDpopProof). Mirror the token endpoint's nonce handling
-	// for clients that do choose to send a proof.
+	// Mirror the token endpoint's DPoP nonce handling. The proof is checked
+	// without an access-token hash because RFC 7009 clients authenticate to the
+	// endpoint rather than presenting the token as a resource-server bearer token.
 	proof, err := s.oauthProvider.DpopManager.CheckProof(e.Request().Method, e.Request().URL.String(), e.Request().Header, nil)
 	if err != nil {
 		if errors.Is(err, dpop.ErrUseDpopNonce) {
@@ -68,10 +67,31 @@ func (s *Server) handleOauthRevoke(e echo.Context) error {
 		return helpers.InvalidRequestOauthError(e, "`token` is required")
 	}
 
-	// Delete the token. Scoping by client_id satisfies RFC 7009's requirement
-	// that the token was issued to the requesting client. An unknown token is a
-	// no-op and still returns 200.
-	if err := s.db.Exec(ctx, "DELETE FROM oauth_tokens WHERE client_id = ? AND (token = ? OR refresh_token = ?)", nil, client.Metadata.ClientID, req.Token, req.Token).Error; err != nil {
+	// atproto clients are DPoP-bound. Require possession of the client's DPoP key
+	// before deleting any known token, rather than treating a leaked token string
+	// as enough authority to revoke a session.
+	if client.Metadata.DpopBoundAccessTokens && proof == nil {
+		return helpers.InvalidRequestOauthError(e, "dpop proof is required")
+	}
+
+	var oauthToken provider.OauthToken
+	if err := s.db.Raw(ctx, "SELECT * FROM oauth_tokens WHERE client_id = ? AND (token = ? OR refresh_token = ?)", nil, client.Metadata.ClientID, req.Token, req.Token).Scan(&oauthToken).Error; err != nil {
+		logger.Error("error looking up token", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+
+	// Unknown token values are a no-op and still return 200 per RFC 7009.
+	if oauthToken.Token == "" {
+		return e.NoContent(200)
+	}
+
+	if client.Metadata.DpopBoundAccessTokens {
+		if oauthToken.Parameters.DpopJkt == nil || *oauthToken.Parameters.DpopJkt != proof.JKT {
+			return helpers.OauthInvalidTokenError(e)
+		}
+	}
+
+	if err := s.db.Exec(ctx, "DELETE FROM oauth_tokens WHERE id = ?", nil, oauthToken.ID).Error; err != nil {
 		logger.Error("error deleting token", "error", err)
 		return helpers.ServerError(e, nil)
 	}
