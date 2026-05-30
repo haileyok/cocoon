@@ -282,7 +282,7 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 
 		if oauthToken.Parameters.DpopJkt == nil || *oauthToken.Parameters.DpopJkt != proof.JKT {
 			logger.Error("jkt mismatch", "token", oauthToken.Parameters.DpopJkt, "proof", proof.JKT)
-			return helpers.InputError(e, to.StringPtr("dpop jkt mismatch"))
+			return helpers.OauthInvalidTokenError(e)
 		}
 
 		if time.Now().After(oauthToken.ExpiresAt) {

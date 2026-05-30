@@ -63,6 +63,9 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 
 	if parRequest.DpopJkt == nil {
 		if client.Metadata.DpopBoundAccessTokens {
+			if dpopProof == nil {
+				return helpers.InvalidRequestOauthError(e, "dpop proof is required")
+			}
 			parRequest.DpopJkt = to.StringPtr(dpopProof.JKT)
 		}
 	} else {
@@ -70,6 +73,10 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 			msg := "dpop bound access tokens are not enabled for this client"
 			logger.Error(msg)
 			return helpers.InputError(e, &msg)
+		}
+
+		if dpopProof == nil {
+			return helpers.InvalidRequestOauthError(e, "dpop proof is required")
 		}
 
 		if dpopProof.JKT != *parRequest.DpopJkt {

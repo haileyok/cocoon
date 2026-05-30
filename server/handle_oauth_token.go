@@ -215,8 +215,12 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr(`"client authentication method mismatch`))
 		}
 
-		if *oauthToken.Parameters.DpopJkt != proof.JKT {
-			return helpers.InputError(e, to.StringPtr("dpop proof does not match expected jkt"))
+		if proof == nil {
+			return helpers.InvalidRequestOauthError(e, "dpop proof is required")
+		}
+
+		if oauthToken.Parameters.DpopJkt == nil || *oauthToken.Parameters.DpopJkt != proof.JKT {
+			return helpers.OauthInvalidTokenError(e)
 		}
 
 		ageRes := oauth.GetSessionAgeFromToken(oauthToken)
