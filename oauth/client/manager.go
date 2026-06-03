@@ -85,12 +85,17 @@ func (cm *Manager) GetClient(ctx context.Context, clientId string) (*Client, err
 	}
 
 	return &Client{
-		Metadata: metadata,
-		JWKS:     jwks,
+		Metadata:          metadata,
+		JWKS:              jwks,
+		IsLocalhostClient: isLocalhostClientID(clientId),
 	}, nil
 }
 
 func (cm *Manager) getClientMetadata(ctx context.Context, clientId string) (*Metadata, error) {
+	if isLocalhostClientID(clientId) {
+		return buildLocalhostVirtualMetadata(clientId)
+	}
+
 	cached, ok := cm.metadataCache.Get(clientId)
 	if !ok {
 		req, err := http.NewRequestWithContext(ctx, "GET", clientId, nil)
@@ -393,6 +398,65 @@ func validateAndParseMetadata(clientId string, b []byte) (*Metadata, error) {
 	}
 
 	return &metadata, nil
+}
+
+func isLocalhostClientID(clientId string) bool {
+	u, err := url.Parse(clientId)
+	if err != nil {
+		return false
+	}
+	return u.Scheme == "http" &&
+		u.Hostname() == "localhost" &&
+		u.Port() == "" &&
+		(u.Path == "" || u.Path == "/")
+}
+
+func buildLocalhostVirtualMetadata(clientId string) (*Metadata, error) {
+	u, err := url.Parse(clientId)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing localhost client_id: %w", err)
+	}
+
+	q := u.Query()
+
+	redirectURIs := q["redirect_uri"]
+	if len(redirectURIs) == 0 {
+		redirectURIs = []string{"http://127.0.0.1/", "http://[::1]/"}
+	}
+
+	for _, ruri := range redirectURIs {
+		ru, err := url.Parse(ruri)
+		if err != nil {
+			return nil, fmt.Errorf("invalid redirect_uri %q: %w", ruri, err)
+		}
+		if ru.Scheme != "http" || !isLoopbackHost(ru.Hostname()) {
+			return nil, fmt.Errorf("localhost client redirect_uri must use a loopback address, got %q", ruri)
+		}
+	}
+
+	scope := q.Get("scope")
+	if scope == "" {
+		scope = "atproto"
+	} else if !slices.Contains(strings.Split(scope, " "), "atproto") {
+		scope = "atproto " + scope
+	}
+
+	return &Metadata{
+		ClientID:                clientId,
+		ClientName:              "Development client",
+		ClientURI:               "http://localhost",
+		RedirectURIs:            redirectURIs,
+		GrantTypes:              []string{"authorization_code", "refresh_token"},
+		ResponseTypes:           []string{"code"},
+		ApplicationType:         "native",
+		DpopBoundAccessTokens:   true,
+		Scope:                   scope,
+		TokenEndpointAuthMethod: "none",
+	}, nil
+}
+
+func isLoopbackHost(hostname string) bool {
+	return hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1"
 }
 
 func isLocalHostname(hostname string) bool {
