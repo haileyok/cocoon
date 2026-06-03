@@ -44,9 +44,6 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	slogecho "github.com/samber/slog-echo"
-	"gorm.io/driver/postgres"
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
 )
 
 const (
@@ -94,9 +91,6 @@ type Args struct {
 
 	LogLevel        slog.Level
 	Addr            string
-	DbName          string
-	DbType          string
-	DatabaseURL     string
 	Version         string
 	Did             string
 	Hostname        string
@@ -114,6 +108,7 @@ type Args struct {
 	SmtpEmail string
 	SmtpName  string
 
+	DBConfig *DBConfig
 	S3Config *S3Config
 
 	SessionSecret    string
@@ -253,7 +248,7 @@ func New(args *Args) (*Server, error) {
 		return nil, fmt.Errorf("addr must be set")
 	}
 
-	if args.DbName == "" {
+	if args.DBConfig.Name == "" {
 		return nil, fmt.Errorf("db name must be set")
 	}
 
@@ -332,32 +327,9 @@ func New(args *Args) (*Server, error) {
 		IdleTimeout:  5 * time.Minute,
 	}
 
-	dbType := args.DbType
-	if dbType == "" {
-		dbType = "sqlite"
-	}
-
-	var gdb *gorm.DB
-	var err error
-	switch dbType {
-	case "postgres":
-		if args.DatabaseURL == "" {
-			return nil, fmt.Errorf("database-url must be set when using postgres")
-		}
-		gdb, err = gorm.Open(postgres.Open(args.DatabaseURL), &gorm.Config{})
-		if err != nil {
-			return nil, fmt.Errorf("failed to connect to postgres: %w", err)
-		}
-		logger.Info("connected to PostgreSQL database")
-	default:
-		gdb, err = gorm.Open(sqlite.Open(args.DbName), &gorm.Config{})
-		if err != nil {
-			return nil, fmt.Errorf("failed to open sqlite database: %w", err)
-		}
-		gdb.Exec("PRAGMA journal_mode=WAL")
-		gdb.Exec("PRAGMA synchronous=NORMAL")
-
-		logger.Info("connected to SQLite database", "path", args.DbName)
+	gdb, err := args.DBConfig.Connect(logger)
+	if err != nil {
+		return nil, err
 	}
 	dbw := db.NewDB(gdb)
 

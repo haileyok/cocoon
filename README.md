@@ -57,7 +57,7 @@ Cocoon is a PDS implementation in Go. It is highly experimental, and is not read
 
    **For PostgreSQL deployment:**
    ```bash
-   # Add POSTGRES_PASSWORD to your .env file first!
+   # See database configuration first!
    docker-compose -f docker-compose.postgres.yaml up -d
    ```
 
@@ -114,8 +114,14 @@ COCOON_DB_TYPE="postgres"
 # Format: postgres://user:password@host:port/database?sslmode=disable
 COCOON_DATABASE_URL="postgres://cocoon:password@localhost:5432/cocoon?sslmode=disable"
 
-# Or use the standard DATABASE_URL environment variable
-DATABASE_URL="postgres://cocoon:password@localhost:5432/cocoon?sslmode=disable"
+# You can also specify them with:
+COCOON_DB_HOST="localhost"
+COCOON_DB_USER="cocoon"
+COCOON_DB_PASSWORD="password"
+COCOON_DB_PORT=5432
+COCOON_DB_NAME="cocoon"
+# if you want to set custom DSN option like timezone or sslmode (if nothing is set, sslmode is disabled)
+COCOON_DB_CUSTOM=""
 ```
 
 For SQLite (default):

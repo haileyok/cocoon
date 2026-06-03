@@ -10,7 +10,6 @@ services:
     volumes:
       - ./keys:/keys
       - ./data:/data/cocoon
-      - ./init-keys.sh:/init-keys.sh:ro
     environment:
       COCOON_DID: ${COCOON_DID}
       COCOON_HOSTNAME: ${COCOON_HOSTNAME}
@@ -92,7 +91,6 @@ services:
     volumes:
       - ./keys:/keys
       - ./data:/data/cocoon
-      - ./create-initial-invite.sh:/create-initial-invite.sh:ro
     environment:
       COCOON_DID: ${COCOON_DID}
       COCOON_HOSTNAME: ${COCOON_HOSTNAME}

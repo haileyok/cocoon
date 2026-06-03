@@ -20,8 +20,6 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/urfave/cli/v2"
 	"golang.org/x/crypto/bcrypt"
-	"gorm.io/driver/postgres"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
@@ -53,6 +51,33 @@ func main() {
 				Aliases: []string{"db-url"},
 				Usage:   "PostgreSQL connection string (required if db-type is postgres)",
 				EnvVars: []string{"COCOON_DATABASE_URL", "DATABASE_URL"},
+			},
+			&cli.StringFlag{
+				Name:    "db-host",
+				Usage:   "PostgreSQL host (required if db-type is postgres and if database-url is not set)",
+				EnvVars: []string{"COCOON_DB_HOST"},
+			},
+			&cli.StringFlag{
+				Name:    "db-user",
+				Usage:   "PostgreSQL user (required if db-type is postgres and if database-url is not set)",
+				EnvVars: []string{"COCOON_DB_USER"},
+			},
+			&cli.StringFlag{
+				Name:    "db-password",
+				Usage:   "PostgreSQL password (required if db-type is postgres and if database-url is not set)",
+				EnvVars: []string{"COCOON_DB_PASSWORD"},
+			},
+			&cli.UintFlag{
+				Name:    "db-port",
+				Value:   5432,
+				Usage:   "PostgreSQL port (default to 5432, only has effect if db-type is postgres)",
+				EnvVars: []string{"COCOON_DB_PORT"},
+			},
+			&cli.StringFlag{
+				Name:    "db-custom",
+				Value:   "sslmode=disable",
+				Usage:   "PostgreSQL custom DSN (default to sslmode=disable, only has effect if db-type is postgres)",
+				EnvVars: []string{"COCOON_DB_CUSTOM"},
 			},
 			&cli.StringFlag{
 				Name:    "did",
@@ -215,9 +240,6 @@ var runServe = &cli.Command{
 			Logger:          logger,
 			LogLevel:        level,
 			Addr:            cmd.String("addr"),
-			DbName:          cmd.String("db-name"),
-			DbType:          cmd.String("db-type"),
-			DatabaseURL:     cmd.String("database-url"),
 			Did:             cmd.String("did"),
 			Hostname:        cmd.String("hostname"),
 			RotationKeyPath: cmd.String("rotation-key-path"),
@@ -233,6 +255,7 @@ var runServe = &cli.Command{
 			SmtpPort:        cmd.String("smtp-port"),
 			SmtpEmail:       cmd.String("smtp-email"),
 			SmtpName:        cmd.String("smtp-name"),
+			DBConfig:        newDbArgs(cmd),
 			S3Config: &server.S3Config{
 				BackupsEnabled:   cmd.Bool("s3-backups-enabled"),
 				BlobstoreEnabled: cmd.Bool("s3-blobstore-enabled"),
@@ -409,24 +432,23 @@ var runResetPassword = &cli.Command{
 	},
 }
 
-func newDb(cmd *cli.Context) (*gorm.DB, error) {
-	dbType := cmd.String("db-type")
-	if dbType == "" {
-		dbType = "sqlite"
+func newDbArgs(cmd *cli.Context) *server.DBConfig {
+	return &server.DBConfig{
+		Name:     cmd.String("db-name"),
+		Type:     cmd.String("db-type"),
+		URL:      cmd.String("database-url"),
+		Host:     cmd.String("db-host"),
+		User:     cmd.String("db-user"),
+		Password: cmd.String("db-password"),
+		Port:     cmd.Uint("db-port"),
+		Custom:   cmd.String("db-custom"),
 	}
+}
 
-	switch dbType {
-	case "postgres":
-		databaseURL := cmd.String("database-url")
-		if databaseURL == "" {
-			return nil, fmt.Errorf("COCOON_DATABASE_URL or DATABASE_URL must be set when using postgres")
-		}
-		return gorm.Open(postgres.Open(databaseURL), &gorm.Config{})
-	default:
-		dbName := cmd.String("db-name")
-		if dbName == "" {
-			dbName = "cocoon.db"
-		}
-		return gorm.Open(sqlite.Open(dbName), &gorm.Config{})
+func newDb(cmd *cli.Context) (*gorm.DB, error) {
+	db := newDbArgs(cmd)
+	if db.Type == "" {
+		db.Type = "sqlite"
 	}
+	return db.Connect(nil)
 }

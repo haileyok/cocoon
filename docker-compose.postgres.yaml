@@ -37,7 +37,6 @@ services:
     volumes:
       - ./keys:/keys
       - ./data:/data/cocoon
-      - ./init-keys.sh:/init-keys.sh:ro
     environment:
       COCOON_DID: ${COCOON_DID}
       COCOON_HOSTNAME: ${COCOON_HOSTNAME}
@@ -118,7 +117,7 @@ services:
     container_name: cocoon-create-invite
     volumes:
       - ./keys:/keys
-      - ./create-initial-invite.sh:/create-initial-invite.sh:ro
+      - ./data:/data/cocoon
     environment:
       COCOON_DID: ${COCOON_DID}
       COCOON_HOSTNAME: ${COCOON_HOSTNAME}
