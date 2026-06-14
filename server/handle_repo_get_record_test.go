@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/bluesky-social/indigo/atproto/atdata"
@@ -96,5 +97,11 @@ func TestHandleRepoGetRecordNotFound(t *testing.T) {
 	}
 	if body["error"] != "RecordNotFound" {
 		t.Fatalf("error = %q, want RecordNotFound; body=%s", body["error"], rec.Body.String())
+	}
+	// Bluesky's social-app substring-matches this phrase to detect a missing
+	// (e.g. detached-quote) record, so the message must carry the at-uri.
+	wantURI := "at://" + acct.Did + "/" + nsid + "/doesnotexist"
+	if msg := body["message"]; !strings.Contains(msg, "Could not locate record: "+wantURI) {
+		t.Fatalf("message = %q, want it to contain %q; body=%s", msg, "Could not locate record: "+wantURI, rec.Body.String())
 	}
 }
