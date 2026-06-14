@@ -100,7 +100,7 @@ func (s *Server) handleAccountSwitchPost(e echo.Context) error {
 	}
 
 	setActiveSessionDid(sess, req.Did)
-	applyAccountSessionOptions(sess, int(AccountSessionMaxAge.Seconds()))
+	s.applyAccountSessionOptions(sess, int(AccountSessionMaxAge.Seconds()))
 
 	if err := sess.Save(e.Request(), e.Response()); err != nil {
 		return err
