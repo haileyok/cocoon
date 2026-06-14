@@ -138,6 +138,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		accessToken := jwt.NewWithClaims(jwt.SigningMethodES256, accessClaims)
+		accessToken.Header["kid"] = s.publicKid
 		accessString, err := accessToken.SignedString(s.privateKey)
 		if err != nil {
 			return err
@@ -236,6 +237,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		accessToken := jwt.NewWithClaims(jwt.SigningMethodES256, accessClaims)
+		accessToken.Header["kid"] = s.publicKid
 		accessString, err := accessToken.SignedString(s.privateKey)
 		if err != nil {
 			return err

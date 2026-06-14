@@ -81,10 +81,17 @@ func newTestServer(t *testing.T) *Server {
 		t.Fatalf("generate signing key: %v", err)
 	}
 
+	publicJwk, publicKid, err := derivePublicJWK(pkey, "")
+	if err != nil {
+		t.Fatalf("derive public jwk: %v", err)
+	}
+
 	return &Server{
 		db:         dbw,
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		privateKey: pkey,
+		publicJwk:  publicJwk,
+		publicKid:  publicKid,
 		config: &config{
 			Version:          "test",
 			Did:              testDid,
