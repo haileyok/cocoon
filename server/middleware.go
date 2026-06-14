@@ -172,7 +172,10 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 			table = "refresh_tokens"
 		}
 
-		if isRefresh {
+		// session tokens (access and refresh) must still exist in the db, so that
+		// signout and refresh rotation actually revoke them. service-auth tokens
+		// (lxm) are stateless and are not tracked there.
+		if !hasLxm {
 			type Result struct {
 				Found bool
 			}
