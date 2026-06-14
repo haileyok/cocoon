@@ -12,6 +12,26 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// subscribeReposMsgType maps a stream event to its com.atproto.sync.subscribeRepos
+// message frame type and the object to serialize. The bool is false for events
+// that are not message frames (e.g. error frames, handled separately).
+func subscribeReposMsgType(evt *events.XRPCStreamEvent) (string, util.CBOR, bool) {
+	switch {
+	case evt.RepoCommit != nil:
+		return "#commit", evt.RepoCommit, true
+	case evt.RepoSync != nil:
+		return "#sync", evt.RepoSync, true
+	case evt.RepoIdentity != nil:
+		return "#identity", evt.RepoIdentity, true
+	case evt.RepoAccount != nil:
+		return "#account", evt.RepoAccount, true
+	case evt.RepoInfo != nil:
+		return "#info", evt.RepoInfo, true
+	default:
+		return "", nil, false
+	}
+}
+
 func (s *Server) handleSyncSubscribeRepos(e echo.Context) error {
 	ctx, cancel := context.WithCancel(e.Request().Context())
 	defer cancel()
@@ -87,23 +107,15 @@ func (s *Server) handleSyncSubscribeRepos(e echo.Context) error {
 			}
 
 			var obj util.CBOR
-			switch {
-			case evt.Error != nil:
+			if evt.Error != nil {
 				header.Op = events.EvtKindErrorFrame
+				header.MsgType = ""
 				obj = evt.Error
-			case evt.RepoCommit != nil:
-				header.MsgType = "#commit"
-				obj = evt.RepoCommit
-			case evt.RepoIdentity != nil:
-				header.MsgType = "#identity"
-				obj = evt.RepoIdentity
-			case evt.RepoAccount != nil:
-				header.MsgType = "#account"
-				obj = evt.RepoAccount
-			case evt.RepoInfo != nil:
-				header.MsgType = "#info"
-				obj = evt.RepoInfo
-			default:
+			} else if msgType, o, ok := subscribeReposMsgType(evt); ok {
+				header.Op = events.EvtKindMessage
+				header.MsgType = msgType
+				obj = o
+			} else {
 				logger.Warn("unrecognized event kind")
 				return
 			}

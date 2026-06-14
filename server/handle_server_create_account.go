@@ -249,6 +249,10 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 				Time:   time.Now().Format(util.ISO8601),
 			},
 		})
+
+		if err := s.emitRepoSync(context.TODO(), urepo.Did, rev, root); err != nil {
+			logger.Error("error emitting repo sync event", "error", err)
+		}
 	}
 
 	sess, err := s.createSession(ctx, &urepo)

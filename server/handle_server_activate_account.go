@@ -9,6 +9,7 @@ import (
 	"github.com/bluesky-social/indigo/util"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
+	"github.com/ipfs/go-cid"
 	"github.com/labstack/echo/v4"
 )
 
@@ -43,6 +44,17 @@ func (s *Server) handleServerActivateAccount(e echo.Context) error {
 			Time:   time.Now().Format(util.ISO8601),
 		},
 	})
+
+	// Announce the repo's current head so relays learn the active account's
+	// authoritative state (Sync v1.1 #sync event).
+	if len(urepo.Repo.Root) > 0 {
+		root, err := cid.Cast(urepo.Repo.Root)
+		if err != nil {
+			logger.Error("error casting repo root for sync event", "error", err)
+		} else if err := s.emitRepoSync(context.TODO(), urepo.Repo.Did, urepo.Repo.Rev, root); err != nil {
+			logger.Error("error emitting repo sync event", "error", err)
+		}
+	}
 
 	return e.NoContent(200)
 }

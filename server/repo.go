@@ -170,6 +170,23 @@ func openRepo(ctx context.Context, bs blockstore.Blockstore, rootCid cid.Cid, di
 	}, nil
 }
 
+// readCommitData reads the commit block at root and returns its `data` field:
+// the root CID of that commit's MST. This is the value the firehose reports as
+// `prevData` for the next commit.
+func readCommitData(ctx context.Context, bs blockstore.Blockstore, root cid.Cid) (cid.Cid, error) {
+	commitBlock, err := bs.Get(ctx, root)
+	if err != nil {
+		return cid.Undef, fmt.Errorf("reading commit block: %w", err)
+	}
+
+	var commit atp.Commit
+	if err := commit.UnmarshalCBOR(bytes.NewReader(commitBlock.RawData())); err != nil {
+		return cid.Undef, fmt.Errorf("parsing commit block: %w", err)
+	}
+
+	return commit.Data, nil
+}
+
 func commitRepo(ctx context.Context, bs blockstore.Blockstore, r *atp.Repo, signingKey []byte) (cid.Cid, string, error) {
 	if _, err := r.MST.WriteDiffBlocks(ctx, bs); err != nil {
 		return cid.Undef, "", fmt.Errorf("writing MST blocks: %w", err)
@@ -242,6 +259,15 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 
 	dbs := rm.s.getBlockstore(urepo.Did)
 	bs := recording_blockstore.New(dbs)
+
+	// Capture the previous commit's MST root so the firehose can advertise it as
+	// prevData (required for the inductive firehose). applyWrites always runs on
+	// an existing repo, so there is always a previous commit to read.
+	prevData, err := readCommitData(ctx, dbs, rootcid)
+	if err != nil {
+		return nil, err
+	}
+	prevDataLink := lexutil.LexLink(prevData)
 
 	var results []ApplyWriteResult
 	var ops []*atp.Operation
@@ -519,15 +545,16 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 	// runs sync or not
 	rm.s.evtman.AddEvent(context.Background(), &events.XRPCStreamEvent{
 		RepoCommit: &atproto.SyncSubscribeRepos_Commit{
-			Repo:   urepo.Did,
-			Blocks: buf.Bytes(),
-			Blobs:  blobs,
-			Rev:    rev,
-			Since:  &urepo.Rev,
-			Commit: lexutil.LexLink(newroot),
-			Time:   time.Now().Format(time.RFC3339Nano),
-			Ops:    repoOps,
-			TooBig: false,
+			Repo:     urepo.Did,
+			Blocks:   buf.Bytes(),
+			Blobs:    blobs,
+			Rev:      rev,
+			Since:    &urepo.Rev,
+			Commit:   lexutil.LexLink(newroot),
+			PrevData: &prevDataLink,
+			Time:     time.Now().Format(time.RFC3339Nano),
+			Ops:      repoOps,
+			TooBig:   false,
 		},
 	})
 
