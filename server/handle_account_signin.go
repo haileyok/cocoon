@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"strings"
@@ -193,12 +194,17 @@ func (s *Server) handleAccountSigninPost(e echo.Context) error {
 			return e.Redirect(303, "/account/signin"+queryParams)
 		}
 
-		if *repo.TwoFactorCode != req.AuthFactorToken {
+		if subtle.ConstantTimeCompare([]byte(*repo.TwoFactorCode), []byte(req.AuthFactorToken)) != 1 {
 			return helpers.InvalidTokenError(e)
 		}
 
 		if time.Now().UTC().After(*repo.TwoFactorCodeExpiresAt) {
 			return helpers.ExpiredTokenError(e)
+		}
+
+		if err := s.clearTwoFactorCode(ctx, repo.Repo.Did); err != nil {
+			logger.Error("error clearing 2FA code", "error", err)
+			return helpers.ServerError(e, nil)
 		}
 	}
 
