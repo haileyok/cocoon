@@ -29,7 +29,7 @@ func (s *Server) handleGetBlocks(e echo.Context) error {
 	var cids []cid.Cid
 
 	for _, cs := range req.Cids {
-		c, err := cid.Cast([]byte(cs))
+		c, err := cid.Decode(cs)
 		if err != nil {
 			return helpers.InputError(e, to.StringPtr("InvalidRequest"))
 		}
