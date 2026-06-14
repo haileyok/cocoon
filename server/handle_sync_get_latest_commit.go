@@ -7,7 +7,7 @@ import (
 )
 
 type ComAtprotoSyncGetLatestCommitResponse struct {
-	Cid string `json:"string"`
+	Cid string `json:"cid"`
 	Rev string `json:"rev"`
 }
 
