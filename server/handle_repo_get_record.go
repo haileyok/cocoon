@@ -1,8 +1,10 @@
 package server
 
 import (
+	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/labstack/echo/v4"
 )
@@ -35,13 +37,18 @@ func (s *Server) handleRepoGetRecord(e echo.Context) error {
 
 	var record models.Record
 	if err := s.db.Raw(ctx, "SELECT * FROM records WHERE did = ? AND nsid = ? AND rkey = ?"+cidquery, nil, params...).Scan(&record).Error; err != nil {
-		// TODO: handle error nicely
-		return err
+		return helpers.ServerError(e, nil)
+	}
+
+	// A zero-row Scan leaves record zero-valued without an error, so an empty
+	// Did means the record is not stored on this PDS.
+	if record.Did == "" {
+		return helpers.InputError(e, to.StringPtr("RecordNotFound"))
 	}
 
 	val, err := atdata.UnmarshalCBOR(record.Value)
 	if err != nil {
-		return s.handleProxy(e) // TODO: this should be getting handled like...if we don't find it in the db. why doesn't it throw error up there?
+		return helpers.ServerError(e, nil)
 	}
 
 	return e.JSON(200, ComAtprotoRepoGetRecordResponse{
