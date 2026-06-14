@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"strings"
@@ -117,12 +118,17 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr("AuthFactorTokenRequired"))
 		}
 
-		if *repo.TwoFactorCode != *req.AuthFactorToken {
+		if subtle.ConstantTimeCompare([]byte(*repo.TwoFactorCode), []byte(*req.AuthFactorToken)) != 1 {
 			return helpers.InvalidTokenError(e)
 		}
 
 		if time.Now().UTC().After(*repo.TwoFactorCodeExpiresAt) {
 			return helpers.ExpiredTokenError(e)
+		}
+
+		if err := s.clearTwoFactorCode(ctx, repo.Repo.Did); err != nil {
+			logger.Error("error clearing 2FA code", "error", err)
+			return helpers.ServerError(e, nil)
 		}
 	}
 
@@ -143,6 +149,10 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 		Active:          repo.Active(),
 		Status:          repo.Status(),
 	})
+}
+
+func (s *Server) clearTwoFactorCode(ctx context.Context, did string) error {
+	return s.db.Exec(ctx, "UPDATE repos SET two_factor_code = NULL, two_factor_code_expires_at = NULL WHERE did = ?", nil, did).Error
 }
 
 func (s *Server) createAndSendTwoFactorCode(ctx context.Context, repo models.RepoActor) error {
