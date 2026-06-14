@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 
+	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/bluesky-social/indigo/carstore"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/ipfs/go-cid"
@@ -30,7 +31,7 @@ func (s *Server) handleGetBlocks(e echo.Context) error {
 	for _, cs := range req.Cids {
 		c, err := cid.Cast([]byte(cs))
 		if err != nil {
-			return err
+			return helpers.InputError(e, to.StringPtr("InvalidRequest"))
 		}
 
 		cids = append(cids, c)
