@@ -21,7 +21,7 @@ func (s *Server) handleAccountSignout(e echo.Context) error {
 		maxAge = -1
 	}
 
-	applyAccountSessionOptions(sess, maxAge)
+	s.applyAccountSessionOptions(sess, maxAge)
 
 	if err := sess.Save(e.Request(), e.Response()); err != nil {
 		return err

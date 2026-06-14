@@ -46,7 +46,7 @@ func (s *Server) getSessionRepoAndAccountsFromSessionOrErr(e echo.Context, ctx c
 		return nil, sess, nil, err
 	}
 	if changed {
-		applyAccountSessionOptions(sess, int(AccountSessionMaxAge.Seconds()))
+		s.applyAccountSessionOptions(sess, int(AccountSessionMaxAge.Seconds()))
 		if err := sess.Save(e.Request(), e.Response()); err != nil {
 			return nil, sess, nil, err
 		}
@@ -202,7 +202,7 @@ func (s *Server) handleAccountSigninPost(e echo.Context) error {
 		}
 	}
 
-	applyAccountSessionOptions(sess, int(AccountSessionMaxAge.Seconds()))
+	s.applyAccountSessionOptions(sess, int(AccountSessionMaxAge.Seconds()))
 
 	setActiveSessionDid(sess, repo.Repo.Did)
 

@@ -128,7 +128,7 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 		}
 
 		setActiveSessionDid(sess, did)
-		applyAccountSessionOptions(sess, int(AccountSessionMaxAge.Seconds()))
+		s.applyAccountSessionOptions(sess, int(AccountSessionMaxAge.Seconds()))
 		if err := sess.Save(e.Request(), e.Response()); err != nil {
 			return helpers.ServerError(e, to.StringPtr(err.Error()))
 		}
