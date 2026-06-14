@@ -215,7 +215,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr(`"client authentication method mismatch`))
 		}
 
-		if *oauthToken.Parameters.DpopJkt != proof.JKT {
+		if !dpopJktMatches(oauthToken.Parameters.DpopJkt, proof) {
 			return helpers.InputError(e, to.StringPtr("dpop proof does not match expected jkt"))
 		}
 
@@ -282,4 +282,15 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 	}
 
 	return helpers.InputError(e, to.StringPtr(fmt.Sprintf(`grant type "%s" is not supported`, req.GrantType)))
+}
+
+// dpopJktMatches reports whether a stored token's DPoP confirmation key is
+// satisfied by the presented proof. A token that is not DPoP-bound (tokenJkt
+// nil) is not constrained here; a DPoP-bound token requires a proof whose JKT
+// matches. Both operands are nilable, so callers must not dereference directly.
+func dpopJktMatches(tokenJkt *string, proof *dpop.Proof) bool {
+	if tokenJkt == nil {
+		return true
+	}
+	return proof != nil && *tokenJkt == proof.JKT
 }
