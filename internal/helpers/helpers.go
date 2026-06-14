@@ -4,7 +4,6 @@ import (
 	crand "crypto/rand"
 	"encoding/hex"
 	"errors"
-	"math/rand"
 	"net/url"
 
 	"github.com/Azure/go-autorest/autorest/to"
@@ -67,9 +66,15 @@ func genericError(e echo.Context, code int, msg string) error {
 }
 
 func RandomVarchar(length int) string {
+	// letters has 32 entries, which divides 256 evenly, so a byte mod len(letters)
+	// is an unbiased index into the alphabet.
+	raw := make([]byte, length)
+	if _, err := crand.Read(raw); err != nil {
+		panic(err)
+	}
 	b := make([]rune, length)
-	for i := range b {
-		b[i] = letters[rand.Intn(len(letters))]
+	for i, v := range raw {
+		b[i] = letters[int(v)%len(letters)]
 	}
 	return string(b)
 }
