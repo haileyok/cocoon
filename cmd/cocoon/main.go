@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -171,6 +172,7 @@ func main() {
 			runCreatePrivateJwk,
 			runCreateInviteCode,
 			runResetPassword,
+			runRecommitRepos,
 		},
 		ErrWriter: os.Stdout,
 		Version:   Version,
@@ -405,6 +407,83 @@ var runResetPassword = &cli.Command{
 
 		fmt.Printf("Password for %s has been reset to: %s", did.String(), newPass)
 
+		return nil
+	},
+}
+
+var runRecommitRepos = &cli.Command{
+	Name:  "recommit-repos",
+	Usage: "Re-mint valid TID revs for repos with invalid revs and re-announce their state on the firehose",
+	Description: "Re-commits each listed repo so its rev becomes a valid 13-char TID (producing a new head), " +
+		"then emits #sync, #identity, and #account events so relays observe the repo's current state.\n\n" +
+		"Dry-run by default; pass --confirm to apply. Because firehose events use an in-memory sequence " +
+		"counter, the PDS MUST be stopped while this runs, or sequence numbers will collide with the live server.",
+	Flags: []cli.Flag{
+		&cli.StringSliceFlag{
+			Name:     "dids",
+			Usage:    "repos to process (repeat the flag or comma-separate)",
+			Required: true,
+		},
+		&cli.BoolFlag{
+			Name:  "confirm",
+			Usage: "actually apply changes (otherwise dry-run)",
+		},
+	},
+	Action: func(cmd *cli.Context) error {
+		dids := cmd.StringSlice("dids")
+		if len(dids) == 0 {
+			return fmt.Errorf("at least one --dids value is required")
+		}
+		for _, d := range dids {
+			if _, err := syntax.ParseDID(d); err != nil {
+				return fmt.Errorf("invalid did %q: %w", d, err)
+			}
+		}
+
+		gdb, err := newDb(cmd)
+		if err != nil {
+			return err
+		}
+
+		dryRun := !cmd.Bool("confirm")
+		if dryRun {
+			fmt.Println("DRY RUN — no changes will be made. Re-run with --confirm to apply.")
+		} else {
+			fmt.Println("APPLYING changes. Ensure the PDS is STOPPED to avoid firehose sequence collisions.")
+		}
+
+		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		results, err := server.RunRecommitMigration(context.Background(), gdb, server.RecommitOptions{
+			Dids:              dids,
+			DryRun:            dryRun,
+			BlockstoreVariant: cmd.String("blockstore-variant"),
+			Logger:            logger,
+		})
+		if err != nil {
+			return err
+		}
+
+		var failures int
+		for _, r := range results {
+			if r.Err != nil {
+				failures++
+				fmt.Printf("  %s: ERROR: %v\n", r.Did, r.Err)
+				continue
+			}
+			switch {
+			case dryRun && r.Recommitted:
+				fmt.Printf("  %s: would recommit (rev %q -> new TID), then emit #sync/#identity/#account\n", r.Did, r.OldRev)
+			case dryRun:
+				fmt.Printf("  %s: rev %q already valid; would emit #sync/#identity/#account only\n", r.Did, r.OldRev)
+			case r.Recommitted:
+				fmt.Printf("  %s: recommitted rev %q -> %q, head %s -> %s; emitted #sync/#identity/#account\n", r.Did, r.OldRev, r.NewRev, r.OldHead, r.NewHead)
+			default:
+				fmt.Printf("  %s: rev %q already valid; emitted #sync/#identity/#account\n", r.Did, r.OldRev)
+			}
+		}
+		if failures > 0 {
+			return fmt.Errorf("%d repo(s) failed", failures)
+		}
 		return nil
 	},
 }
