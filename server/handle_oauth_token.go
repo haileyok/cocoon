@@ -286,7 +286,7 @@ func verifyPKCE(challenge, method, verifier string) error {
 	default:
 		return fmt.Errorf("unsupported code_challenge_method %s", method)
 	}
-  return nil
+	return nil
 }
 
 // dpopJktMatches reports whether a stored token's DPoP confirmation key is
