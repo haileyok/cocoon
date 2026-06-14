@@ -105,27 +105,8 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 				return helpers.InputError(e, to.StringPtr(`"code_verifier" is too short`))
 			}
 
-			switch *&authReq.Parameters.CodeChallengeMethod {
-			case "", "plain":
-				if authReq.Parameters.CodeChallenge != req.CodeVerifier {
-					return helpers.InputError(e, to.StringPtr("invalid code_verifier"))
-				}
-			case "S256":
-				inputChal, err := base64.RawURLEncoding.DecodeString(*authReq.Parameters.CodeChallenge)
-				if err != nil {
-					logger.Error("error decoding code challenge", "error", err)
-					return helpers.ServerError(e, nil)
-				}
-
-				h := sha256.New()
-				h.Write([]byte(*req.CodeVerifier))
-				compdChal := h.Sum(nil)
-
-				if !bytes.Equal(inputChal, compdChal) {
-					return helpers.InputError(e, to.StringPtr("invalid code_verifier"))
-				}
-			default:
-				return helpers.InputError(e, to.StringPtr("unsupported code_challenge_method "+*&authReq.Parameters.CodeChallengeMethod))
+			if err := verifyPKCE(*authReq.Parameters.CodeChallenge, authReq.Parameters.CodeChallengeMethod, *req.CodeVerifier); err != nil {
+				return helpers.InputError(e, to.StringPtr(err.Error()))
 			}
 		} else if req.CodeVerifier != nil {
 			return helpers.InputError(e, to.StringPtr("code_challenge parameter wasn't provided"))
@@ -282,4 +263,28 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 	}
 
 	return helpers.InputError(e, to.StringPtr(fmt.Sprintf(`grant type "%s" is not supported`, req.GrantType)))
+}
+
+// verifyPKCE checks a PKCE code_verifier against the stored code_challenge for
+// the given method, comparing values (not pointers). Returns a non-nil error
+// describing the failure, or nil when the verifier satisfies the challenge.
+func verifyPKCE(challenge, method, verifier string) error {
+	switch method {
+	case "", "plain":
+		if challenge != verifier {
+			return errors.New("invalid code_verifier")
+		}
+	case "S256":
+		expected, err := base64.RawURLEncoding.DecodeString(challenge)
+		if err != nil {
+			return fmt.Errorf("invalid code_challenge: %w", err)
+		}
+		sum := sha256.Sum256([]byte(verifier))
+		if !bytes.Equal(expected, sum[:]) {
+			return errors.New("invalid code_verifier")
+		}
+	default:
+		return fmt.Errorf("unsupported code_challenge_method %s", method)
+	}
+	return nil
 }
