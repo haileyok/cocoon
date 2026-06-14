@@ -8,7 +8,7 @@ import (
 
 type Client struct {
 	Metadata          *Metadata
-	JWKS              jwk.Key
+	JWKS              jwk.Set
 	IsLocalhostClient bool
 }
 

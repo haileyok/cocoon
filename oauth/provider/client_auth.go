@@ -75,7 +75,11 @@ func (p *Provider) Authenticate(_ context.Context, req AuthenticateClientRequest
 		}
 
 		var rawKey any
-		if err := client.JWKS.Raw(&rawKey); err != nil {
+		key, ok := client.JWKS.LookupKeyID(kid)
+		if !ok {
+			return nil, fmt.Errorf("no key with kid %q in client jwks", kid)
+		}
+		if err := key.Raw(&rawKey); err != nil {
 			return nil, fmt.Errorf("failed to extract raw key: %w", err)
 		}
 
@@ -131,7 +135,7 @@ func (p *Provider) Authenticate(_ context.Context, req AuthenticateClientRequest
 
 		alg := token.Header["alg"].(string)
 
-		thumbBytes, err := client.JWKS.Thumbprint(crypto.SHA256)
+		thumbBytes, err := key.Thumbprint(crypto.SHA256)
 		if err != nil {
 			return nil, fmt.Errorf("failed to calculate thumbprint: %w", err)
 		}

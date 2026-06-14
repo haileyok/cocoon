@@ -21,7 +21,7 @@ import (
 type Manager struct {
 	cli           *http.Client
 	logger        *slog.Logger
-	jwksCache     cache.Cache[string, jwk.Key]
+	jwksCache     cache.Cache[string, jwk.Set]
 	metadataCache cache.Cache[string, *Metadata]
 }
 
@@ -39,7 +39,7 @@ func NewManager(args ManagerArgs) *Manager {
 		args.Cli = http.DefaultClient
 	}
 
-	jwksCache := cache.NewCache[string, jwk.Key]().WithLRU().WithMaxKeys(500).WithTTL(5 * time.Minute)
+	jwksCache := cache.NewCache[string, jwk.Set]().WithLRU().WithMaxKeys(500).WithTTL(5 * time.Minute)
 	metadataCache := cache.NewCache[string, *Metadata]().WithLRU().WithMaxKeys(500).WithTTL(5 * time.Minute)
 
 	return &Manager{
@@ -56,22 +56,22 @@ func (cm *Manager) GetClient(ctx context.Context, clientId string) (*Client, err
 		return nil, err
 	}
 
-	var jwks jwk.Key
+	var jwks jwk.Set
 	if metadata.TokenEndpointAuthMethod == "private_key_jwt" {
 		if metadata.JWKS != nil && len(metadata.JWKS.Keys) > 0 {
-			// TODO: this is kinda bad but whatever for now. there could obviously be more than one jwk, and we need to
-			// make sure we use the right one
-			b, err := json.Marshal(metadata.JWKS.Keys[0])
-			if err != nil {
-				return nil, err
+			s := jwk.NewSet()
+			for _, rawKey := range metadata.JWKS.Keys {
+				b, err := json.Marshal(rawKey)
+				if err != nil {
+					return nil, err
+				}
+				k, err := helpers.ParseJWKFromBytes(b)
+				if err != nil {
+					return nil, err
+				}
+				s.AddKey(k)
 			}
-
-			k, err := helpers.ParseJWKFromBytes(b)
-			if err != nil {
-				return nil, err
-			}
-
-			jwks = k
+			jwks = s
 		} else if metadata.JWKSURI != nil {
 			maybeJwks, err := cm.getClientJwks(ctx, clientId, *metadata.JWKSURI)
 			if err != nil {
@@ -132,7 +132,7 @@ func (cm *Manager) getClientMetadata(ctx context.Context, clientId string) (*Met
 	}
 }
 
-func (cm *Manager) getClientJwks(ctx context.Context, clientId, jwksUri string) (jwk.Key, error) {
+func (cm *Manager) getClientJwks(ctx context.Context, clientId, jwksUri string) (jwk.Set, error) {
 	jwks, ok := cm.jwksCache.Get(clientId)
 	if !ok {
 		req, err := http.NewRequestWithContext(ctx, "GET", jwksUri, nil)
@@ -151,31 +151,16 @@ func (cm *Manager) getClientJwks(ctx context.Context, clientId, jwksUri string) 
 			return nil, fmt.Errorf("fetching client jwks returned response code %d", resp.StatusCode)
 		}
 
-		type Keys struct {
-			Keys []map[string]any `json:"keys"`
+		s, err := jwk.ParseReader(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing jwks response: %w", err)
 		}
 
-		var keys Keys
-		if err := json.NewDecoder(resp.Body).Decode(&keys); err != nil {
-			return nil, fmt.Errorf("error unmarshaling keys response: %w", err)
-		}
-
-		if len(keys.Keys) == 0 {
+		if s.Len() == 0 {
 			return nil, errors.New("no keys in jwks response")
 		}
 
-		// TODO: this is again bad, we should be figuring out which one we need to use...
-		b, err := json.Marshal(keys.Keys[0])
-		if err != nil {
-			return nil, fmt.Errorf("could not marshal key: %w", err)
-		}
-
-		k, err := helpers.ParseJWKFromBytes(b)
-		if err != nil {
-			return nil, err
-		}
-
-		jwks = k
+		jwks = s
 	}
 
 	return jwks, nil
