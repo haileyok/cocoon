@@ -133,7 +133,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 
 		repo, err := s.getRepoActorByDid(ctx, *authReq.Sub)
 		if err != nil {
-			helpers.InputError(e, to.StringPtr("unable to find actor"))
+			return helpers.InputError(e, to.StringPtr("unable to find actor"))
 		}
 
 		now := time.Now()
