@@ -1,7 +1,6 @@
 package server
 
 import (
-	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/haileyok/cocoon/internal/helpers"
@@ -43,7 +42,11 @@ func (s *Server) handleRepoGetRecord(e echo.Context) error {
 	// A zero-row Scan leaves record zero-valued without an error, so an empty
 	// Did means the record is not stored on this PDS.
 	if record.Did == "" {
-		return helpers.InputError(e, to.StringPtr("RecordNotFound"))
+		uri := "at://" + repo + "/" + collection + "/" + rkey
+		return e.JSON(400, map[string]string{
+			"error":   "RecordNotFound",
+			"message": "Could not locate record: " + uri,
+		})
 	}
 
 	val, err := atdata.UnmarshalCBOR(record.Value)
