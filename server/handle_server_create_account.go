@@ -108,23 +108,8 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		return helpers.InputError(e, to.StringPtr("HandleNotAvailable"))
 	}
 
-	var ic models.InviteCode
-	if s.config.RequireInvite {
-		if strings.TrimSpace(request.InviteCode) == "" {
-			return helpers.InputError(e, to.StringPtr("InvalidInviteCode"))
-		}
-
-		if err := s.db.Raw(ctx, "SELECT * FROM invite_codes WHERE code = ?", nil, request.InviteCode).Scan(&ic).Error; err != nil {
-			if err == gorm.ErrRecordNotFound {
-				return helpers.InputError(e, to.StringPtr("InvalidInviteCode"))
-			}
-			logger.Error("error getting invite code from db", "error", err)
-			return helpers.ServerError(e, nil)
-		}
-
-		if ic.RemainingUseCount < 1 {
-			return helpers.InputError(e, to.StringPtr("InvalidInviteCode"))
-		}
+	if s.config.RequireInvite && strings.TrimSpace(request.InviteCode) == "" {
+		return helpers.InputError(e, to.StringPtr("InvalidInviteCode"))
 	}
 
 	// see if the email is already taken
@@ -135,6 +120,20 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 	}
 	if err == nil && existingRepo.Did != signupDid {
 		return helpers.InputError(e, to.StringPtr("EmailNotAvailable"))
+	}
+
+	// Claim one invite use atomically before any account creation so that
+	// concurrent signups cannot exceed a code's remaining uses. Done after the
+	// handle/email availability checks so those failures don't burn a use.
+	if s.config.RequireInvite {
+		consumed, err := s.consumeInviteCode(ctx, request.InviteCode)
+		if err != nil {
+			logger.Error("error consuming invite code", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+		if !consumed {
+			return helpers.InputError(e, to.StringPtr("InvalidInviteCode"))
+		}
 	}
 
 	// TODO: unsupported domains
@@ -250,13 +249,6 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 				Time:   time.Now().Format(util.ISO8601),
 			},
 		})
-	}
-
-	if s.config.RequireInvite {
-		if err := s.db.Raw(ctx, "UPDATE invite_codes SET remaining_use_count = remaining_use_count - 1 WHERE code = ?", nil, request.InviteCode).Scan(&ic).Error; err != nil {
-			logger.Error("error decrementing use count", "error", err)
-			return helpers.ServerError(e, nil)
-		}
 	}
 
 	sess, err := s.createSession(ctx, &urepo)

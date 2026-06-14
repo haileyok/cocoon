@@ -84,8 +84,21 @@ func (s *Server) validateServiceAuth(ctx context.Context, rawToken string, nsid 
 	}
 
 	claims := parsedToken.Claims.(jwt.MapClaims)
-	if claims["lxm"] != nsid {
-		return "", fmt.Errorf("bad jwt lexicon method (\"lxm\"). must match: %s", nsid)
+	if err := validateServiceAuthClaims(claims, s.config.Did, nsid); err != nil {
+		return "", err
 	}
 	return claims["iss"].(string), nil
+}
+
+// validateServiceAuthClaims enforces that a service-auth JWT is addressed to
+// this PDS (aud) and scoped to the expected lexicon method (lxm). Without the
+// aud check a token a user minted for another service could be replayed here.
+func validateServiceAuthClaims(claims jwt.MapClaims, expectedAud, expectedLxm string) error {
+	if lxm, _ := claims["lxm"].(string); lxm != expectedLxm {
+		return fmt.Errorf("bad jwt lexicon method (\"lxm\"). must match: %s", expectedLxm)
+	}
+	if aud, _ := claims["aud"].(string); aud != expectedAud {
+		return fmt.Errorf("bad jwt audience (\"aud\"). must match: %s", expectedAud)
+	}
+	return nil
 }

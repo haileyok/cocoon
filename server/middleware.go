@@ -74,6 +74,11 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 				return helpers.InputError(e, nil)
 			}
 
+			if aud, _ := claims["aud"].(string); aud != s.config.Did {
+				logger.Error("service auth aud incorrect", "aud", aud, "expected", s.config.Did)
+				return helpers.InputError(e, nil)
+			}
+
 			maybeDid, ok := claims["iss"].(string)
 			if !ok {
 				logger.Error("no iss in service auth token", "error", err)
@@ -172,7 +177,10 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 			table = "refresh_tokens"
 		}
 
-		if isRefresh {
+		// session tokens (access and refresh) must still exist in the db, so that
+		// signout and refresh rotation actually revoke them. service-auth tokens
+		// (lxm) are stateless and are not tracked there.
+		if !hasLxm {
 			type Result struct {
 				Found bool
 			}

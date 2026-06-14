@@ -114,7 +114,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 
 		repo, err := s.getRepoActorByDid(ctx, *authReq.Sub)
 		if err != nil {
-			helpers.InputError(e, to.StringPtr("unable to find actor"))
+			return helpers.InputError(e, to.StringPtr("unable to find actor"))
 		}
 
 		now := time.Now()
@@ -196,7 +196,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr(`"client authentication method mismatch`))
 		}
 
-		if *oauthToken.Parameters.DpopJkt != proof.JKT {
+		if !dpopJktMatches(oauthToken.Parameters.DpopJkt, proof) {
 			return helpers.InputError(e, to.StringPtr("dpop proof does not match expected jkt"))
 		}
 
@@ -286,5 +286,16 @@ func verifyPKCE(challenge, method, verifier string) error {
 	default:
 		return fmt.Errorf("unsupported code_challenge_method %s", method)
 	}
-	return nil
+  return nil
+}
+
+// dpopJktMatches reports whether a stored token's DPoP confirmation key is
+// satisfied by the presented proof. A token that is not DPoP-bound (tokenJkt
+// nil) is not constrained here; a DPoP-bound token requires a proof whose JKT
+// matches. Both operands are nilable, so callers must not dereference directly.
+func dpopJktMatches(tokenJkt *string, proof *dpop.Proof) bool {
+	if tokenJkt == nil {
+		return true
+	}
+	return proof != nil && *tokenJkt == proof.JKT
 }
