@@ -719,6 +719,13 @@ func (rm *RepoMan) decrementBlobRefs(ctx context.Context, urepo models.Repo, cbo
 func getBlobCidsFromCbor(cbor []byte) ([]cid.Cid, error) {
 	var cids []cid.Cid
 
+	// A deleted record whose prior value isn't on hand (e.g. a create+delete of
+	// the same rkey in one batch, where the create isn't yet persisted) has no
+	// known blob references to account for.
+	if len(cbor) == 0 {
+		return nil, nil
+	}
+
 	decoded, err := atdata.UnmarshalCBOR(cbor)
 	if err != nil {
 		return nil, fmt.Errorf("error unmarshaling cbor: %w", err)
