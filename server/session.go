@@ -30,6 +30,7 @@ func (s *Server) createSession(ctx context.Context, repo *models.Repo) (*Session
 	}
 
 	accessToken := jwt.NewWithClaims(jwt.SigningMethodES256, accessClaims)
+	accessToken.Header["kid"] = s.publicKid
 	accessString, err := accessToken.SignedString(s.privateKey)
 	if err != nil {
 		return nil, err

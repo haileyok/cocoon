@@ -43,6 +43,7 @@ import (
 	echo_session "github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
+	"github.com/lestrrat-go/jwx/v2/jwk"
 	slogecho "github.com/samber/slog-echo"
 	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
@@ -75,6 +76,8 @@ type Server struct {
 	logger        *slog.Logger
 	config        *config
 	privateKey    *ecdsa.PrivateKey
+	publicJwk     jwk.Key
+	publicKid     string
 	repoman       *RepoMan
 	oauthProvider *provider.Provider
 	evtman        *events.EventManager
@@ -393,6 +396,11 @@ func New(args *Args) (*Server, error) {
 		return nil, err
 	}
 
+	publicJwk, publicKid, err := derivePublicJWK(&pkey, key.KeyID())
+	if err != nil {
+		return nil, err
+	}
+
 	oauthCli := &http.Client{
 		Timeout: 10 * time.Second,
 	}
@@ -418,6 +426,8 @@ func New(args *Args) (*Server, error) {
 		db:         dbw,
 		plcClient:  plcClient,
 		privateKey: &pkey,
+		publicJwk:  publicJwk,
+		publicKid:  publicKid,
 		config: &config{
 			LogLevel:          args.LogLevel,
 			Version:           args.Version,
