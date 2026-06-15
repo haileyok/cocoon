@@ -70,6 +70,11 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 			return helpers.ServerError(e, to.StringPtr(err.Error()))
 		}
 
+		if !client.IsRedirectURIAllowed(parRequest.RedirectURI) {
+			s.logger.Error("redirect_uri is not registered for client", "client_id", parRequest.ClientID, "redirect_uri", parRequest.RedirectURI)
+			return helpers.InputError(e, to.StringPtr("invalid_request"))
+		}
+
 		if parRequest.DpopJkt == nil {
 			if client.Metadata.DpopBoundAccessTokens {
 			}
