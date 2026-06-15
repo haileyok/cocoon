@@ -61,6 +61,14 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 		return helpers.InputError(e, to.StringPtr(err.Error()))
 	}
 
+	if err := s.validateRequestedScopes(ctx, parRequest.Scope); err != nil {
+		logger.Error("invalid requested scope", "client_id", parRequest.ClientID, "scope", parRequest.Scope, "error", err)
+		return e.JSON(400, map[string]string{
+			"error":             "invalid_scope",
+			"error_description": err.Error(),
+		})
+	}
+
 	if parRequest.DpopJkt == nil {
 		if client.Metadata.DpopBoundAccessTokens {
 			parRequest.DpopJkt = to.StringPtr(dpopProof.JKT)
