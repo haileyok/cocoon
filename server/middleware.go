@@ -278,7 +278,12 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		}
 
 		if oauthToken.Token == "" {
-			return helpers.InvalidTokenError(e)
+			e.Response().Header().Set("WWW-Authenticate", `DPoP error="invalid_token", error_description="Token is invalid"`)
+			e.Response().Header().Add("access-control-expose-headers", "WWW-Authenticate")
+			return e.JSON(401, map[string]string{
+				"error":             "invalid_token",
+				"error_description": "Token is invalid",
+			})
 		}
 
 		if *oauthToken.Parameters.DpopJkt != proof.JKT {

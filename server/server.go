@@ -549,6 +549,7 @@ func (s *Server) addRoutes() {
 	// oauth authorization
 	s.echo.POST("/oauth/par", s.handleOauthPar, s.oauthProvider.BaseMiddleware)
 	s.echo.POST("/oauth/token", s.handleOauthToken, s.oauthProvider.BaseMiddleware)
+	s.echo.POST("/oauth/revoke", s.handleOauthRevoke, s.oauthProvider.BaseMiddleware)
 
 	// authed
 	s.echo.GET("/xrpc/com.atproto.server.getSession", s.handleGetSession, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)

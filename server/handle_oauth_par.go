@@ -60,6 +60,11 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 		logger.Error("error authenticating client", "client_id", parRequest.ClientID, "error", err)
 		return helpers.InputError(e, to.StringPtr(err.Error()))
 	}
+  
+  if !client.IsRedirectURIAllowed(parRequest.RedirectURI) {
+		logger.Error("redirect_uri is not registered for client", "client_id", parRequest.ClientID, "redirect_uri", parRequest.RedirectURI)
+		return helpers.InputError(e, to.StringPtr("invalid_request"))
+	}
 
 	if err := s.validateRequestedScopes(ctx, parRequest.Scope); err != nil {
 		logger.Error("invalid requested scope", "client_id", parRequest.ClientID, "scope", parRequest.Scope, "error", err)
@@ -67,7 +72,7 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 			"error":             "invalid_scope",
 			"error_description": err.Error(),
 		})
-	}
+  }
 
 	if parRequest.DpopJkt == nil {
 		if client.Metadata.DpopBoundAccessTokens {
