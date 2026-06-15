@@ -1,6 +1,8 @@
 package server
 
 import (
+	"fmt"
+
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/labstack/echo/v4"
@@ -41,6 +43,11 @@ func (s *Server) handleCreateRecord(e echo.Context) error {
 	optype := OpTypeCreate
 	if req.SwapRecord != nil {
 		optype = OpTypeUpdate
+	}
+
+	action := actionForOpType(optype)
+	if !s.hasRepoScope(e, req.Collection, action) {
+		return helpers.InsufficientScopeError(e, fmt.Sprintf("repo:%s?action=%s", req.Collection, action))
 	}
 
 	results, err := s.repoman.applyWrites(ctx, repo.Repo, []Op{
