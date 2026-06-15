@@ -2,60 +2,12 @@ package server
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
 	"testing"
-	"time"
-
-	"github.com/golang-jwt/jwt/v4"
-	"github.com/haileyok/cocoon/internal/helpers"
-	"github.com/lestrrat-go/jwx/v2/jwk"
 )
-
-// newTestDpopProof builds a signed DPoP proof JWT acceptable to the server's
-// DpopManager: a fresh ES256 key, the public JWK in the header, and a nonce
-// drawn from the provider so the proof passes nonce validation.
-func newTestDpopProof(t *testing.T, s *Server, method, htu string) string {
-	t.Helper()
-
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("generate dpop key: %v", err)
-	}
-	pub, err := jwk.FromRaw(priv.Public())
-	if err != nil {
-		t.Fatalf("build public jwk: %v", err)
-	}
-	pubBytes, err := json.Marshal(pub)
-	if err != nil {
-		t.Fatalf("marshal public jwk: %v", err)
-	}
-	var jwkMap map[string]any
-	if err := json.Unmarshal(pubBytes, &jwkMap); err != nil {
-		t.Fatalf("unmarshal public jwk: %v", err)
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
-		"iat":   time.Now().Unix(),
-		"jti":   helpers.RandomVarchar(20),
-		"htm":   method,
-		"htu":   htu,
-		"nonce": s.oauthProvider.NextNonce(),
-	})
-	token.Header["typ"] = "dpop+jwt"
-	token.Header["jwk"] = jwkMap
-
-	signed, err := token.SignedString(priv)
-	if err != nil {
-		t.Fatalf("sign dpop proof: %v", err)
-	}
-	return signed
-}
 
 // stubResolver is a hermetic PermissionSetResolver: only NSIDs in valid resolve.
 type stubResolver struct {
@@ -84,7 +36,7 @@ func parScopeForm(scope string) string {
 
 func postPar(t *testing.T, s *Server, scope string) (int, map[string]string) {
 	t.Helper()
-	proof := newTestDpopProof(t, s, http.MethodPost, "https://"+testHostname+"/oauth/par")
+	proof := newTestDpopProof(t, s, http.MethodPost, "https://"+testHostname+"/oauth/par", nil)
 	c, rec := newRequestContext(http.MethodPost, "/oauth/par", parScopeForm(scope), map[string]string{
 		"Content-Type": "application/x-www-form-urlencoded",
 		"DPoP":         proof,

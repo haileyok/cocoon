@@ -4,6 +4,7 @@ import (
 	crand "crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 
 	"github.com/Azure/go-autorest/autorest/to"
@@ -49,6 +50,18 @@ func ForbiddenError(e echo.Context, suffix *string) error {
 
 func InvalidTokenError(e echo.Context) error {
 	return InputError(e, to.StringPtr("InvalidToken"))
+}
+
+// InsufficientScopeError responds 403 per RFC 6750 §3.1 when the session's
+// granted scopes do not cover the requested operation. requiredScope is the
+// scope that would have permitted it (e.g. "repo:app.bsky.feed.post?action=create").
+func InsufficientScopeError(e echo.Context, requiredScope string) error {
+	e.Response().Header().Set("WWW-Authenticate", fmt.Sprintf(`DPoP error="insufficient_scope", error_description="Missing required scope %s"`, requiredScope))
+	e.Response().Header().Add("access-control-expose-headers", "WWW-Authenticate")
+	return e.JSON(403, map[string]string{
+		"error":   "insufficient_scope",
+		"message": "Missing required scope " + requiredScope,
+	})
 }
 
 func ExpiredTokenError(e echo.Context) error {

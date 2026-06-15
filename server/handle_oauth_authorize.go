@@ -69,8 +69,8 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 			s.logger.Error("error authenticating client in standard request", "client_id", parRequest.ClientID, "error", err)
 			return helpers.ServerError(e, to.StringPtr(err.Error()))
 		}
-    
-    if !client.IsRedirectURIAllowed(parRequest.RedirectURI) {
+
+		if !client.IsRedirectURIAllowed(parRequest.RedirectURI) {
 			s.logger.Error("redirect_uri is not registered for client", "client_id", parRequest.ClientID, "redirect_uri", parRequest.RedirectURI)
 			return helpers.InputError(e, to.StringPtr("invalid_request"))
 		}
@@ -81,7 +81,7 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 				"error":             "invalid_scope",
 				"error_description": err.Error(),
 			})
-    }
+		}
 
 		if parRequest.DpopJkt == nil {
 			if client.Metadata.DpopBoundAccessTokens {

@@ -1,6 +1,8 @@
 package server
 
 import (
+	"fmt"
+
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/labstack/echo/v4"
@@ -34,6 +36,10 @@ func (s *Server) handleDeleteRecord(e echo.Context) error {
 	if repo.Repo.Did != req.Repo {
 		logger.Warn("mismatched repo/auth")
 		return helpers.InputError(e, nil)
+	}
+
+	if !s.hasRepoScope(e, req.Collection, "delete") {
+		return helpers.InsufficientScopeError(e, fmt.Sprintf("repo:%s?action=delete", req.Collection))
 	}
 
 	results, err := s.repoman.applyWrites(ctx, repo.Repo, []Op{
