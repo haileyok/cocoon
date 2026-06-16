@@ -51,12 +51,13 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 			// render page for logged out dev
 			if s.config.Version == "dev" && parRequest.ClientID == "" {
 				return e.Render(200, "authorize.html", map[string]any{
-					"Scopes":     []string{"atproto", "transition:generic"},
-					"AppName":    "DEV MODE AUTHORIZATION PAGE",
-					"Handle":     "paula.cocoon.social",
-					"RequestUri": "",
-					"Accounts":   []string{},
-					"ActiveDid":  "",
+					"Scopes":       []string{"atproto", "transition:generic"},
+					"AppName":      "DEV MODE AUTHORIZATION PAGE",
+					"Handle":       "paula.cocoon.social",
+					"RequestUri":   "",
+					"Accounts":     []string{},
+					"ActiveDid":    "",
+					"HasLoginHint": false,
 				})
 			}
 			return helpers.InputError(e, to.StringPtr("no request uri and invalid parameters"))
@@ -134,7 +135,8 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 		return helpers.ServerError(e, to.StringPtr(err.Error()))
 	}
 
-	if req.Parameters.LoginHint != nil && *req.Parameters.LoginHint != "" {
+	hasLoginHint := req.Parameters.LoginHint != nil && *req.Parameters.LoginHint != ""
+	if hasLoginHint {
 		did, err := s.resolveLoginHintToDid(ctx, *req.Parameters.LoginHint)
 		if err != nil || !slices.Contains(getSessionDids(sess), did) {
 			return e.Redirect(303, "/account/signin?"+e.QueryParams().Encode())
@@ -159,13 +161,14 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 	appName := client.Metadata.ClientName
 
 	data := map[string]any{
-		"Scopes":      scopes,
-		"AppName":     appName,
-		"RequestUri":  input.RequestUri,
-		"QueryParams": e.QueryParams().Encode(),
-		"Handle":      repo.Actor.Handle,
-		"Accounts":    accounts,
-		"ActiveDid":   repo.Repo.Did,
+		"Scopes":       scopes,
+		"AppName":      appName,
+		"RequestUri":   input.RequestUri,
+		"QueryParams":  e.QueryParams().Encode(),
+		"Handle":       repo.Actor.Handle,
+		"Accounts":     accounts,
+		"ActiveDid":    repo.Repo.Did,
+		"HasLoginHint": hasLoginHint,
 	}
 
 	return e.Render(200, "authorize.html", data)

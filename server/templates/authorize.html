@@ -17,7 +17,7 @@
         You are signed in as <b>{{ .Handle }}</b>.
         <a href="/account/signout?{{ .QueryParams }}">Sign out this account</a>
       </p>
-      {{ if gt (len .Accounts) 1 }}
+      {{ if and (not .HasLoginHint) (gt (len .Accounts) 1) }}
       <form action="/account/switch" method="post">
         <input type="hidden" name="query_params" value="{{ .QueryParams }}" />
         <input type="hidden" name="next" value="/oauth/authorize" />
