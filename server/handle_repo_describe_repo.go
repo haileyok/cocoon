@@ -58,7 +58,7 @@ func (s *Server) handleDescribeRepo(e echo.Context) error {
 		resolvedDid, err := s.passport.ResolveHandle(e.Request().Context(), repo.Handle)
 		if err != nil {
 			e.Logger().Error("error resolving handle", "error", err)
-			return helpers.ServerError(e, nil)
+			handleIsCorrect = false
 		}
 
 		if resolvedDid != repo.Repo.Did {
