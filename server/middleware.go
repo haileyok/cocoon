@@ -271,6 +271,11 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 			return helpers.InputError(e, nil)
 		}
 
+		if proof == nil {
+			logger.Error("No DPoP proof")
+			return helpers.InputError(e, nil)
+		}
+
 		var oauthToken provider.OauthToken
 		if err := s.db.Raw(ctx, "SELECT * FROM oauth_tokens WHERE token = ?", nil, accessToken).Scan(&oauthToken).Error; err != nil {
 			logger.Error("error finding access token in db", "error", err)
