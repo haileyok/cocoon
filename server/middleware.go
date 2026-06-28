@@ -57,6 +57,9 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 
 		tokenstr := pts[1]
 		token, _, err := new(jwt.Parser).ParseUnverified(tokenstr, jwt.MapClaims{})
+		if err != nil {
+			return helpers.InvalidTokenError(e)
+		}
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
 			return helpers.InvalidTokenError(e)
