@@ -57,6 +57,9 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 
 		tokenstr := pts[1]
 		token, _, err := new(jwt.Parser).ParseUnverified(tokenstr, jwt.MapClaims{})
+		if err != nil {
+			return helpers.InvalidTokenError(e)
+		}
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
 			return helpers.InvalidTokenError(e)
@@ -268,6 +271,11 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 				})
 			}
 			logger.Error("invalid dpop proof", "error", err)
+			return helpers.InputError(e, nil)
+		}
+
+		if proof == nil {
+			logger.Error("No DPoP proof")
 			return helpers.InputError(e, nil)
 		}
 
