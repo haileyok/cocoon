@@ -103,13 +103,8 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 		}
 
 		if parRequest.DpopJkt == nil {
-			if client.Metadata.DpopBoundAccessTokens {
-				if dpopProof != nil {
-					parRequest.DpopJkt = to.StringPtr(dpopProof.JKT)
-				} else {
-					msg := "dpop_jkt is required for clients with dpop_bound_access_tokens"
-					return helpers.InputError(e, &msg)
-				}
+			if client.Metadata.DpopBoundAccessTokens && dpopProof != nil {
+				parRequest.DpopJkt = to.StringPtr(dpopProof.JKT)
 			}
 		} else {
 			if !client.Metadata.DpopBoundAccessTokens {
