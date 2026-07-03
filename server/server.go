@@ -293,8 +293,13 @@ func New(args *Args) (*Server, error) {
 	e.Use(echo_session.Middleware(sessions.NewCookieStore([]byte(args.SessionSecret))))
 	e.Use(echoprometheus.NewMiddleware("cocoon"))
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins:     []string{"*"},
-		AllowHeaders:     []string{"*"},
+		// Use AllowOriginFunc instead of AllowOrigins: ["*"] so that the
+		// specific Origin is echoed back. When AllowCredentials is true,
+		// browsers reject "Access-Control-Allow-Origin: *" and
+		// "Access-Control-Allow-Headers: *" for credentialed requests.
+		// This was silently breaking OAuth token exchanges from browser-based
+		// clients (e.g. pckt.blog) that send credentials with their fetch.
+		AllowOriginFunc:  func(origin string) (bool, error) { return true, nil },
 		AllowMethods:     []string{"*"},
 		AllowCredentials: true,
 		MaxAge:           100_000_000,
