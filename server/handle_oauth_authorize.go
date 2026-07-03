@@ -12,6 +12,7 @@ import (
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/oauth"
 	"github.com/haileyok/cocoon/oauth/constants"
+	"github.com/haileyok/cocoon/oauth/dpop"
 	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/labstack/echo-contrib/session"
 	"github.com/labstack/echo/v4"
@@ -63,7 +64,24 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr("no request uri and invalid parameters"))
 		}
 
-		client, clientAuth, err := s.oauthProvider.AuthenticateClient(ctx, parRequest.AuthenticateClientRequestBase, nil, &provider.AuthenticateClientOptions{
+		dpopProof, err := s.oauthProvider.DpopManager.CheckProof(e.Request().Method, "https://"+s.config.Hostname+e.Request().URL.String(), e.Request().Header, nil)
+		if err != nil {
+			if errors.Is(err, dpop.ErrUseDpopNonce) {
+				nonce := s.oauthProvider.NextNonce()
+				if nonce != "" {
+					e.Response().Header().Set("DPoP-Nonce", nonce)
+					e.Response().Header().Add("access-control-expose-headers", "DPoP-Nonce")
+				}
+				s.logger.Error("nonce error: use_dpop_nonce", "headers", e.Request().Header)
+				return e.JSON(400, map[string]string{
+					"error": "use_dpop_nonce",
+				})
+			}
+			s.logger.Error("error getting dpop proof", "error", err)
+			return helpers.InputError(e, nil)
+		}
+
+		client, clientAuth, err := s.oauthProvider.AuthenticateClient(ctx, parRequest.AuthenticateClientRequestBase, dpopProof, &provider.AuthenticateClientOptions{
 			AllowMissingDpopProof: true,
 		})
 		if err != nil {
@@ -86,10 +104,20 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 
 		if parRequest.DpopJkt == nil {
 			if client.Metadata.DpopBoundAccessTokens {
+				if dpopProof != nil {
+					parRequest.DpopJkt = to.StringPtr(dpopProof.JKT)
+				} else {
+					msg := "dpop_jkt is required for clients with dpop_bound_access_tokens"
+					return helpers.InputError(e, &msg)
+				}
 			}
 		} else {
 			if !client.Metadata.DpopBoundAccessTokens {
 				msg := "dpop bound access tokens are not enabled for this client"
+				return helpers.InputError(e, &msg)
+			}
+			if dpopProof != nil && dpopProof.JKT != *parRequest.DpopJkt {
+				msg := "supplied dpop jkt does not match header dpop jkt"
 				return helpers.InputError(e, &msg)
 			}
 		}

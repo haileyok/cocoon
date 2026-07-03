@@ -76,7 +76,13 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 
 	if parRequest.DpopJkt == nil {
 		if client.Metadata.DpopBoundAccessTokens {
-			parRequest.DpopJkt = to.StringPtr(dpopProof.JKT)
+			if dpopProof != nil {
+				parRequest.DpopJkt = to.StringPtr(dpopProof.JKT)
+			} else {
+				msg := "dpop_jkt is required for clients with dpop_bound_access_tokens"
+				logger.Error(msg)
+				return helpers.InputError(e, &msg)
+			}
 		}
 	} else {
 		if !client.Metadata.DpopBoundAccessTokens {
@@ -85,7 +91,7 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 			return helpers.InputError(e, &msg)
 		}
 
-		if dpopProof.JKT != *parRequest.DpopJkt {
+		if dpopProof != nil && dpopProof.JKT != *parRequest.DpopJkt {
 			msg := "supplied dpop jkt does not match header dpop jkt"
 			logger.Error(msg)
 			return helpers.InputError(e, &msg)

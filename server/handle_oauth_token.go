@@ -134,7 +134,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		if authReq.Parameters.DpopJkt != nil {
-			accessClaims["cnf"] = *authReq.Parameters.DpopJkt
+			accessClaims["cnf"] = map[string]string{"jkt": *authReq.Parameters.DpopJkt}
 		}
 
 		accessToken := jwt.NewWithClaims(jwt.SigningMethodES256, accessClaims)
@@ -233,7 +233,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		if oauthToken.Parameters.DpopJkt != nil {
-			accessClaims["cnf"] = *&oauthToken.Parameters.DpopJkt
+			accessClaims["cnf"] = map[string]string{"jkt": *oauthToken.Parameters.DpopJkt}
 		}
 
 		accessToken := jwt.NewWithClaims(jwt.SigningMethodES256, accessClaims)
