@@ -294,8 +294,8 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 			})
 		}
 
-		if *oauthToken.Parameters.DpopJkt != proof.JKT {
-			logger.Error("jkt mismatch", "token", oauthToken.Parameters.DpopJkt, "proof", proof.JKT)
+		if !dpopJktMatches(oauthToken.Parameters.DpopJkt, proof) {
+			logger.Error("jkt mismatch", "token", oauthToken.Parameters.DpopJkt, "proof", proof)
 			return helpers.InputError(e, to.StringPtr("dpop jkt mismatch"))
 		}
 

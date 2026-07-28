@@ -139,8 +139,19 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			"client_id": authReq.ClientId,
 		}
 
+		// Determine the effective DPoP JKT: prefer the value bound in the auth
+		// request (from PAR or the dpop_jkt query param), but fall back to the
+		// proof presented at the token endpoint. This handles clients that use
+		// the standard (non-PAR) authorize flow without sending dpop_jkt.
+		effectiveJkt := ""
 		if authReq.Parameters.DpopJkt != nil {
-			accessClaims["cnf"] = *authReq.Parameters.DpopJkt
+			effectiveJkt = *authReq.Parameters.DpopJkt
+		} else if proof != nil {
+			effectiveJkt = proof.JKT
+		}
+
+		if effectiveJkt != "" {
+			accessClaims["cnf"] = map[string]string{"jkt": effectiveJkt}
 		}
 
 		accessToken := jwt.NewWithClaims(jwt.SigningMethodES256, accessClaims)
@@ -150,10 +161,18 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return err
 		}
 
+		// Ensure the stored token parameters reflect the effective DPoP binding
+		// so that subsequent requests (middleware JKT check, refresh) are
+		// consistent with the JWT's cnf claim.
+		tokenParams := authReq.Parameters
+		if effectiveJkt != "" && tokenParams.DpopJkt == nil {
+			tokenParams.DpopJkt = to.StringPtr(effectiveJkt)
+		}
+
 		if err := s.db.Create(ctx, &provider.OauthToken{
 			ClientId:     authReq.ClientId,
 			ClientAuth:   *clientAuth,
-			Parameters:   authReq.Parameters,
+			Parameters:   tokenParams,
 			ExpiresAt:    eat,
 			DeviceId:     "",
 			Sub:          repo.Repo.Did,
@@ -166,9 +185,8 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.ServerError(e, nil)
 		}
 
-		// prob not needed
 		tokenType := "Bearer"
-		if authReq.Parameters.DpopJkt != nil {
+		if effectiveJkt != "" {
 			tokenType = "DPoP"
 		}
 
@@ -242,7 +260,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		if oauthToken.Parameters.DpopJkt != nil {
-			accessClaims["cnf"] = *&oauthToken.Parameters.DpopJkt
+			accessClaims["cnf"] = map[string]string{"jkt": *oauthToken.Parameters.DpopJkt}
 		}
 
 		accessToken := jwt.NewWithClaims(jwt.SigningMethodES256, accessClaims)

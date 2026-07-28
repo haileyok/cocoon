@@ -16,6 +16,12 @@ var (
 		"transition:email",
 		"transition:generic",
 		"transition:chat.bsky",
+		"repo",
+		"rpc",
+		"blob",
+		"account",
+		"identity",
+		"include",
 	}
 )
 
