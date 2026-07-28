@@ -12,16 +12,17 @@ import (
 )
 
 // PermissionSetResolver resolves an `include:<nsid>` scope to its permission-set
-// lexicon. ResolvePermissionSet returns nil when the NSID resolves to a valid
-// permission-set record, or an error otherwise.
+// lexicon. ResolvePermissionSet returns the parsed permission-set when the NSID
+// resolves to a valid permission-set record, or an error otherwise.
 type PermissionSetResolver interface {
-	ResolvePermissionSet(ctx context.Context, nsid string) error
+	ResolvePermissionSet(ctx context.Context, nsid string) (*lexicon.SchemaPermissionSet, error)
 }
 
 // directory is the subset of indigo's identity.Directory used here.
 type directory = identity.Directory
 
 type cacheEntry struct {
+	ps      *lexicon.SchemaPermissionSet
 	err     error
 	expires time.Time
 }
@@ -55,53 +56,54 @@ func NewIndigoResolverWithDirectory(dir directory) *IndigoResolver {
 	}
 }
 
-func (r *IndigoResolver) ResolvePermissionSet(ctx context.Context, nsidStr string) error {
+func (r *IndigoResolver) ResolvePermissionSet(ctx context.Context, nsidStr string) (*lexicon.SchemaPermissionSet, error) {
 	if cached, ok := r.lookup(nsidStr); ok {
-		return cached
+		return cached.ps, cached.err
 	}
 
-	err := r.resolve(ctx, nsidStr)
-	r.store(nsidStr, err)
-	return err
+	ps, err := r.resolve(ctx, nsidStr)
+	r.store(nsidStr, ps, err)
+	return ps, err
 }
 
-func (r *IndigoResolver) resolve(ctx context.Context, nsidStr string) error {
+func (r *IndigoResolver) resolve(ctx context.Context, nsidStr string) (*lexicon.SchemaPermissionSet, error) {
 	nsid, err := syntax.ParseNSID(nsidStr)
 	if err != nil {
-		return fmt.Errorf("invalid nsid %q: %w", nsidStr, err)
+		return nil, fmt.Errorf("invalid nsid %q: %w", nsidStr, err)
 	}
 
 	sf, err := lexicon.ResolveLexiconSchemaFile(ctx, r.dir, nsid)
 	if err != nil {
-		return fmt.Errorf("could not resolve permission set %q: %w", nsidStr, err)
+		return nil, fmt.Errorf("could not resolve permission set %q: %w", nsidStr, err)
 	}
 
 	main, ok := sf.Defs["main"]
 	if !ok {
-		return fmt.Errorf("lexicon %q has no main definition", nsidStr)
+		return nil, fmt.Errorf("lexicon %q has no main definition", nsidStr)
 	}
-	if _, ok := main.Inner.(lexicon.SchemaPermissionSet); !ok {
-		return fmt.Errorf("lexicon %q main definition is not a permission-set", nsidStr)
+	ps, ok := main.Inner.(lexicon.SchemaPermissionSet)
+	if !ok {
+		return nil, fmt.Errorf("lexicon %q main definition is not a permission-set", nsidStr)
 	}
-	return nil
+	return &ps, nil
 }
 
-func (r *IndigoResolver) lookup(nsid string) (error, bool) {
+func (r *IndigoResolver) lookup(nsid string) (cacheEntry, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	entry, ok := r.cache[nsid]
 	if !ok || time.Now().After(entry.expires) {
-		return nil, false
+		return cacheEntry{}, false
 	}
-	return entry.err, true
+	return entry, true
 }
 
-func (r *IndigoResolver) store(nsid string, err error) {
+func (r *IndigoResolver) store(nsid string, ps *lexicon.SchemaPermissionSet, err error) {
 	ttl := r.posTTL
 	if err != nil {
 		ttl = r.negTTL
 	}
 	r.mu.Lock()
-	r.cache[nsid] = cacheEntry{err: err, expires: time.Now().Add(ttl)}
+	r.cache[nsid] = cacheEntry{ps: ps, err: err, expires: time.Now().Add(ttl)}
 	r.mu.Unlock()
 }

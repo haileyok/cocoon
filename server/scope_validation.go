@@ -25,7 +25,7 @@ func (s *Server) validateRequestedScopes(ctx context.Context, scope string) erro
 		if s.scopeResolver == nil {
 			continue
 		}
-		if err := s.scopeResolver.ResolvePermissionSet(ctx, sc.Nsid); err != nil {
+		if _, err := s.scopeResolver.ResolvePermissionSet(ctx, sc.Nsid); err != nil {
 			return fmt.Errorf("include scope %q could not be resolved: %w", sc.Raw, err)
 		}
 	}

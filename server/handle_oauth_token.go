@@ -2,11 +2,13 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/to"
@@ -16,6 +18,7 @@ import (
 	"github.com/haileyok/cocoon/oauth/constants"
 	"github.com/haileyok/cocoon/oauth/dpop"
 	"github.com/haileyok/cocoon/oauth/provider"
+	"github.com/haileyok/cocoon/oauth/scopes"
 	"github.com/labstack/echo/v4"
 )
 
@@ -123,8 +126,11 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 
 		refreshToken := oauth.GenerateRefreshToken()
 
+		expandedScope := s.expandScopes(ctx, authReq.Parameters.Scope)
+		authReq.Parameters.Scope = expandedScope
+
 		accessClaims := jwt.MapClaims{
-			"scope":     authReq.Parameters.Scope,
+			"scope":     expandedScope,
 			"aud":       s.config.Did,
 			"sub":       repo.Repo.Did,
 			"iat":       now.Unix(),
@@ -172,7 +178,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			AccessToken:  accessString,
 			RefreshToken: refreshToken,
 			TokenType:    tokenType,
-			Scope:        authReq.Parameters.Scope,
+			Scope:        expandedScope,
 			ExpiresIn:    int64(eat.Sub(time.Now()).Seconds()),
 			Sub:          repo.Repo.Did,
 		})
@@ -222,8 +228,11 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		now := time.Now()
 		eat := now.Add(constants.TokenMaxAge)
 
+		expandedScope := s.expandScopes(ctx, oauthToken.Parameters.Scope)
+		oauthToken.Parameters.Scope = expandedScope
+
 		accessClaims := jwt.MapClaims{
-			"scope":     oauthToken.Parameters.Scope,
+			"scope":     expandedScope,
 			"aud":       s.config.Did,
 			"sub":       oauthToken.Sub,
 			"iat":       now.Unix(),
@@ -243,7 +252,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return err
 		}
 
-		if err := s.db.Exec(ctx, "UPDATE oauth_tokens SET token = ?, refresh_token = ?, expires_at = ?, updated_at = ? WHERE refresh_token = ?", nil, accessString, nextRefreshToken, eat, now, *req.RefreshToken).Error; err != nil {
+		if err := s.db.Exec(ctx, "UPDATE oauth_tokens SET token = ?, refresh_token = ?, expires_at = ?, updated_at = ?, parameters = ? WHERE refresh_token = ?", nil, accessString, nextRefreshToken, eat, now, oauthToken.Parameters, *req.RefreshToken).Error; err != nil {
 			logger.Error("error updating token", "error", err)
 			return helpers.ServerError(e, nil)
 		}
@@ -258,13 +267,61 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			AccessToken:  accessString,
 			RefreshToken: nextRefreshToken,
 			TokenType:    tokenType,
-			Scope:        oauthToken.Parameters.Scope,
+			Scope:        expandedScope,
 			ExpiresIn:    int64(eat.Sub(time.Now()).Seconds()),
 			Sub:          oauthToken.Sub,
 		})
 	}
 
 	return helpers.InputError(e, to.StringPtr(fmt.Sprintf(`grant type "%s" is not supported`, req.GrantType)))
+}
+
+// expandScopes parses a raw scope string, resolves any include: scopes via
+// the permission-set resolver, and appends the expanded granular scopes
+// alongside the originals. If the resolver is nil or resolution fails, the
+// original scope string is returned unchanged.
+func (s *Server) expandScopes(ctx context.Context, rawScope string) string {
+	if s.scopeResolver == nil {
+		return rawScope
+	}
+	parsed, err := scopes.ParseList(rawScope)
+	if err != nil {
+		return rawScope
+	}
+	var out []string
+	for _, sc := range parsed {
+		out = append(out, sc.Raw)
+		if sc.Resource != scopes.ResourceInclude {
+			continue
+		}
+		ps, err := s.scopeResolver.ResolvePermissionSet(ctx, sc.Nsid)
+		if err != nil || ps == nil {
+			continue
+		}
+		for _, perm := range ps.Permissions {
+			switch perm.Resource {
+			case "repo":
+				for _, coll := range perm.Collection {
+					if len(perm.Action) > 0 {
+						for _, act := range perm.Action {
+							out = append(out, fmt.Sprintf("repo:%s?action=%s", coll, act))
+						}
+					} else {
+						out = append(out, fmt.Sprintf("repo:%s", coll))
+					}
+				}
+			case "rpc":
+				for _, lxm := range perm.LXM {
+					aud := perm.Audience
+					if aud == "" {
+						aud = "*"
+					}
+					out = append(out, fmt.Sprintf("rpc:%s?aud=%s", lxm, aud))
+				}
+			}
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // verifyPKCE checks a PKCE code_verifier against the stored code_challenge for
