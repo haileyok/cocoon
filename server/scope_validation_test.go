@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+
+	"github.com/bluesky-social/indigo/atproto/lexicon"
 )
 
 // stubResolver is a hermetic PermissionSetResolver: only NSIDs in valid resolve.
@@ -14,11 +16,11 @@ type stubResolver struct {
 	valid map[string]bool
 }
 
-func (r stubResolver) ResolvePermissionSet(ctx context.Context, nsid string) error {
+func (r stubResolver) ResolvePermissionSet(ctx context.Context, nsid string) (*lexicon.SchemaPermissionSet, error) {
 	if r.valid[nsid] {
-		return nil
+		return &lexicon.SchemaPermissionSet{}, nil
 	}
-	return fmt.Errorf("permission set %q not found", nsid)
+	return nil, fmt.Errorf("permission set %q not found", nsid)
 }
 
 func parScopeForm(scope string) string {
