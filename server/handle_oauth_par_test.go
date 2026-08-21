@@ -2,10 +2,19 @@ package server
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/json"
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
+
+	"github.com/golang-jwt/jwt/v4"
+	"github.com/haileyok/cocoon/oauth/client"
+	"github.com/haileyok/cocoon/oauth/provider"
+	"github.com/lestrrat-go/jwx/v2/jwk"
 )
 
 func parForm(redirectURI string) string {
@@ -85,5 +94,83 @@ func TestHandleOauthParAcceptsRegisteredRedirectURI(t *testing.T) {
 	}
 	if resp.RequestURI == "" {
 		t.Fatalf("expected a request_uri in response, got empty")
+	}
+}
+
+// TestClientAssertionClockSkew verifies that PAR client authentication tolerates
+// normal clock skew without accepting assertions that are materially future-dated.
+func TestClientAssertionClockSkew(t *testing.T) {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := jwk.FromRaw(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := key.Set(jwk.KeyIDKey, "test-key"); err != nil {
+		t.Fatal(err)
+	}
+	keys := jwk.NewSet()
+	if err := keys.AddKey(key); err != nil {
+		t.Fatal(err)
+	}
+
+	const (
+		clientID = "https://client.example/metadata.json"
+		audience = "https://" + testHostname
+	)
+	s := newTestServer(t)
+	attachOauthProvider(t, s)
+	p := s.oauthProvider
+	cl := &client.Client{
+		Metadata: &client.Metadata{
+			ClientID:                clientID,
+			TokenEndpointAuthMethod: "private_key_jwt",
+		},
+		JWKS: keys,
+	}
+
+	sign := func(t *testing.T, issuedAt time.Time) string {
+		t.Helper()
+		token := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+			"iss": clientID,
+			"sub": clientID,
+			"aud": audience,
+			"jti": "test-jti",
+			"iat": issuedAt.Unix(),
+		})
+		token.Header["kid"] = "test-key"
+		raw, err := token.SignedString(privateKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+
+	assertionType := "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+	for _, tt := range []struct {
+		name      string
+		issuedAt  time.Time
+		wantError bool
+	}{
+		{name: "small positive clock skew", issuedAt: time.Now().Add(10 * time.Second)},
+		{name: "excessive positive clock skew", issuedAt: time.Now().Add(time.Minute), wantError: true},
+		{name: "assertion too old", issuedAt: time.Now().Add(-2 * time.Minute), wantError: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			assertion := sign(t, tt.issuedAt)
+			_, err := p.Authenticate(t.Context(), provider.AuthenticateClientRequestBase{
+				ClientID:            clientID,
+				ClientAssertionType: &assertionType,
+				ClientAssertion:     &assertion,
+			}, cl)
+			if tt.wantError && err == nil {
+				t.Fatal("expected authentication error")
+			}
+			if !tt.wantError && err != nil {
+				t.Fatalf("unexpected authentication error: %v", err)
+			}
+		})
 	}
 }
