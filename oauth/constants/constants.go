@@ -17,7 +17,8 @@ const (
 	ClientAssertionTypeJwtBearer = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 	ParExpiresIn                 = 5 * time.Minute
 
-	ClientAssertionMaxAge = 1 * time.Minute
+	ClientAssertionMaxAge    = 1 * time.Minute
+	ClientAssertionClockSkew = 30 * time.Second
 
 	DeviceIdPrefix      = "dev-"
 	DeviceIdBytesLength = 16

@@ -83,7 +83,11 @@ func (p *Provider) Authenticate(_ context.Context, req AuthenticateClientRequest
 			return nil, fmt.Errorf("failed to extract raw key: %w", err)
 		}
 
-		token, err = jwt.Parse(*req.ClientAssertion, func(token *jwt.Token) (any, error) {
+		// Skip MapClaims.Valid's zero-tolerance time checks and enforce them
+		// explicitly below with a small bounded allowance for clock skew between
+		// the OAuth client and authorization server. Signature and algorithm
+		// verification still happen here.
+		token, err = (&jwt.Parser{SkipClaimsValidation: true}).Parse(*req.ClientAssertion, func(token *jwt.Token) (any, error) {
 			if token.Method.Alg() != jwt.SigningMethodES256.Alg() {
 				return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 			}
@@ -118,9 +122,20 @@ func (p *Provider) Authenticate(_ context.Context, req AuthenticateClientRequest
 			return nil, errors.New(`invalid client_assertion jwt: "iat" is missing`)
 		}
 
+		now := time.Now()
 		iatTime := time.Unix(int64(iat), 0)
-		if time.Since(iatTime) > constants.ClientAssertionMaxAge {
+		if iatTime.After(now.Add(constants.ClientAssertionClockSkew)) {
+			return nil, errors.New("client_assertion jwt issued too far in the future")
+		}
+		if now.Sub(iatTime) > constants.ClientAssertionMaxAge {
 			return nil, errors.New("client_assertion jwt too old")
+		}
+
+		if nbf, ok := claims["nbf"].(float64); ok && time.Unix(int64(nbf), 0).After(now.Add(constants.ClientAssertionClockSkew)) {
+			return nil, errors.New("client_assertion jwt is not valid yet")
+		}
+		if exp, ok := claims["exp"].(float64); ok && time.Unix(int64(exp), 0).Before(now.Add(-constants.ClientAssertionClockSkew)) {
+			return nil, errors.New("client_assertion jwt is expired")
 		}
 
 		jti, _ := claims["jti"].(string)
