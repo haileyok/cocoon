@@ -734,22 +734,53 @@ func getBlobCidsFromCbor(cbor []byte) ([]cid.Cid, error) {
 	var deepiter func(any) error
 	deepiter = func(item any) error {
 		switch val := item.(type) {
+		case atdata.Blob:
+			cids = append(cids, cid.Cid(val.Ref))
+		case *atdata.Blob:
+			if val != nil {
+				cids = append(cids, cid.Cid(val.Ref))
+			}
+		case cid.Cid:
+			// A bare CID is not necessarily a blob reference (it may be an
+			// arbitrary record link), so only blob maps/atdata.Blob values are
+			// added above.
 		case map[string]any:
-			if val["$type"] == "blob" {
-				if ref, ok := val["ref"].(string); ok {
+			if typ, ok := val["$type"].(string); ok && typ == "blob" {
+				switch ref := val["ref"].(type) {
+				case string:
 					c, err := cid.Parse(ref)
 					if err != nil {
 						return err
 					}
 					cids = append(cids, c)
+				case cid.Cid:
+					cids = append(cids, ref)
+				case *cid.Cid:
+					if ref != nil {
+						cids = append(cids, *ref)
+					}
+				case map[string]any:
+					if link, ok := ref["$link"].(string); ok {
+						c, err := cid.Parse(link)
+						if err != nil {
+							return err
+						}
+						cids = append(cids, c)
+					}
 				}
-				for _, v := range val {
-					return deepiter(v)
+			}
+			// Do not return after the first child: nested blobs can occur in
+			// any field and in sibling array/map values.
+			for _, child := range val {
+				if err := deepiter(child); err != nil {
+					return err
 				}
 			}
 		case []any:
-			for _, v := range val {
-				deepiter(v)
+			for _, child := range val {
+				if err := deepiter(child); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -760,5 +791,22 @@ func getBlobCidsFromCbor(cbor []byte) ([]cid.Cid, error) {
 		return nil, err
 	}
 
-	return cids, nil
+	// A record may mention one uploaded blob in multiple nested fields. Blob
+	// references are set-like for permissioned records, and SpaceBlobRef's
+	// primary key requires one row per CID, so preserve first-seen order while
+	// removing duplicates.
+	seen := make(map[string]struct{}, len(cids))
+	unique := make([]cid.Cid, 0, len(cids))
+	for _, c := range cids {
+		if !c.Defined() {
+			continue
+		}
+		key := c.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, c)
+	}
+	return unique, nil
 }

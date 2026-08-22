@@ -41,6 +41,9 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 	if mime == "" {
 		mime = "application/octet-stream"
 	}
+	if principal, ok := PrincipalFromContext(e).(*OAuthPrincipal); ok && !oauthAllowsBlobScope(principal, mime) {
+		return helpers.InsufficientScopeError(e, "blob:"+mime)
+	}
 
 	storage := "sqlite"
 	s3Upload := s.s3Config != nil && s.s3Config.BlobstoreEnabled

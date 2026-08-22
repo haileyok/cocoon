@@ -1,6 +1,6 @@
 // Package scopes parses and validates atproto OAuth permission scopes
 // (proposal 0011-auth-scopes). It models the granular resources (repo, rpc,
-// blob, account, identity, include) alongside the legacy static scopes
+// blob, account, identity, include, space) alongside the legacy static scopes
 // (atproto, transition:*), and exposes enough structure for PAR-time validation
 // and resource-server enforcement.
 package scopes
@@ -21,12 +21,17 @@ const (
 	ResourceAccount    = "account"
 	ResourceIdentity   = "identity"
 	ResourceInclude    = "include"
+	ResourceSpace      = "space"
 	ResourceAtproto    = "atproto"
 	ResourceTransition = "transition"
 )
 
 // repoActions are the valid repo write actions.
 var repoActions = map[string]bool{"create": true, "update": true, "delete": true}
+
+var spaceActions = map[string]bool{"read_self": true, "read": true, "create": true, "update": true, "delete": true}
+var spaceManageActions = map[string]bool{"create": true, "update": true, "delete": true}
+var spaceWriteActions = map[string]bool{"create": true, "update": true, "delete": true}
 
 // transitionValues are the accepted legacy transition scope suffixes.
 var transitionValues = map[string]bool{"generic": true, "email": true, "chat.bsky": true}
@@ -54,6 +59,12 @@ type Scope struct {
 
 	// include
 	Nsid string
+
+	// space
+	SpaceType string
+	Authority string
+	SKey      string
+	Manage    []string
 
 	// transition:<value>
 	Transition string
@@ -130,6 +141,8 @@ func Parse(raw string) (*Scope, error) {
 		return parseIdentity(raw, positional, hasPositional, params)
 	case ResourceInclude:
 		return parseInclude(raw, positional, hasPositional, params)
+	case ResourceSpace:
+		return parseSpace(raw, positional, hasPositional, params)
 	default:
 		return nil, fmt.Errorf("unknown scope resource %q", resource)
 	}
@@ -254,6 +267,92 @@ func parseInclude(raw, positional string, hasPositional bool, params url.Values)
 	return &Scope{Raw: raw, Resource: ResourceInclude, Nsid: positional, Aud: params.Get("aud")}, nil
 }
 
+func parseSpace(raw, positional string, hasPositional bool, params url.Values) (*Scope, error) {
+	if !hasPositional || positional == "" {
+		return nil, fmt.Errorf("space scope %q requires a space type", raw)
+	}
+	if positional != "*" {
+		if _, err := syntax.ParseNSID(positional); err != nil {
+			return nil, fmt.Errorf("space scope %q has invalid space type %q: %w", raw, positional, err)
+		}
+	}
+
+	for key := range params {
+		switch key {
+		case "authority", "skey", "collection", "action", "manage":
+		default:
+			return nil, fmt.Errorf("space scope %q has unknown parameter %q", raw, key)
+		}
+	}
+
+	authority := "self"
+	if values, ok := params["authority"]; ok {
+		if len(values) != 1 || values[0] == "" {
+			return nil, fmt.Errorf("space scope %q requires exactly one authority", raw)
+		}
+		authority = values[0]
+		if authority != "self" && authority != "*" {
+			if _, err := syntax.ParseDID(authority); err != nil {
+				return nil, fmt.Errorf("space scope %q has invalid authority %q: %w", raw, authority, err)
+			}
+		}
+	}
+
+	skey := "*"
+	if values, ok := params["skey"]; ok {
+		if len(values) != 1 || values[0] == "" {
+			return nil, fmt.Errorf("space scope %q requires exactly one skey", raw)
+		}
+		skey = values[0]
+		if skey != "*" {
+			if _, err := syntax.ParseRecordKey(skey); err != nil {
+				return nil, fmt.Errorf("space scope %q has invalid skey %q: %w", raw, skey, err)
+			}
+		}
+	}
+
+	collections := append([]string(nil), params["collection"]...)
+	for _, collection := range collections {
+		if collection == "*" {
+			continue
+		}
+		if collection == "" {
+			return nil, fmt.Errorf("space scope %q has an empty collection", raw)
+		}
+		if _, err := syntax.ParseNSID(collection); err != nil {
+			return nil, fmt.Errorf("space scope %q has invalid collection %q: %w", raw, collection, err)
+		}
+	}
+
+	actions := append([]string(nil), params["action"]...)
+	for _, action := range actions {
+		if !spaceActions[action] {
+			return nil, fmt.Errorf("space scope %q has invalid action %q", raw, action)
+		}
+	}
+	if len(actions) == 0 {
+		actions = []string{"read", "create", "update", "delete"}
+	}
+
+	manage := append([]string(nil), params["manage"]...)
+	for _, operation := range manage {
+		if !spaceManageActions[operation] {
+			return nil, fmt.Errorf("space scope %q has invalid manage operation %q", raw, operation)
+		}
+	}
+
+	return &Scope{
+		Raw:         raw,
+		Resource:    ResourceSpace,
+		Collections: collections,
+		Actions:     actions,
+		SpaceType:   positional,
+		Authority:   authority,
+		SKey:        skey,
+		Manage:      manage,
+	}, nil
+}
+
 // AllowsRepoWrite reports whether this scope grants the given repo write action
 // on the given collection. Non-repo scopes always return false.
 func (s *Scope) AllowsRepoWrite(collection, action string) bool {
@@ -272,6 +371,188 @@ func (s *Scope) AllowsRepoWrite(collection, action string) bool {
 	}
 	for _, c := range s.Collections {
 		if c == "*" || c == collection {
+			return true
+		}
+	}
+	return false
+}
+
+// SpaceTypeDeclaration describes a concrete space type's default record
+// collections. A nil or invalid declaration fails closed for omitted-collection
+// writes.
+type SpaceTypeDeclaration struct {
+	Collections []string
+}
+
+// SpaceTypeResolver resolves a concrete space type declaration. Resolution is
+// supplied by the caller; this package performs no network lookup.
+type SpaceTypeResolver interface {
+	ResolveSpaceType(spaceType string) (SpaceTypeDeclaration, error)
+}
+
+// SpaceValue is the typed value consumed by space-scope matching.
+type SpaceValue interface {
+	SpaceScopeComponents() (authority, spaceType, skey string)
+}
+
+// CanonicalSpaceValue is a string-based canonical space value that satisfies
+// SpaceValue without importing the space package.
+type CanonicalSpaceValue struct {
+	Authority string
+	SpaceType string
+	SKey      string
+}
+
+// SpaceScopeComponents implements SpaceValue.
+func (v CanonicalSpaceValue) SpaceScopeComponents() (authority, spaceType, skey string) {
+	return v.Authority, v.SpaceType, v.SKey
+}
+
+// SpaceRequest describes a single record operation against a space grant.
+// Value is preferred; Space is a compatibility alias for callers that name the
+// target after the resource.
+type SpaceRequest struct {
+	Value       SpaceValue
+	Space       SpaceValue
+	RepoDID     string
+	Collection  string
+	Action      string
+	GrantingDID string
+}
+
+// MatchesSpace reports whether value matches this scope's authority,
+// spaceType, and skey selectors. authority=self resolves against grantingDID.
+func (s *Scope) MatchesSpace(value SpaceValue, grantingDID string) bool {
+	if s == nil || s.Resource != ResourceSpace || value == nil {
+		return false
+	}
+	authority, spaceType, skey := value.SpaceScopeComponents()
+	if !validCanonicalSpace(authority, spaceType, skey) {
+		return false
+	}
+	if s.Authority == "self" {
+		if grantingDID == "" || authority != grantingDID {
+			return false
+		}
+	} else if s.Authority != "*" && s.Authority != authority {
+		return false
+	}
+	return (s.SpaceType == "*" || s.SpaceType == spaceType) &&
+		(s.SKey == "*" || s.SKey == skey)
+}
+
+// AllowsSpaceRead reports whether this scope grants reading repoDID in value.
+// read covers every repo and implies read_self; read_self covers only the
+// granting user's own repo.
+func (s *Scope) AllowsSpaceRead(value SpaceValue, repoDID, grantingDID string) bool {
+	if !s.MatchesSpace(value, grantingDID) {
+		return false
+	}
+	for _, action := range s.Actions {
+		switch action {
+		case "read":
+			return true
+		case "read_self":
+			if repoDID != "" && repoDID == grantingDID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// AllowsSpaceReadSelf is the read_self operation matcher. A read action also
+// satisfies it, as read implies read_self.
+func (s *Scope) AllowsSpaceReadSelf(value SpaceValue, repoDID, grantingDID string) bool {
+	return s.AllowsSpaceRead(value, repoDID, grantingDID)
+}
+
+// AllowsSpaceDelegation reports whether this scope permits obtaining a space
+// delegation token. Only read grants delegation; read_self does not.
+func (s *Scope) AllowsSpaceDelegation(value SpaceValue, grantingDID string) bool {
+	if !s.MatchesSpace(value, grantingDID) {
+		return false
+	}
+	return contains(s.Actions, "read")
+}
+
+// AllowsSpaceWrite reports whether this scope permits a create, update, or
+// delete record operation for collection. Omitted grant collections are
+// resolved through resolver and fail closed when unavailable or invalid.
+func (s *Scope) AllowsSpaceWrite(value SpaceValue, collection, action, grantingDID string, resolver SpaceTypeResolver) bool {
+	if s == nil || s.Resource != ResourceSpace || !spaceWriteActions[action] {
+		return false
+	}
+	if !s.MatchesSpace(value, grantingDID) || !contains(s.Actions, action) {
+		return false
+	}
+	_, spaceType, _ := value.SpaceScopeComponents()
+	return s.allowsCollection(spaceType, collection, resolver)
+}
+
+// AllowsSpaceManage reports whether this scope permits a management operation
+// on the target space. Management ignores record collections and declarations.
+func (s *Scope) AllowsSpaceManage(value SpaceValue, action, grantingDID string) bool {
+	if s == nil || s.Resource != ResourceSpace || !spaceManageActions[action] {
+		return false
+	}
+	return s.MatchesSpace(value, grantingDID) && contains(s.Manage, action)
+}
+
+// AllowsSpaceRequest evaluates a complete record request against this grant.
+func (s *Scope) AllowsSpaceRequest(request SpaceRequest, resolver SpaceTypeResolver) bool {
+	value := request.Value
+	if value == nil {
+		value = request.Space
+	}
+	if request.Action == "read" || request.Action == "read_self" {
+		return s.AllowsSpaceRead(value, request.RepoDID, request.GrantingDID)
+	}
+	return s.AllowsSpaceWrite(value, request.Collection, request.Action, request.GrantingDID, resolver)
+}
+
+func (s *Scope) allowsCollection(spaceType, collection string, resolver SpaceTypeResolver) bool {
+	if collection == "" {
+		return false
+	}
+	if _, err := syntax.ParseNSID(collection); err != nil {
+		return false
+	}
+	if len(s.Collections) != 0 {
+		return contains(s.Collections, "*") || contains(s.Collections, collection)
+	}
+	if s.SpaceType == "*" || spaceType == "" || resolver == nil {
+		return false
+	}
+	declaration, err := resolver.ResolveSpaceType(spaceType)
+	if err != nil || declaration.Collections == nil {
+		return false
+	}
+	return validDeclaredCollections(declaration.Collections) && contains(declaration.Collections, collection)
+}
+
+func validCanonicalSpace(authority, spaceType, skey string) bool {
+	_, authorityErr := syntax.ParseDID(authority)
+	_, spaceTypeErr := syntax.ParseNSID(spaceType)
+	_, skeyErr := syntax.ParseRecordKey(skey)
+	return authorityErr == nil && spaceTypeErr == nil && skeyErr == nil
+}
+
+func validDeclaredCollections(collections []string) bool {
+	for _, collection := range collections {
+		if collection == "*" {
+			return false
+		}
+		if _, err := syntax.ParseNSID(collection); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
 			return true
 		}
 	}

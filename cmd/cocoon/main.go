@@ -88,6 +88,11 @@ func main() {
 				EnvVars: []string{"COCOON_REQUIRE_INVITE"},
 				Value:   true,
 			},
+			&cli.BoolFlag{
+				Name:    "spaces-enabled",
+				EnvVars: []string{"COCOON_SPACES_ENABLED"},
+				Value:   false,
+			},
 			&cli.StringFlag{
 				Name:    "smtp-user",
 				EnvVars: []string{"COCOON_SMTP_USER"},
@@ -229,6 +234,7 @@ var runServe = &cli.Command{
 			Relays:          cmd.StringSlice("relays"),
 			AdminPassword:   cmd.String("admin-password"),
 			RequireInvite:   cmd.Bool("require-invite"),
+			SpacesEnabled:   cmd.Bool("spaces-enabled"),
 			SmtpUser:        cmd.String("smtp-user"),
 			SmtpPass:        cmd.String("smtp-pass"),
 			SmtpHost:        cmd.String("smtp-host"),

@@ -39,6 +39,7 @@ import (
 	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/haileyok/cocoon/oauth/scopes"
 	"github.com/haileyok/cocoon/plc"
+	"github.com/haileyok/cocoon/space"
 	"github.com/ipfs/go-cid"
 	"github.com/labstack/echo-contrib/echoprometheus"
 	echo_session "github.com/labstack/echo-contrib/session"
@@ -67,24 +68,29 @@ type S3Config struct {
 }
 
 type Server struct {
-	http          *http.Client
-	httpd         *http.Server
-	mail          *mailyak.MailYak
-	mailLk        *sync.Mutex
-	echo          *echo.Echo
-	db            *db.DB
-	plcClient     *plc.Client
-	logger        *slog.Logger
-	config        *config
-	privateKey    *ecdsa.PrivateKey
-	publicJwk     jwk.Key
-	publicKid     string
-	repoman       *RepoMan
-	oauthProvider *provider.Provider
-	evtman        *events.EventManager
-	passport      *identity.Passport
-	scopeResolver scopes.PermissionSetResolver
-	fallbackProxy string
+	http              *http.Client
+	httpd             *http.Server
+	mail              *mailyak.MailYak
+	mailLk            *sync.Mutex
+	echo              *echo.Echo
+	db                *db.DB
+	plcClient         *plc.Client
+	logger            *slog.Logger
+	config            *config
+	privateKey        *ecdsa.PrivateKey
+	publicJwk         jwk.Key
+	publicKid         string
+	repoman           *RepoMan
+	spaceRepoMan      *SpaceRepoMan
+	oauthProvider     *provider.Provider
+	evtman            *events.EventManager
+	passport          DIDDocumentFetcher
+	scopeResolver     scopes.PermissionSetResolver
+	fallbackProxy     string
+	spaceKeyResolver  SpaceAuthorityKeyResolver
+	spaceReplay       space.ReplayStore
+	spaceTypeResolver scopes.SpaceTypeResolver
+	spaceNotifySender SpaceNotificationSender
 
 	lastRequestCrawl time.Time
 	requestCrawlMu   sync.Mutex
@@ -111,6 +117,7 @@ type Args struct {
 	Relays          []string
 	AdminPassword   string
 	RequireInvite   bool
+	SpacesEnabled   bool
 
 	SmtpUser  string
 	SmtpPass  string
@@ -138,6 +145,7 @@ type config struct {
 	Relays            []string
 	AdminPassword     string
 	RequireInvite     bool
+	SpacesEnabled     bool
 	SmtpEmail         string
 	SmtpName          string
 	SessionCookieKey  string
@@ -420,6 +428,7 @@ func New(args *Args) (*Server, error) {
 		return nil, fmt.Errorf("failed to create event persister: %w", err)
 	}
 
+	passport := identity.NewPassport(h, identity.NewMemCache(10_000))
 	s := &Server{
 		http:       h,
 		httpd:      httpd,
@@ -440,15 +449,19 @@ func New(args *Args) (*Server, error) {
 			Relays:            args.Relays,
 			AdminPassword:     args.AdminPassword,
 			RequireInvite:     args.RequireInvite,
+			SpacesEnabled:     args.SpacesEnabled,
 			SmtpName:          args.SmtpName,
 			SmtpEmail:         args.SmtpEmail,
 			SessionCookieKey:  args.SessionCookieKey,
 			BlockstoreVariant: args.BlockstoreVariant,
 			FallbackProxy:     args.FallbackProxy,
 		},
-		evtman:        events.NewEventManager(evtPersister),
-		passport:      identity.NewPassport(h, identity.NewMemCache(10_000)),
-		scopeResolver: scopes.NewIndigoResolver(),
+		evtman:            events.NewEventManager(evtPersister),
+		passport:          passport,
+		spaceKeyResolver:  NewPassportSpaceAuthorityKeyResolver(passport),
+		scopeResolver:     scopes.NewIndigoResolver(),
+		spaceTypeResolver: scopes.NewIndigoSpaceTypeResolver(),
+		spaceReplay:       space.NewGORMReplayStore(gdb),
 
 		dbName:   args.DbName,
 		dbType:   dbType,
@@ -477,6 +490,7 @@ func New(args *Args) (*Server, error) {
 	s.loadTemplates()
 
 	s.repoman = NewRepoMan(s) // TODO: this is way too lazy, stop it
+	s.spaceRepoMan = NewSpaceRepoMan(s)
 
 	// TODO: should validate these args
 	if args.SmtpUser == "" || args.SmtpPass == "" || args.SmtpHost == "" || args.SmtpPort == "" || args.SmtpEmail == "" || args.SmtpName == "" {
@@ -491,6 +505,62 @@ func New(args *Args) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+type spaceRoute struct {
+	method  string
+	id      string
+	handler echo.HandlerFunc
+	policy  AuthPolicy
+}
+
+func (s *Server) addSpaceRoutes() {
+	routes := []spaceRoute{
+		{http.MethodPost, "com.atproto.space.createRecord", s.handleSpaceCreateRecord, PolicyOAuthOnly},
+		{http.MethodPost, "com.atproto.space.putRecord", s.handleSpacePutRecord, PolicyOAuthOnly},
+		{http.MethodPost, "com.atproto.space.deleteRecord", s.handleSpaceDeleteRecord, PolicyOAuthOnly},
+		{http.MethodPost, "com.atproto.space.applyWrites", s.handleSpaceApplyWrites, PolicyOAuthOnly},
+		{http.MethodGet, "com.atproto.space.listSpaces", s.handleSpaceListSpaces, PolicyOAuthOnly},
+		{http.MethodGet, "com.atproto.space.getDelegationToken", s.handleSpaceGetDelegationToken, PolicyOAuthOnly},
+		{http.MethodGet, "com.atproto.space.getRecord", s.handleSpaceGetRecord, PolicyOAuthOrSpace},
+		{http.MethodGet, "com.atproto.space.listRecords", s.handleSpaceListRecords, PolicyOAuthOrSpace},
+		{http.MethodGet, "com.atproto.space.getBlob", s.handleSpaceGetBlob, PolicyOAuthOrSpace},
+		{http.MethodGet, "com.atproto.space.listBlobs", s.handleSpaceListBlobs, PolicyOAuthOrSpace},
+		{http.MethodGet, "com.atproto.space.getLatestCommit", s.handleSpaceGetLatestCommit, PolicyOAuthOrSpace},
+		{http.MethodGet, "com.atproto.space.getRepo", s.handleSpaceGetRepo, PolicyOAuthOrSpace},
+		{http.MethodGet, "com.atproto.space.listRepoOps", s.handleSpaceListRepoOps, PolicyOAuthOrSpace},
+		{http.MethodGet, "com.atproto.space.listRepos", s.handleSpaceListRepos, PolicySpaceCredentialOnly},
+		{http.MethodPost, "com.atproto.space.getSpaceCredential", s.handleSpaceGetSpaceCredential, PolicyDelegationExchange},
+		{http.MethodPost, "com.atproto.space.registerNotify", s.handleSpaceRegisterNotify, PolicySpaceCredentialOnly},
+		{http.MethodPost, "com.atproto.space.unregisterNotify", s.handleSpaceUnregisterNotify, PolicySpaceCredentialOnly},
+		{http.MethodPost, "com.atproto.space.notifyWrite", s.handleSpaceNotifyWrite, PolicyServiceAuthOnly},
+		{http.MethodPost, "com.atproto.space.notifySpaceDeleted", s.handleSpaceNotifySpaceDeleted, PolicyServiceAuthOnly},
+		{http.MethodPost, "com.atproto.simplespace.createSpace", s.handleSimpleSpaceCreateSpace, PolicyOAuthOnly},
+		{http.MethodPost, "com.atproto.simplespace.updateSpace", s.handleSimpleSpaceUpdateSpace, PolicyOAuthOnly},
+		{http.MethodPost, "com.atproto.simplespace.deleteSpace", s.handleSimpleSpaceDeleteSpace, PolicyOAuthOnly},
+		{http.MethodGet, "com.atproto.simplespace.getSpace", s.handleSimpleSpaceGetSpace, PolicyOAuthOrSpace},
+		{http.MethodPost, "com.atproto.simplespace.addMember", s.handleSimpleSpaceAddMember, PolicyOAuthOnly},
+		{http.MethodPost, "com.atproto.simplespace.removeMember", s.handleSimpleSpaceRemoveMember, PolicyOAuthOnly},
+		{http.MethodGet, "com.atproto.simplespace.listMembers", s.handleSimpleSpaceListMembers, PolicyOAuthOnly},
+	}
+	for _, route := range routes {
+		s.echo.Add(route.method, "/xrpc/"+route.id, s.AuthDispatcher(route.policy, route.handler))
+	}
+}
+
+func (s *Server) handleUnsupportedSpacesNamespace(e echo.Context) error {
+	return e.JSON(http.StatusNotImplemented, map[string]string{
+		"error":   "NotSupported",
+		"message": "Atproto Spaces is not supported by this server",
+	})
+}
+
+func (s *Server) addSpacesNamespaceGuards() {
+	for _, namespace := range []string{"com.atproto.space.", "com.atproto.simplespace."} {
+		path := "/xrpc/" + namespace + "*"
+		s.echo.GET(path, s.handleUnsupportedSpacesNamespace)
+		s.echo.POST(path, s.handleUnsupportedSpacesNamespace)
+	}
 }
 
 func (s *Server) addRoutes() {
@@ -591,6 +661,14 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCode", s.handleCreateInviteCode, s.handleAdminMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCodes", s.handleCreateInviteCodes, s.handleAdminMiddleware)
 
+	// Spaces routes use one explicit principal policy each and never pass through
+	// the legacy middleware chain. Namespace guards keep disabled or unimplemented
+	// alpha methods local so permissioned requests can never reach handleProxy.
+	if s.config.SpacesEnabled {
+		s.addSpaceRoutes()
+	}
+	s.addSpacesNamespaceGuards()
+
 	// are there any routes that we should be allowing without auth? i dont think so but idk
 	s.echo.GET("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
@@ -603,7 +681,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	logger.Info("migrating...")
 
-	s.db.AutoMigrate(
+	migrationModels := []any{
 		&models.Actor{},
 		&models.Repo{},
 		&models.InviteCode{},
@@ -616,9 +694,17 @@ func (s *Server) Serve(ctx context.Context) error {
 		&models.ReservedKey{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
-	)
+	}
+	migrationModels = append(migrationModels, models.SpaceModels()...)
+	if err := s.db.AutoMigrate(migrationModels...); err != nil {
+		return fmt.Errorf("failed to migrate database: %w", err)
+	}
 
 	logger.Info("starting cocoon")
+
+	if s.config.SpacesEnabled && s.spaceNotifySender != nil {
+		go s.runSpaceNotificationWorker(ctx)
+	}
 
 	go func() {
 		if err := s.httpd.ListenAndServe(); err != nil {

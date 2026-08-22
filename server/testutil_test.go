@@ -53,7 +53,7 @@ func newTestServer(t *testing.T) *Server {
 	gdb.Exec("PRAGMA busy_timeout=5000")
 
 	dbw := db.NewDB(gdb)
-	if err := dbw.AutoMigrate(
+	migrationModels := []any{
 		&models.Actor{},
 		&models.Repo{},
 		&models.InviteCode{},
@@ -66,7 +66,9 @@ func newTestServer(t *testing.T) *Server {
 		&models.ReservedKey{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
-	); err != nil {
+	}
+	migrationModels = append(migrationModels, models.SpaceModels()...)
+	if err := dbw.AutoMigrate(migrationModels...); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 

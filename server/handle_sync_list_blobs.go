@@ -52,7 +52,10 @@ func (s *Server) handleSyncListBlobs(e echo.Context) error {
 	}
 
 	var blobs []models.Blob
-	if err := s.db.Raw(ctx, "SELECT * FROM blobs WHERE did = ? "+cursorquery+" ORDER BY created_at DESC LIMIT ?", nil, params...).Scan(&blobs).Error; err != nil {
+	// Blob.RefCount is the public-repository reference count. Permissioned Space
+	// references live in space_blob_refs and intentionally do not make an upload
+	// visible through this unauthenticated public sync endpoint.
+	if err := s.db.Raw(ctx, "SELECT * FROM blobs WHERE did = ? AND ref_count > 0 "+cursorquery+" ORDER BY created_at DESC LIMIT ?", nil, params...).Scan(&blobs).Error; err != nil {
 		logger.Error("error getting records", "error", err)
 		return helpers.ServerError(e, nil)
 	}

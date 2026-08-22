@@ -50,8 +50,13 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 			return helpers.ServerError(e, nil)
 		}
 
-		// move on to oauth session middleware if this is a dpop token
+		// OAuth DPoP access tokens use typ=JWT. Do not forward recognized
+		// Space token types into the legacy OAuth token-table middleware;
+		// Space routes must select one of the standalone policies instead.
 		if pts[0] == "DPoP" {
+			if kind, err := classifyDPoPToken(pts[1]); err == nil && kind != authTokenOAuth {
+				return authUnauthorized(e, "Space token requires a Space authentication policy")
+			}
 			return next(e)
 		}
 
@@ -225,6 +230,17 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 		e.Set("repo", repo)
 		e.Set("did", did)
 		e.Set("token", tokenstr)
+		if hasLxm {
+			lxmString, _ := claims["lxm"].(string)
+			audString, _ := claims["aud"].(string)
+			SetPrincipal(e, &ServiceAuthPrincipal{
+				Issuer:   did,
+				Audience: audString,
+				LXM:      lxmString,
+				Token:    tokenstr,
+				Repo:     repo,
+			})
+		}
 
 		if err := next(e); err != nil {
 			return helpers.InvalidTokenError(e)
@@ -251,6 +267,9 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 
 		if pts[0] != "DPoP" {
 			return next(e)
+		}
+		if kind, err := classifyDPoPToken(pts[1]); err == nil && kind != authTokenOAuth {
+			return authUnauthorized(e, "Space token requires a Space authentication policy")
 		}
 
 		accessToken := pts[1]
@@ -294,7 +313,7 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 			})
 		}
 
-		if *oauthToken.Parameters.DpopJkt != proof.JKT {
+		if oauthToken.Parameters.DpopJkt == nil || *oauthToken.Parameters.DpopJkt != proof.JKT {
 			logger.Error("jkt mismatch", "token", oauthToken.Parameters.DpopJkt, "proof", proof.JKT)
 			return helpers.InputError(e, to.StringPtr("dpop jkt mismatch"))
 		}
@@ -318,6 +337,7 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		e.Set("did", repo.Repo.Did)
 		e.Set("token", accessToken)
 		e.Set("scopes", strings.Split(oauthToken.Parameters.Scope, " "))
+		setOAuthPrincipal(e, &oauthToken, accessToken, repo)
 
 		return next(e)
 	}

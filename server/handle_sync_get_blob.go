@@ -49,9 +49,16 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 	}
 
 	var blob models.Blob
-	if err := s.db.Raw(ctx, "SELECT * FROM blobs WHERE did = ? AND cid = ?", nil, did, c.Bytes()).Scan(&blob).Error; err != nil {
-		logger.Error("error looking up blob", "error", err)
+	// Uploading a blob does not make it public. Only a reference from the
+	// account's public repository increments Blob.RefCount; SpaceBlobRef is tracked
+	// separately and must never authorize this unauthenticated sync endpoint.
+	result := s.db.Raw(ctx, "SELECT * FROM blobs WHERE did = ? AND cid = ? AND ref_count > 0", nil, did, c.Bytes()).Scan(&blob)
+	if result.Error != nil {
+		logger.Error("error looking up blob", "error", result.Error)
 		return helpers.ServerError(e, nil)
+	}
+	if result.RowsAffected == 0 || blob.ID == 0 {
+		return helpers.InputError(e, to.StringPtr("BlobNotFound"))
 	}
 
 	buf := new(bytes.Buffer)

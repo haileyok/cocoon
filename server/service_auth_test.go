@@ -49,22 +49,48 @@ func mintServiceAuthToken(t *testing.T, signingKey []byte, iss, aud, lxm string,
 	return input + "." + base64.RawURLEncoding.EncodeToString(rawsig)
 }
 
+func cloneClaims(claims jwt.MapClaims) jwt.MapClaims {
+	cloned := make(jwt.MapClaims, len(claims))
+	for key, value := range claims {
+		cloned[key] = value
+	}
+	return cloned
+}
+
 func TestValidateServiceAuthClaims(t *testing.T) {
 	const (
 		wantAud = "did:web:pds.test"
 		wantLxm = "com.atproto.server.createAccount"
 	)
 
+	now := time.Now()
+	baseClaims := jwt.MapClaims{
+		"aud": wantAud, "lxm": wantLxm, "jti": "test-jti",
+		"iat": now.Add(-time.Second).Unix(), "exp": now.Add(time.Minute).Unix(),
+	}
 	tests := []struct {
 		name    string
 		claims  jwt.MapClaims
 		wantErr bool
 	}{
-		{"valid", jwt.MapClaims{"aud": wantAud, "lxm": wantLxm}, false},
-		{"wrong aud", jwt.MapClaims{"aud": "did:web:evil.example", "lxm": wantLxm}, true},
-		{"missing aud", jwt.MapClaims{"lxm": wantLxm}, true},
-		{"wrong lxm", jwt.MapClaims{"aud": wantAud, "lxm": "com.atproto.repo.createRecord"}, true},
-		{"missing lxm", jwt.MapClaims{"aud": wantAud}, true},
+		{"valid", baseClaims, false},
+		{"missing jti", func() jwt.MapClaims { c := cloneClaims(baseClaims); delete(c, "jti"); return c }(), true},
+		{"missing iat", func() jwt.MapClaims { c := cloneClaims(baseClaims); delete(c, "iat"); return c }(), true},
+		{"missing exp", func() jwt.MapClaims { c := cloneClaims(baseClaims); delete(c, "exp"); return c }(), true},
+		{"expired", func() jwt.MapClaims { c := cloneClaims(baseClaims); c["exp"] = now.Add(-time.Second).Unix(); return c }(), true},
+		{"future iat", func() jwt.MapClaims {
+			c := cloneClaims(baseClaims)
+			c["iat"] = now.Add(serviceAuthClockSkew + time.Second).Unix()
+			return c
+		}(), true},
+		{"wrong aud", func() jwt.MapClaims { c := cloneClaims(baseClaims); c["aud"] = "did:web:evil.example"; return c }(), true},
+		{"missing aud", func() jwt.MapClaims { c := cloneClaims(baseClaims); delete(c, "aud"); return c }(), true},
+		{"wrong lxm", func() jwt.MapClaims {
+			c := cloneClaims(baseClaims)
+			c["lxm"] = "com.atproto.repo.createRecord"
+			return c
+		}(), true},
+		{"missing lxm", func() jwt.MapClaims { c := cloneClaims(baseClaims); delete(c, "lxm"); return c }(), true},
 	}
 
 	for _, tt := range tests {

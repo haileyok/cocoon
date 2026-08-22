@@ -9,6 +9,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16.4
+        env:
+          POSTGRES_USER: cocoon
+          POSTGRES_PASSWORD: cocoon
+          POSTGRES_DB: cocoon_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cocoon -d cocoon_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     env:
       CGO_ENABLED: "1"
     steps:
@@ -26,3 +40,10 @@ jobs:
 
       - name: Test
         run: go test -race ./...
+
+      - name: PostgreSQL Space repository contracts
+        env:
+          COCOON_TEST_POSTGRES_DSN: postgres://cocoon:cocoon@localhost:5432/cocoon_test?sslmode=disable
+        run: >
+          go test -race ./server
+          -run '^(TestPostgresSpaceRepoCompositeIdentityIsolation|TestPostgresSpaceRepoNullableCIDPrevSemantics|TestPostgresSpaceRepoAtomicRollback|TestPostgresSpaceRepoConcurrentWrites|TestPostgresSpaceRepoDurableReplayConcurrency)$'

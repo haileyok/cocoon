@@ -36,6 +36,8 @@ type Repo struct {
 	Root                           []byte
 	Preferences                    []byte
 	Deactivated                    bool
+	Suspended                      bool
+	Takendown                      bool
 	TwoFactorCode                  *string
 	TwoFactorCodeExpiresAt         *time.Time
 	TwoFactorType                  TwoFactorType `gorm:"default:none"`
@@ -56,11 +58,18 @@ func (r *Repo) SignFor(ctx context.Context, did string, msg []byte) ([]byte, err
 }
 
 func (r *Repo) Status() *string {
-	var status *string
-	if r.Deactivated {
-		status = to.StringPtr("deactivated")
+	// Moderation states take precedence over user-controlled deactivation so
+	// callers return the strongest authoritative availability restriction.
+	if r.Takendown {
+		return to.StringPtr("takendown")
 	}
-	return status
+	if r.Suspended {
+		return to.StringPtr("suspended")
+	}
+	if r.Deactivated {
+		return to.StringPtr("deactivated")
+	}
+	return nil
 }
 
 func (r *Repo) Active() bool {
