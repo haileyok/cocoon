@@ -41,6 +41,7 @@ type CreateDpopProofOptions struct {
 	Credential        string
 	CredentialPresent bool
 	JTI               string
+	Nonce             string
 	Now               func() time.Time
 	Random            io.Reader
 }
@@ -101,6 +102,9 @@ func CreateDpopProof(signer DPoPSigner, opts CreateDpopProofOptions) (string, er
 		return "", fmt.Errorf("invalid DPoP public JWK: %w", err)
 	}
 	claims := dpopClaims{JTI: opts.JTI, HTM: method, HTU: normalized, IAT: opts.Now().Unix()}
+	if opts.Nonce != "" {
+		claims.Nonce = &opts.Nonce
+	}
 	if opts.CredentialPresent || opts.Credential != "" {
 		if opts.Credential == "" {
 			return "", errors.New("credential must not be empty")
@@ -144,7 +148,9 @@ type VerifyDpopProofOptions struct {
 }
 
 // VerifyDpopProof checks signature, method, normalized URL, age, embedded-key
-// thumbprint, and ath. Replay is consumed atomically after every other check.
+// thumbprint, ath, and the optional nonce claim's type. Replay is consumed
+// atomically after every other check. Space hosts may accept a nonce issued for
+// another DPoP-protected endpoint without requiring one of their own.
 func VerifyDpopProof(ctx context.Context, raw string, opts VerifyDpopProofOptions) (DpopProof, error) {
 	method := opts.Htm
 	if method == "" {
@@ -181,7 +187,7 @@ func VerifyDpopProof(ctx context.Context, raw string, opts VerifyDpopProofOption
 	if err != nil {
 		return DpopProof{}, authErr("BadDpopProof", "invalid DPoP header", err)
 	}
-	cm, err := strictObject(cb, map[string]bool{"jti": true, "htm": true, "htu": true, "iat": true, "ath": true})
+	cm, err := strictObject(cb, map[string]bool{"jti": true, "htm": true, "htu": true, "iat": true, "ath": true, "nonce": true})
 	if err != nil {
 		return DpopProof{}, authErr("BadDpopProof", "invalid DPoP claims", err)
 	}
@@ -223,6 +229,12 @@ func VerifyDpopProof(ctx context.Context, raw string, opts VerifyDpopProofOption
 	iat, err := requiredInt64(cm, "iat")
 	if err != nil || iat <= 0 {
 		return DpopProof{}, authErr("BadDpopProof", "DPoP iat is required", err)
+	}
+	if rawNonce, ok := cm["nonce"]; ok {
+		nonce, nonceErr := stringValue(rawNonce)
+		if nonceErr != nil || nonce == "" {
+			return DpopProof{}, authErr("BadDpopNonce", "invalid DPoP nonce", nonceErr)
+		}
 	}
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -378,11 +390,12 @@ type dpopHeader struct {
 	JWK json.RawMessage `json:"jwk"`
 }
 type dpopClaims struct {
-	JTI string  `json:"jti"`
-	HTM string  `json:"htm"`
-	HTU string  `json:"htu"`
-	Ath *string `json:"ath,omitempty"`
-	IAT int64   `json:"iat"`
+	JTI   string  `json:"jti"`
+	HTM   string  `json:"htm"`
+	HTU   string  `json:"htu"`
+	Ath   *string `json:"ath,omitempty"`
+	Nonce *string `json:"nonce,omitempty"`
+	IAT   int64   `json:"iat"`
 }
 type p256JWK struct {
 	Kty string `json:"kty"`
