@@ -226,7 +226,7 @@ func upsertSpaceWriterSnapshot(ctx context.Context, tx *db.DB, spaceURI, author,
 		Columns:   []clause.Column{{Name: "space"}, {Name: "author"}},
 		DoUpdates: clause.Assignments(updates),
 		Where: clause.Where{Exprs: []clause.Expression{
-			clause.Expr{SQL: "rev = ? OR rev < excluded.rev", Vars: []any{""}},
+			clause.Expr{SQL: "space_writers.rev = ? OR space_writers.rev < excluded.rev", Vars: []any{""}},
 		}},
 	}).Create(writer)
 	if result.Error != nil {

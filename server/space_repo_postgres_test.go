@@ -404,9 +404,19 @@ func TestPostgresSpaceRepoDurableReplayConcurrency(t *testing.T) {
 	if err := freshStore.Consume(ctx, jti, "delegation", deadline); !errors.Is(err, space.ErrReplay) {
 		t.Fatalf("durable replay after reopen error = %v, want ErrReplay", err)
 	}
+	var rows []models.SpaceReplayJTI
+	if err := reopened.Where("token_type = ?", "delegation").Find(&rows).Error; err != nil {
+		t.Fatalf("load durable replay rows: %v", err)
+	}
 	var row models.SpaceReplayJTI
-	if err := reopened.First(&row, "jti = ?", jti).Error; err != nil {
-		t.Fatalf("load durable replay row: %v", err)
+	for _, candidate := range rows {
+		if strings.HasSuffix(candidate.JTI, ":"+jti) {
+			row = candidate
+			break
+		}
+	}
+	if row.JTI == "" {
+		t.Fatalf("durable replay row for %q not found in %+v", jti, rows)
 	}
 	if row.TokenType != "delegation" {
 		t.Fatalf("durable replay token type = %q, want delegation", row.TokenType)
