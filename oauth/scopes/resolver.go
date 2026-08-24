@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,6 +19,13 @@ import (
 // resolves to a valid permission-set record, or an error otherwise.
 type PermissionSetResolver interface {
 	ResolvePermissionSet(ctx context.Context, nsid string) (*lexicon.SchemaPermissionSet, error)
+}
+
+// PermissionSetScopeResolver optionally materializes a permission set into
+// OAuth scope strings. It is separate from PermissionSetResolver because older
+// resolver implementations may parse only the repo/rpc permission fields.
+type PermissionSetScopeResolver interface {
+	ResolvePermissionSetScopes(ctx context.Context, nsid string) ([]string, error)
 }
 
 // directory is the subset of indigo's identity.Directory used here.
@@ -65,6 +74,154 @@ func (r *IndigoResolver) ResolvePermissionSet(ctx context.Context, nsidStr strin
 	ps, err := r.resolve(ctx, nsidStr)
 	r.store(nsidStr, ps, err)
 	return ps, err
+}
+
+// ResolvePermissionSetScopes materializes all supported permissions in a
+// permission-set lexicon. The generic Indigo SchemaPermission type predates the
+// Spaces permission fields and silently drops them during JSON unmarshalling,
+// so this path reads the resolved lexicon data into a local wire-shape instead.
+func (r *IndigoResolver) ResolvePermissionSetScopes(ctx context.Context, nsidStr string) ([]string, error) {
+	nsid, err := syntax.ParseNSID(nsidStr)
+	if err != nil || string(nsid) != nsidStr {
+		return nil, fmt.Errorf("invalid permission set %q", nsidStr)
+	}
+	data, err := lexicon.ResolveLexiconData(ctx, r.dir, nsid)
+	if err != nil {
+		return nil, fmt.Errorf("could not resolve permission set %q: %w", nsidStr, err)
+	}
+	return expandPermissionSetScopes(data, nsidStr)
+}
+
+type rawPermissionSet struct {
+	Lexicon int                        `json:"lexicon"`
+	ID      string                     `json:"id"`
+	Defs    map[string]json.RawMessage `json:"defs"`
+}
+
+type rawPermission struct {
+	Type       string   `json:"type"`
+	Resource   string   `json:"resource"`
+	Collection []string `json:"collection"`
+	Action     []string `json:"action"`
+	LXM        []string `json:"lxm"`
+	Audience   string   `json:"aud"`
+	InheritAud bool     `json:"inheritAud"`
+
+	SpaceType string   `json:"spaceType"`
+	Authority string   `json:"authority"`
+	SKey      string   `json:"skey"`
+	Manage    []string `json:"manage"`
+}
+
+func expandPermissionSetScopes(data map[string]any, nsid string) ([]string, error) {
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("encode permission set %q: %w", nsid, err)
+	}
+	var document rawPermissionSet
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		return nil, fmt.Errorf("decode permission set %q: %w", nsid, err)
+	}
+	if document.Lexicon != 1 || document.ID != nsid || document.Defs == nil {
+		return nil, fmt.Errorf("invalid permission set identity for %q", nsid)
+	}
+	mainRaw, ok := document.Defs["main"]
+	if !ok {
+		return nil, fmt.Errorf("permission set %q has no main definition", nsid)
+	}
+	var main struct {
+		Type        string          `json:"type"`
+		Permissions []rawPermission `json:"permissions"`
+	}
+	if err := json.Unmarshal(mainRaw, &main); err != nil {
+		return nil, fmt.Errorf("decode permission set %q main definition: %w", nsid, err)
+	}
+	if main.Type != "permission-set" {
+		return nil, fmt.Errorf("permission set %q has invalid main definition", nsid)
+	}
+
+	var out []string
+	for _, permission := range main.Permissions {
+		scopes, err := rawPermissionScopes(permission, nsid)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, scopes...)
+	}
+	return out, nil
+}
+
+func rawPermissionScopes(permission rawPermission, permissionSetNSID string) ([]string, error) {
+	if permission.Type != "permission" {
+		return nil, fmt.Errorf("permission set %q contains an invalid permission entry", permissionSetNSID)
+	}
+	switch permission.Resource {
+	case "repo":
+		var out []string
+		for _, collection := range permission.Collection {
+			if len(permission.Action) == 0 {
+				out = append(out, "repo:"+collection)
+				continue
+			}
+			for _, action := range permission.Action {
+				out = append(out, "repo:"+collection+"?action="+action)
+			}
+		}
+		return out, nil
+	case "rpc":
+		var out []string
+		for _, lxm := range permission.LXM {
+			audience := permission.Audience
+			if audience == "" {
+				audience = "*"
+			}
+			out = append(out, "rpc:"+lxm+"?aud="+audience)
+		}
+		return out, nil
+	case "space":
+		if permission.SpaceType == "" || !permissionSetContains(permissionSetNSID, permission.SpaceType) {
+			return nil, fmt.Errorf("space permission in %q has invalid space type %q", permissionSetNSID, permission.SpaceType)
+		}
+		params := url.Values{}
+		if permission.Authority != "" {
+			params.Set("authority", permission.Authority)
+		}
+		if permission.SKey != "" {
+			params.Set("skey", permission.SKey)
+		}
+		for _, collection := range permission.Collection {
+			params.Add("collection", collection)
+		}
+		for _, action := range permission.Action {
+			params.Add("action", action)
+		}
+		for _, manage := range permission.Manage {
+			params.Add("manage", manage)
+		}
+		scope := "space:" + permission.SpaceType
+		if encoded := params.Encode(); encoded != "" {
+			scope += "?" + encoded
+		}
+		if _, err := Parse(scope); err != nil {
+			return nil, fmt.Errorf("space permission in %q is invalid: %w", permissionSetNSID, err)
+		}
+		return []string{scope}, nil
+	default:
+		// Permission sets may contain resources that this server does not yet
+		// materialize. Match the reference behavior by ignoring those entries.
+		return nil, nil
+	}
+}
+
+func permissionSetContains(permissionSetNSID, target string) bool {
+	if target == "" || target == "*" {
+		return false
+	}
+	dot := strings.LastIndexByte(permissionSetNSID, '.')
+	if dot < 0 || len(target) <= dot+1 {
+		return false
+	}
+	return strings.HasPrefix(target, permissionSetNSID[:dot+1])
 }
 
 func (r *IndigoResolver) resolve(ctx context.Context, nsidStr string) (*lexicon.SchemaPermissionSet, error) {

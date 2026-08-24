@@ -294,6 +294,13 @@ func (s *Server) expandScopes(ctx context.Context, rawScope string) string {
 		if sc.Resource != scopes.ResourceInclude {
 			continue
 		}
+		if resolver, ok := s.scopeResolver.(scopes.PermissionSetScopeResolver); ok {
+			expanded, err := resolver.ResolvePermissionSetScopes(ctx, sc.Nsid)
+			if err == nil {
+				out = append(out, expanded...)
+			}
+			continue
+		}
 		ps, err := s.scopeResolver.ResolvePermissionSet(ctx, sc.Nsid)
 		if err != nil || ps == nil {
 			continue
