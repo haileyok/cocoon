@@ -174,3 +174,38 @@ func TestClientAssertionClockSkew(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleOauthParWithoutDpopProof verifies that a PAR request without a
+// DPoP proof header or dpop_jkt parameter is rejected with use_dpop_nonce,
+// not a panic.
+func TestHandleOauthParWithoutDpopProof(t *testing.T) {
+	s := newTestServer(t)
+	attachOauthProvider(t, s)
+
+	body := parForm("http://127.0.0.1/")
+	c, rec := newRequestContext(http.MethodPost, "/oauth/par", body, map[string]string{
+		"Content-Type": "application/x-www-form-urlencoded",
+	})
+
+	if err := s.handleOauthPar(c); err != nil {
+		c.Error(err)
+	}
+
+	if rec.Code != 400 {
+		t.Fatalf("expected 400 for PAR without DPoP, got %d (body %s)", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if resp["error"] != "use_dpop_nonce" {
+		t.Fatalf("expected error use_dpop_nonce, got %q", resp["error"])
+	}
+	if rec.Header().Get("DPoP-Nonce") == "" {
+		t.Fatal("expected DPoP-Nonce header in response")
+	}
+	if n := countAuthRequests(t, s); n != 0 {
+		t.Fatalf("expected no authorization request rows, got %d", n)
+	}
+}

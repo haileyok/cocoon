@@ -76,7 +76,25 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 
 	if parRequest.DpopJkt == nil {
 		if client.Metadata.DpopBoundAccessTokens {
-			parRequest.DpopJkt = to.StringPtr(dpopProof.JKT)
+			if dpopProof != nil {
+				parRequest.DpopJkt = to.StringPtr(dpopProof.JKT)
+			} else {
+				// RFC 9449§10.1 when PAR and DPoP are used together, the
+				// client must provide either a dpop_jkt parameter or a DPoP proof
+				// header.
+				// n.b. The reference PDS implementation is lenient to this
+				// behaviour currently but it's stated as deprecated.
+				// https://atproto.com/blog/oauth-improvements#deprecation-notice
+				nonce := s.oauthProvider.NextNonce()
+				if nonce != "" {
+					e.Response().Header().Set("DPoP-Nonce", nonce)
+					e.Response().Header().Add("access-control-expose-headers", "DPoP-Nonce")
+				}
+				logger.Error("no dpop_jkt and no dpop proof: use_dpop_nonce")
+				return e.JSON(400, map[string]string{
+					"error": "use_dpop_nonce",
+				})
+			}
 		}
 	} else {
 		if !client.Metadata.DpopBoundAccessTokens {
@@ -85,7 +103,7 @@ func (s *Server) handleOauthPar(e echo.Context) error {
 			return helpers.InputError(e, &msg)
 		}
 
-		if dpopProof.JKT != *parRequest.DpopJkt {
+		if dpopProof != nil && dpopProof.JKT != *parRequest.DpopJkt {
 			msg := "supplied dpop jkt does not match header dpop jkt"
 			logger.Error(msg)
 			return helpers.InputError(e, &msg)
