@@ -25,6 +25,12 @@ func (s *Server) validateRequestedScopes(ctx context.Context, scope string) erro
 		if s.scopeResolver == nil {
 			continue
 		}
+		if resolver, ok := s.scopeResolver.(scopes.PermissionSetScopeResolver); ok {
+			if _, err := resolver.ResolvePermissionSetScopes(ctx, sc.Nsid); err != nil {
+				return fmt.Errorf("include scope %q could not be materialized: %w", sc.Raw, err)
+			}
+			continue
+		}
 		if _, err := s.scopeResolver.ResolvePermissionSet(ctx, sc.Nsid); err != nil {
 			return fmt.Errorf("include scope %q could not be resolved: %w", sc.Raw, err)
 		}

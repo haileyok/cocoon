@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/bluesky-social/indigo/atproto/lexicon"
+	"github.com/haileyok/cocoon/oauth/scopes"
 )
 
 // stubResolver is a hermetic PermissionSetResolver: only NSIDs in valid resolve.
@@ -21,6 +23,18 @@ func (r stubResolver) ResolvePermissionSet(ctx context.Context, nsid string) (*l
 		return &lexicon.SchemaPermissionSet{}, nil
 	}
 	return nil, fmt.Errorf("permission set %q not found", nsid)
+}
+
+type expandedScopeResolver struct {
+	scopes []string
+}
+
+func (r expandedScopeResolver) ResolvePermissionSet(ctx context.Context, nsid string) (*lexicon.SchemaPermissionSet, error) {
+	return &lexicon.SchemaPermissionSet{}, nil
+}
+
+func (r expandedScopeResolver) ResolvePermissionSetScopes(ctx context.Context, nsid string) ([]string, error) {
+	return append([]string(nil), r.scopes...), nil
 }
 
 func parScopeForm(scope string) string {
@@ -100,4 +114,26 @@ func TestParAcceptsLegacyScopes(t *testing.T) {
 	if code != 201 {
 		t.Fatalf("expected 201 for legacy scopes, got %d (%v)", code, body)
 	}
+}
+
+func TestExpandScopesIncludesSpacePermissionSetEntries(t *testing.T) {
+	s := newTestServer(t)
+	s.scopeResolver = expandedScopeResolver{scopes: []string{
+		"space:my.bulletin.board?authority=*&skey=self&collection=my.bulletin.post&collection=my.bulletin.removal&collection=my.bulletin.position&action=read&action=create&action=update&action=delete&manage=create&manage=update&manage=delete",
+	}}
+
+	got := s.expandScopes(context.Background(), "atproto include:my.bulletin.permissions")
+	if !strings.Contains(got, "space:my.bulletin.board") {
+		t.Fatalf("expanded scopes = %q, missing space permission", got)
+	}
+	parsed, err := scopes.ParseList(got)
+	if err != nil {
+		t.Fatalf("parse expanded scopes: %v", err)
+	}
+	for _, grant := range parsed {
+		if grant.Resource == scopes.ResourceSpace && grant.SpaceType == "my.bulletin.board" {
+			return
+		}
+	}
+	t.Fatalf("expanded scopes = %q, no parsed space permission", got)
 }

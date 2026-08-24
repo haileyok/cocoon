@@ -2,6 +2,7 @@ package scopes
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -434,5 +435,58 @@ func TestExistingRepoScopesUnaffected(t *testing.T) {
 	}
 	if include.Resource != ResourceInclude || include.Nsid != "site.standard.authFull" {
 		t.Fatal("include scope behavior changed")
+	}
+}
+
+func TestExpandPermissionSetScopesIncludesSpacePermission(t *testing.T) {
+	var data map[string]any
+	if err := json.Unmarshal([]byte(`{
+		"lexicon": 1,
+		"id": "my.bulletin.permissions",
+		"defs": {"main": {
+			"type": "permission-set",
+			"permissions": [{
+				"type": "permission",
+				"resource": "space",
+				"spaceType": "my.bulletin.board",
+				"authority": "*",
+				"skey": "self",
+				"collection": ["my.bulletin.post", "my.bulletin.removal", "my.bulletin.position"],
+				"action": ["read", "create", "update", "delete"],
+				"manage": ["create", "update", "delete"]
+			}]
+		}}
+	}`), &data); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := expandPermissionSetScopes(data, "my.bulletin.permissions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expanded scopes = %#v", got)
+	}
+	grant, err := Parse(got[0])
+	if err != nil {
+		t.Fatalf("parse expanded space scope %q: %v", got[0], err)
+	}
+	if grant.Resource != ResourceSpace || grant.SpaceType != "my.bulletin.board" || grant.Authority != "*" || grant.SKey != "self" {
+		t.Fatalf("expanded space grant = %#v", grant)
+	}
+	for _, collection := range []string{"my.bulletin.post", "my.bulletin.removal", "my.bulletin.position"} {
+		if !contains(grant.Collections, collection) {
+			t.Fatalf("expanded space grant missing collection %q: %#v", collection, grant)
+		}
+	}
+	for _, action := range []string{"read", "create", "update", "delete"} {
+		if !contains(grant.Actions, action) {
+			t.Fatalf("expanded space grant missing action %q: %#v", action, grant)
+		}
+	}
+	for _, operation := range []string{"create", "update", "delete"} {
+		if !contains(grant.Manage, operation) {
+			t.Fatalf("expanded space grant missing manage operation %q: %#v", operation, grant)
+		}
 	}
 }
