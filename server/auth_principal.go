@@ -475,8 +475,8 @@ func (s *Server) AuthDispatcher(policy AuthPolicy, next echo.HandlerFunc) echo.H
 			return authUnauthorized(e, "read route requires DPoP OAuth or a Space credential")
 
 		case PolicyDelegationExchange:
-			if scheme != "dpop" {
-				return authUnauthorized(e, "delegation exchange requires DPoP authorization")
+			if scheme != "bearer" && scheme != "dpop" {
+				return authUnauthorized(e, "delegation exchange requires Bearer or DPoP authorization")
 			}
 			kind, err := classifyDPoPToken(raw)
 			if err != nil || kind != authTokenDelegation {
