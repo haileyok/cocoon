@@ -165,6 +165,40 @@ func TestOAuthTokenIsNotAcceptedAsSpaceCredential(t *testing.T) {
 	}
 }
 
+func TestDelegationExchangeAcceptsBearerDelegationToken(t *testing.T) {
+	s := newTestServer(t)
+	target := "https://pds.test/xrpc/com.atproto.space.getSpaceCredential"
+	fixture := newSpaceAuthFixture(t, http.MethodPost, target)
+	installSpaceFixture(s, fixture)
+
+	delegation, err := space.CreateDelegationToken(space.CreateSpaceTokenOptions{
+		Iss: authTestAuthority, Sub: authTestSpace,
+		Aud: authTestAuthority + space.SpaceHostAudienceSuffix,
+		JTI: "server-auth-delegation-bearer",
+	}, fixture.authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := space.CreateDpopProof(fixture.proofSigner, space.CreateDpopProofOptions{
+		Htm: http.MethodPost, Htu: target, JTI: "server-auth-delegation-proof",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	called, c, code := runAuthMiddleware(t, s.DelegationExchange, http.MethodPost, target, map[string]string{
+		"Authorization": "Bearer " + delegation,
+		"DPoP":          proof,
+	})
+	if !called || code != http.StatusOK {
+		t.Fatalf("Bearer delegation exchange called=%v status=%d", called, code)
+	}
+	principal, ok := PrincipalFromContext(c).(*DelegationPrincipal)
+	if !ok || principal.SpaceURI != authTestSpace || principal.AuthorityDID != authTestAuthority {
+		t.Fatalf("delegation principal = %#v", PrincipalFromContext(c))
+	}
+}
+
 func TestOAuthOnlyDispatchesLegacySessionBearer(t *testing.T) {
 	s := newTestServer(t)
 	account := s.createTestAccount(t, "legacy-space-auth.pds.test")
