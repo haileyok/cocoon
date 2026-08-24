@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -103,8 +104,11 @@ func TestSpaceRepoRollbackAtEachFailureStage(t *testing.T) {
 			}
 			var opCount int64
 			s.db.Client().Model(&models.SpaceRepoOp{}).Where("space = ? AND author = ?", testSpaceRef, testAuthor).Count(&opCount)
-			if len(repos) != btoi(stage != SpaceRepoFailureAfterRepoCreation) || len(records) != btoi(stage != SpaceRepoFailureAfterRepoCreation) || opCount != int64(btoi(stage != SpaceRepoFailureAfterRepoCreation)) {
-				t.Fatalf("transaction leaked at %s: repos=%d records=%d ops=%d", stage, len(repos), len(records), opCount)
+			var writerCount int64
+			s.db.Client().Model(&models.SpaceWriter{}).Where("space = ? AND author = ?", testSpaceRef, testAuthor).Count(&writerCount)
+			wantRows := int64(btoi(stage != SpaceRepoFailureAfterRepoCreation))
+			if len(repos) != int(wantRows) || len(records) != int(wantRows) || opCount != wantRows || writerCount != wantRows {
+				t.Fatalf("transaction leaked at %s: repos=%d records=%d ops=%d writers=%d", stage, len(repos), len(records), opCount, writerCount)
 			}
 		})
 	}
@@ -259,6 +263,42 @@ func TestSpaceRepoNestedBlobRefsAndDelete(t *testing.T) {
 	}
 	if len(refs) != 0 {
 		t.Fatalf("refs survived delete: %+v", refs)
+	}
+}
+
+func TestSpaceRepoRejectsBlobMetadataMismatch(t *testing.T) {
+	cases := []struct {
+		name       string
+		storedMime string
+		storedSize int64
+		want       string
+	}{
+		{"mime", "image/jpeg", 8, "MIME type"},
+		{"size", "image/png", 7, "size"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestServer(t)
+			man := NewSpaceRepoMan(s)
+			ctx := context.Background()
+			blobCID, err := cid.NewPrefixV1(cid.Raw, multihash.SHA2_256).Sum([]byte(tc.name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.db.Create(ctx, &models.Blob{
+				Did: testAuthor, Cid: blobCID.Bytes(), MimeType: tc.storedMime, Size: tc.storedSize,
+			}, nil).Error; err != nil {
+				t.Fatal(err)
+			}
+			record := testSpaceRecord("metadata mismatch")
+			record["blob"] = atdata.Blob{Ref: atdata.CIDLink(blobCID), MimeType: "image/png", Size: 8}
+			_, err = man.Apply(ctx, testSpaceRef, testAuthor, []SpaceRepoOperation{{
+				Type: SpaceRepoOpCreate, Collection: "com.example.post", Rkey: tc.name, Record: record,
+			}})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("blob metadata error = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
 

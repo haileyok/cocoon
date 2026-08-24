@@ -31,6 +31,9 @@ func oauthAllowsWholeSpaceRead(principal *OAuthPrincipal, ref space.SpaceURI) bo
 	if principal == nil {
 		return false
 	}
+	if principal.Legacy {
+		return principal.Subject != ""
+	}
 	for _, raw := range principal.Scopes {
 		grant, err := scopes.Parse(raw)
 		if err != nil || grant.Resource != scopes.ResourceSpace {
@@ -91,10 +94,10 @@ func (s *Server) handleSpaceListSpaces(e echo.Context) error {
 		return spaceOAuthServerError(e, err)
 	}
 
-	// A read_self grant is intentionally not enough for discovery. Require at
-	// least one whole-space read grant, then filter each concrete space against
-	// its selectors so a broad query never leaks an unauthorized space.
-	hasReadGrant := false
+	// Legacy access tokens are the reference implementation's broad auth mode;
+	// they may discover the caller's own Spaces. Granular OAuth tokens require
+	// an explicit whole-space read grant.
+	hasReadGrant := principal.Legacy
 	for _, raw := range principal.Scopes {
 		grant, parseErr := scopes.Parse(raw)
 		if parseErr == nil && grant.Resource == scopes.ResourceSpace {

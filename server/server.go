@@ -95,9 +95,13 @@ type Server struct {
 	lastRequestCrawl time.Time
 	requestCrawlMu   sync.Mutex
 
-	dbName   string
-	dbType   string
-	s3Config *S3Config
+	dbName             string
+	dbType             string
+	s3Config           *S3Config
+	s3ClientMu         sync.Mutex
+	s3Client           s3BlobClient
+	blobDeletionClient BlobDeletionS3Client
+	blobUploadLocks    blobUploadLockSet
 }
 
 type Args struct {
@@ -691,6 +695,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		&models.Record{},
 		&models.Blob{},
 		&models.BlobPart{},
+		&models.BlobDeletion{},
 		&models.ReservedKey{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
@@ -705,6 +710,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	if s.config.SpacesEnabled && s.spaceNotifySender != nil {
 		go s.runSpaceNotificationWorker(ctx)
 	}
+	// Account deletion is public lifecycle behavior, so blob cleanup must run
+	// regardless of whether the optional Spaces feature is enabled.
+	go s.runBlobDeletionWorker(ctx)
 
 	go func() {
 		if err := s.httpd.ListenAndServe(); err != nil {

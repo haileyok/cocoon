@@ -42,13 +42,13 @@ OAuth scopes authorize the OAuth routes. Space credentials and their DPoP proofs
 - Permissioned records sync directly with an authorized PDS client through the `com.atproto.space` read/CAR routes. Space data does not use a relay or a public firehose: permissioned records never enter Cocoon's public event manager. Ordinary public repositories retain their separate public sync/firehose behavior.
 - `com.atproto.space.getRepo` is an authenticated full current-state CAR recovery path. `listRepoOps` reads the retained, append-only Space oplog by revision and cursor; Space records retain the current value separately. There is no complete import API and no Space-specific pruning, so a CAR is an export/recovery representation, not a general migration import contract.
 - Permissioned blob references are checked against the authorized Space record. `com.atproto.space.getBlob` is an authenticated PDS proxy only and never redirects to a CDN, including when public S3/CDN storage is configured. A private CDN is not a permission boundary. Public `com.atproto.sync.listBlobs` and `com.atproto.sync.getBlob` expose only blobs referenced by a public repository; a Space-only reference is not a public reference.
-- Writes enqueue metadata-only notification outbox rows after the Space transaction's state changes. The outbox carries Space/repo/revision/hash metadata, not record values or blob bytes. A host must configure/inject the outbound `SpaceNotificationSender` and any target resolver/service-auth transport; there is no automatic outbound delivery when that sender is absent. The worker retries with idempotency and expires registrations after 30 days and deliveries after 7 days.
+- Writes enqueue metadata-only notification outbox rows after the Space transaction's state changes. The outbox carries Space/repo/revision/hash metadata, not record values or blob bytes. A host must configure/inject the outbound `SpaceNotificationSender` and any target resolver/service-auth transport; there is no automatic outbound delivery when that sender is absent. The worker retries with idempotency and expires registrations after 24 hours and deliveries after 7 days.
 
 ### Deletion, retention, and recovery limits
 
 Deleting a Space creates a durable tombstone, removes the authority's local Space rows, marks members removed, and queues deletion notifications; Space URIs are not reusable. Account deletion removes the account's authored permissioned records, refs, repos, oplog rows, and credentials-related account state while preserving the tombstone/deletion outbox semantics and any remote data that other hosts already retained. Remote consumers can retain copies.
 
-Space credentials live for two hours; delegation/client-attestation tokens live for 60 seconds, and DPoP proofs are accepted for at most 60 seconds (with clock skew). A local tombstone check rejects credential use immediately, but there is no global revocation protocol for already-cached remote credentials or data. Plan for this residual credential-expiry/notification window: registrations can remain until their 30-day expiry and queued deliveries until their 7-day expiry unless explicitly handled by the configured worker.
+Space credentials live for two hours; delegation/client-attestation tokens live for 60 seconds, and DPoP proofs are accepted for at most 60 seconds (with clock skew). A local tombstone check rejects credential use immediately, but there is no global revocation protocol for already-cached remote credentials or data. Plan for this residual credential-expiry/notification window: registrations can remain until their 24-hour expiry and queued deliveries until their 7-day expiry unless explicitly handled by the configured worker.
 
 The normal server uses PostgreSQL/SQLite persistence for Space state and durable replay JTIs. Replay JTIs are single-use and carry an expiry deadline, but this alpha has no complete export/import or replay-compaction API. PostgreSQL backups are an operator responsibility (`pg_dump` or the provider); SQLite backup covers the local database, while externally stored S3 blob bytes still require their own backup. See [the detailed Spaces alpha guide](docs/spaces-alpha.md) and the pinned [compatibility fixture](testdata/spaces-alpha/COMPATIBILITY.md) before updating the reference.
 
@@ -60,6 +60,20 @@ The documentation contract test is deterministic and checks only key claims rath
 go test ./space -run 'TestSpaces(ReadmeContract|FixtureManifestMatchesProtocolTypes|AlphaReferenceCommitPinned)$'
 go test ./...
 ```
+
+The reference PDS test harness creates TypeScript PDS instances internally and
+cannot be pointed at an external PDS. To exercise Cocoon with the pinned
+atproto generated client and Lexicons, run the Cocoon-backed interop harness:
+
+```bash
+ATPROTO_ROOT=~/worktrees/atproto/private-spaces-reference \
+  ./interop/atproto/run.sh
+```
+
+This starts a disposable Cocoon instance, seeds test accounts, obtains real
+session tokens, and validates Space creation, membership, record CRUD, JSON
+wire shapes, signed commits, CAR retrieval, oplog cursors/nullability, Space
+discovery, and owner-only SimpleSpace authorization over HTTP.
 
 The PostgreSQL concurrency/durability tests are opt-in and use an isolated schema. With a reachable PostgreSQL database, pass its DSN as `COCOON_TEST_POSTGRES_DSN`:
 
@@ -225,11 +239,11 @@ COCOON_S3_CDN_URL="https://cdn.example.com"
 
 **Blob Storage Options:**
 - `COCOON_S3_BLOBSTORE_ENABLED=false` (default): Blobs stored in the database
-- `COCOON_S3_BLOBSTORE_ENABLED=true`: Blobs stored in S3 bucket under `blobs/{did}/{cid}`
+- `COCOON_S3_BLOBSTORE_ENABLED=true`: New blobs are stored under an immutable generation-specific key such as `blobs/{did}/{cid}/{generation}`. Legacy rows with an empty persisted key continue to use `blobs/{did}/{cid}`.
 
 **Blob Serving Options:**
 - Without `COCOON_S3_CDN_URL`: Blobs are proxied through the PDS server
-- With `COCOON_S3_CDN_URL`: `getBlob` returns a 302 redirect to `{CDN_URL}/blobs/{did}/{cid}`
+- With `COCOON_S3_CDN_URL`: `getBlob` redirects to the blob's persisted object key (legacy rows use `{CDN_URL}/blobs/{did}/{cid}`)
 
 > **Tip**: For Cloudflare R2, you can use the public bucket URL as the CDN URL. For AWS S3, you can use CloudFront or the S3 bucket URL directly if public access is enabled.
 

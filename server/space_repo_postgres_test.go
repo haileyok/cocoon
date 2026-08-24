@@ -107,6 +107,7 @@ func newPostgresSpaceRepoFixture(t *testing.T) *postgresSpaceRepoFixture {
 		&models.Record{},
 		&models.Blob{},
 		&models.BlobPart{},
+		&models.BlobDeletion{},
 		&models.ReservedKey{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},

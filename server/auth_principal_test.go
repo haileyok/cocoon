@@ -165,6 +165,29 @@ func TestOAuthTokenIsNotAcceptedAsSpaceCredential(t *testing.T) {
 	}
 }
 
+func TestOAuthOnlyDispatchesLegacySessionBearer(t *testing.T) {
+	s := newTestServer(t)
+	account := s.createTestAccount(t, "legacy-space-auth.pds.test")
+	repo, err := s.getRepoActorByDid(t.Context(), account.Did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := s.createSession(t.Context(), &repo.Repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	called, c, code := runAuthMiddleware(t, s.OAuthOnly, http.MethodGet, "https://pds.test/xrpc/com.atproto.space.listSpaces", map[string]string{
+		"Authorization": "Bearer " + session.AccessToken,
+	})
+	if !called || code != http.StatusOK {
+		t.Fatalf("legacy Bearer session called=%v status=%d", called, code)
+	}
+	principal, ok := PrincipalFromContext(c).(*OAuthPrincipal)
+	if !ok || !principal.Legacy || principal.Subject != account.Did {
+		t.Fatalf("legacy principal = %#v", PrincipalFromContext(c))
+	}
+}
+
 func TestOAuthOnlyDispatchRejectsBearerToken(t *testing.T) {
 	s := newTestServer(t)
 	called, _, code := runAuthMiddleware(t, s.OAuthOnly, http.MethodGet, "https://pds.test/xrpc/com.atproto.space.listSpaces", map[string]string{
@@ -389,6 +412,133 @@ func TestServiceAuthOnlyInstallsTypedPrincipal(t *testing.T) {
 	principal, ok := PrincipalFromContext(c).(*ServiceAuthPrincipal)
 	if !ok || principal.Issuer != issuer || principal.Audience != testDid || principal.LXM != lxm {
 		t.Fatalf("unexpected service-auth principal: %#v (%T)", PrincipalFromContext(c), PrincipalFromContext(c))
+	}
+	claims, err := peekJWTClaims(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp, err := serviceAuthNumericClaim(jwt.MapClaims(claims), "exp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replay models.SpaceReplayJTI
+	if err := s.db.First(context.Background(), &replay, "token_type = ?", serviceAuthReplayTokenType).Error; err != nil {
+		t.Fatalf("service-auth replay row missing: %v", err)
+	}
+	if replay.TokenType != serviceAuthReplayTokenType || !replay.ExpiresAt.Equal(time.Unix(exp, 0).Add(serviceAuthClockSkew)) {
+		t.Fatalf("service-auth replay row = %#v, want type %q and exp+skew deadline", replay, serviceAuthReplayTokenType)
+	}
+
+	called, _, code = runAuthMiddleware(t, s.ServiceAuthOnly, http.MethodPost, target, map[string]string{
+		"Authorization": "Bearer " + token,
+	})
+	if called || code == http.StatusOK {
+		t.Fatalf("replayed service-auth token accepted: called=%v status=%d", called, code)
+	}
+}
+
+func TestServiceAuthAcceptsES256WithMatchingDIDKey(t *testing.T) {
+	s := newTestServer(t)
+	const issuer = "did:plc:z72i7hdynmk6r22z27h6tvur"
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := atcrypto.ParsePublicUncompressedBytesP256(elliptic.Marshal(elliptic.P256(), key.PublicKey.X, key.PublicKey.Y))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.SetPassport(testDIDDocumentFetcher(func(_ context.Context, did string) (*cocoon_identity.DidDoc, error) {
+		if did != issuer {
+			return nil, errors.New("unexpected DID lookup")
+		}
+		return &cocoon_identity.DidDoc{Id: issuer, VerificationMethods: []cocoon_identity.DidDocVerificationMethod{{
+			Id: issuer + "#p256", Type: "Multikey", Controller: issuer, PublicKeyMultibase: public.Multibase(),
+		}}}, nil
+	}))
+	const lxm = "com.atproto.server.createAccount"
+	claims := jwt.MapClaims{
+		"iss": issuer, "aud": testDid, "lxm": lxm, "jti": "es256-service-auth",
+		"iat": time.Now().Add(-time.Second).Unix(), "exp": time.Now().Add(time.Minute).Unix(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
+	token.Header["typ"] = "JWT"
+	token.Header["kid"] = issuer + "#p256"
+	raw, err := token.SignedString(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	called, _, code := runAuthMiddleware(t, s.ServiceAuthOnly, http.MethodPost, "https://evil.example/xrpc/"+lxm, map[string]string{
+		"Authorization": "Bearer " + raw,
+		"Host":          "attacker.example",
+	})
+	if !called || code != http.StatusOK {
+		t.Fatalf("ES256 service-auth dispatch called=%v status=%d", called, code)
+	}
+}
+
+func TestServiceAuthInvalidClaimsDoNotConsumeReplay(t *testing.T) {
+	s := newTestServer(t)
+	account := s.createTestAccount(t, "service-retry.pds.test")
+	key, err := atcrypto.ParsePrivateBytesK256(account.SigningKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public, err := key.PublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const issuer = "did:plc:z72i7hdynmk6r22z27h6tvur"
+	s.SetPassport(testDIDDocumentFetcher(func(_ context.Context, did string) (*cocoon_identity.DidDoc, error) {
+		if did != issuer {
+			return nil, errors.New("unexpected DID lookup")
+		}
+		return &cocoon_identity.DidDoc{Id: issuer, VerificationMethods: []cocoon_identity.DidDocVerificationMethod{{
+			Id: issuer + "#atproto", Type: "Multikey", Controller: issuer, PublicKeyMultibase: public.Multibase(),
+		}}}, nil
+	}))
+	const lxm = "com.atproto.server.createAccount"
+	const jti = "service-auth-retry"
+	invalid := mintServiceAuthTokenWithJTI(t, account.SigningKey, issuer, "did:web:wrong.example", lxm, time.Now().Add(time.Minute), jti)
+	if _, err := s.validateServiceAuthToken(context.Background(), invalid, lxm); err == nil {
+		t.Fatal("wrong-audience service-auth token was accepted")
+	}
+	valid := mintServiceAuthTokenWithJTI(t, account.SigningKey, issuer, testDid, lxm, time.Now().Add(time.Minute), jti)
+	validated, err := s.validateServiceAuthToken(context.Background(), valid, lxm)
+	if err != nil {
+		t.Fatalf("valid retry was rejected after invalid attempt: %v", err)
+	}
+	if validated.JTI != jti {
+		t.Fatalf("validated JTI = %q, want %q", validated.JTI, jti)
+	}
+	var replay models.SpaceReplayJTI
+	if err := s.db.First(context.Background(), &replay, "token_type = ?", serviceAuthReplayTokenType).Error; err != nil {
+		t.Fatalf("service-auth replay row missing: %v", err)
+	}
+	if replay.TokenType != serviceAuthReplayTokenType {
+		t.Fatalf("service-auth replay type = %q, want %q", replay.TokenType, serviceAuthReplayTokenType)
+	}
+}
+
+func TestRequestURLCanonicalizesConfiguredHostAndScheme(t *testing.T) {
+	s := newTestServer(t)
+	c, _ := newRequestContext(http.MethodGet, "https://evil.example/xrpc/com.example.read?x=1", "", map[string]string{
+		"Host": "attacker.example",
+	})
+	if got, want := s.requestURL(c), "https://pds.test/xrpc/com.example.read?x=1"; got != want {
+		t.Fatalf("configured-host request URL = %q, want %q", got, want)
+	}
+
+	s.config.Version = "dev"
+	c, _ = newRequestContext(http.MethodGet, "http://evil.example/xrpc/com.example.read", "", nil)
+	if got, want := s.requestURL(c), "http://pds.test/xrpc/com.example.read"; got != want {
+		t.Fatalf("dev request URL = %q, want %q", got, want)
+	}
+
+	s.config.Version = "test"
+	c, _ = newRequestContext(http.MethodGet, "/xrpc/com.example.read", "", map[string]string{"Host": "proxy-attacker.example"})
+	if got, want := s.requestURL(c), "https://pds.test/xrpc/com.example.read"; got != want {
+		t.Fatalf("proxy request URL = %q, want %q", got, want)
 	}
 }
 

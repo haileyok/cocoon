@@ -5,7 +5,9 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -47,12 +49,71 @@ type CommitCtx = CommitContext
 // SignedCommit is the signedCommit Lexicon object. It is serialized as a
 // canonical DAG-CBOR map with keys ver/hash/ikm/sig/mac/rev.
 type SignedCommit struct {
-	Ver  uint64
-	Hash []byte
-	IKM  []byte
-	Sig  []byte
-	MAC  []byte
-	Rev  string
+	Ver  uint64 `json:"ver"`
+	Hash []byte `json:"hash"`
+	IKM  []byte `json:"ikm"`
+	Sig  []byte `json:"sig"`
+	MAC  []byte `json:"mac"`
+	Rev  string `json:"rev"`
+}
+
+type lexBytesJSON struct {
+	Bytes string `json:"$bytes"`
+}
+
+type signedCommitJSON struct {
+	Ver  uint64       `json:"ver"`
+	Hash lexBytesJSON `json:"hash"`
+	IKM  lexBytesJSON `json:"ikm"`
+	Sig  lexBytesJSON `json:"sig"`
+	MAC  lexBytesJSON `json:"mac"`
+	Rev  string       `json:"rev"`
+}
+
+func encodeLexBytesJSON(value []byte) lexBytesJSON {
+	return lexBytesJSON{Bytes: base64.RawURLEncoding.EncodeToString(value)}
+}
+
+func decodeLexBytesJSON(value lexBytesJSON) ([]byte, error) {
+	return base64.RawURLEncoding.DecodeString(value.Bytes)
+}
+
+// MarshalJSON uses the atproto Lexicon bytes encoding. JSON bytes are
+// {$bytes:<raw-base64url>}, not encoding/json's default base64 string.
+func (c SignedCommit) MarshalJSON() ([]byte, error) {
+	return json.Marshal(signedCommitJSON{
+		Ver:  c.Ver,
+		Hash: encodeLexBytesJSON(c.Hash),
+		IKM:  encodeLexBytesJSON(c.IKM),
+		Sig:  encodeLexBytesJSON(c.Sig),
+		MAC:  encodeLexBytesJSON(c.MAC),
+		Rev:  c.Rev,
+	})
+}
+
+func (c *SignedCommit) UnmarshalJSON(data []byte) error {
+	var wire signedCommitJSON
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	hash, err := decodeLexBytesJSON(wire.Hash)
+	if err != nil {
+		return err
+	}
+	ikm, err := decodeLexBytesJSON(wire.IKM)
+	if err != nil {
+		return err
+	}
+	sig, err := decodeLexBytesJSON(wire.Sig)
+	if err != nil {
+		return err
+	}
+	mac, err := decodeLexBytesJSON(wire.MAC)
+	if err != nil {
+		return err
+	}
+	*c = SignedCommit{Ver: wire.Ver, Hash: hash, IKM: ikm, Sig: sig, MAC: mac, Rev: wire.Rev}
+	return nil
 }
 
 // CommitSigner and CommitVerifier are small adapters satisfied by Indigo's

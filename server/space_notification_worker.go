@@ -80,7 +80,7 @@ func parseSpaceNotificationService(raw string) (string, error) {
 const (
 	SpaceNotifyWriteLXM        = "com.atproto.space.notifyWrite"
 	SpaceNotifySpaceDeletedLXM = "com.atproto.space.notifySpaceDeleted"
-	SpaceNotifyRegistrationTTL = 30 * 24 * time.Hour
+	SpaceNotifyRegistrationTTL = 24 * time.Hour
 	SpaceNotifyDeliveryTTL     = 7 * 24 * time.Hour
 )
 

@@ -15,7 +15,33 @@ import (
 type ComAtprotoSpaceListReposRepoRef struct {
 	DID  string `json:"did"`
 	Rev  string `json:"rev"`
-	Hash string `json:"hash,omitempty"`
+	Hash string `json:"hash"`
+}
+
+type listReposRepoWire struct {
+	DID  string            `json:"did"`
+	Rev  string            `json:"rev"`
+	Hash map[string]string `json:"hash"`
+}
+
+func (r ComAtprotoSpaceListReposRepoRef) MarshalJSON() ([]byte, error) {
+	return json.Marshal(listReposRepoWire{
+		DID: r.DID,
+		Rev: r.Rev,
+		Hash: map[string]string{
+			"$bytes": r.Hash,
+		},
+	})
+}
+
+func (r *ComAtprotoSpaceListReposRepoRef) UnmarshalJSON(data []byte) error {
+	var wire listReposRepoWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	r.DID, r.Rev = wire.DID, wire.Rev
+	r.Hash = wire.Hash["$bytes"]
+	return nil
 }
 
 type ComAtprotoSpaceListReposResponse struct {

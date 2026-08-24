@@ -26,6 +26,9 @@ type SpaceNotificationTargetResolver = SpaceNotificationResolver
 type SpaceNotificationTargetResolverFunc = SpaceNotificationResolverFunc
 
 const (
+	spaceReplayCleanupBatchSize   = 1000
+	spaceDeliveryCleanupBatchSize = 1000
+
 	SpaceNotifyDeliveryPending   = "pending"
 	SpaceNotifyDeliveryRetry     = "retry"
 	SpaceNotifyDeliveryDelivered = "delivered"
@@ -47,10 +50,11 @@ func (f SpaceNotificationSenderFunc) Send(ctx context.Context, target string, d 
 }
 
 type SpaceNotificationWorkerOptions struct {
-	BaseDelay   time.Duration
-	MaxDelay    time.Duration
-	MaxAttempts int
-	BatchSize   int
+	BaseDelay         time.Duration
+	MaxDelay          time.Duration
+	MaxAttempts       int
+	BatchSize         int
+	DeliveryRetention time.Duration
 }
 
 func (o SpaceNotificationWorkerOptions) defaults() SpaceNotificationWorkerOptions {
@@ -65,6 +69,9 @@ func (o SpaceNotificationWorkerOptions) defaults() SpaceNotificationWorkerOption
 	}
 	if o.BatchSize <= 0 {
 		o.BatchSize = 100
+	}
+	if o.DeliveryRetention <= 0 {
+		o.DeliveryRetention = SpaceNotifyDeliveryTTL
 	}
 	return o
 }
@@ -218,10 +225,53 @@ func (w *SpaceNotificationWorker) resolve(ctx context.Context, service string) (
 }
 
 func (w *SpaceNotificationWorker) expire(ctx context.Context, now time.Time) error {
-	if err := w.db.Client().WithContext(ctx).Model(&models.SpaceNotifyDelivery{}).Where("status IN ? AND expires_at <= ?", []string{"pending", "retry", "processing"}, now).Updates(map[string]any{"status": "expired", "last_error": "delivery expired", "updated_at": now}).Error; err != nil {
-		return err
+	var firstErr error
+	recordErr := func(err error) {
+		if firstErr == nil && err != nil {
+			firstErr = err
+		}
 	}
-	return w.db.Client().WithContext(ctx).Where("expires_at <= ?", now).Delete(&models.SpaceNotifyRegistration{}).Error
+	if err := w.db.Client().WithContext(ctx).Model(&models.SpaceNotifyDelivery{}).Where("status IN ? AND expires_at <= ?", []string{SpaceNotifyDeliveryPending, SpaceNotifyDeliveryRetry, "processing"}, now).Updates(map[string]any{"status": SpaceNotifyDeliveryExpired, "last_error": "delivery expired", "updated_at": now}).Error; err != nil {
+		recordErr(err)
+	}
+	if _, err := w.pruneTerminalDeliveries(ctx, now); err != nil {
+		recordErr(err)
+	}
+	// Registration expiry and replay-token cleanup are independent of delivery
+	// cleanup. Run both even when an earlier cleanup fails so stale credentials
+	// are not retained unnecessarily.
+	if err := w.db.Client().WithContext(ctx).Where("expires_at <= ?", now).Delete(&models.SpaceNotifyRegistration{}).Error; err != nil {
+		recordErr(err)
+	}
+	if _, err := space.NewGORMReplayStore(w.db.Client()).DeleteExpired(ctx, now, spaceReplayCleanupBatchSize); err != nil {
+		recordErr(err)
+	}
+	return firstErr
+}
+
+// pruneTerminalDeliveries removes only terminal delivery rows after their
+// retention interval. Select IDs first so an empty candidate set does not issue
+// a SQLite write, and repeat the status/age predicates on delete to avoid
+// deleting a row that became active between the two statements.
+func (w *SpaceNotificationWorker) pruneTerminalDeliveries(ctx context.Context, now time.Time) (int64, error) {
+	cutoff := now.Add(-w.options.DeliveryRetention)
+	terminalStatuses := []string{SpaceNotifyDeliveryDelivered, SpaceNotifyDeliveryExpired, SpaceNotifyDeliveryFailed}
+	var ids []uint
+	if err := w.db.Client().WithContext(ctx).
+		Model(&models.SpaceNotifyDelivery{}).
+		Where("status IN ? AND updated_at <= ?", terminalStatuses, cutoff).
+		Order("updated_at ASC, id ASC").
+		Limit(spaceDeliveryCleanupBatchSize).
+		Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	result := w.db.Client().WithContext(ctx).
+		Where("id IN ? AND status IN ? AND updated_at <= ?", ids, terminalStatuses, cutoff).
+		Delete(&models.SpaceNotifyDelivery{})
+	return result.RowsAffected, result.Error
 }
 
 func (w *SpaceNotificationWorker) fail(ctx context.Context, key string, cause error, now time.Time) error {

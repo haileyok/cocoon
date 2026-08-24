@@ -89,8 +89,8 @@ func TestSimpleSpaceLifecyclePoliciesAndDeletionRetention(t *testing.T) {
 	if err := s.handleSimpleSpaceGetSpace(e); err != nil {
 		t.Fatal(err)
 	}
-	if rec.Code != http.StatusOK {
-		t.Fatalf("member get status = %d; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("member get status = %d; want 403; body=%s", rec.Code, rec.Body.String())
 	}
 
 	readPrincipal := &OAuthPrincipal{Subject: member.Did, Scopes: simpleSpaceReadScope()}
@@ -99,8 +99,30 @@ func TestSimpleSpaceLifecyclePoliciesAndDeletionRetention(t *testing.T) {
 	if err := s.handleSimpleSpaceListMembers(e); err != nil {
 		t.Fatal(err)
 	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("member list members status = %d; want 403; body=%s", rec.Code, rec.Body.String())
+	}
+
+	ownerReadPrincipal := &OAuthPrincipal{
+		Subject: owner.Did,
+		Scopes:  append(simpleSpaceManagementScopes(), "space:"+testSimpleSpaceType+"?authority=self&skey="+testSimpleSpaceKey+"&action=read_self"),
+	}
+	e, rec = newRequestContext(http.MethodGet, "/xrpc/com.atproto.simplespace.getSpace?space="+spaceURI, "", nil)
+	SetPrincipal(e, ownerReadPrincipal)
+	if err := s.handleSimpleSpaceGetSpace(e); err != nil {
+		t.Fatal(err)
+	}
 	if rec.Code != http.StatusOK {
-		t.Fatalf("list members status = %d; body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("owner get status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	e, rec = newRequestContext(http.MethodGet, "/xrpc/com.atproto.simplespace.listMembers?space="+spaceURI+"&limit=1", "", nil)
+	SetPrincipal(e, ownerReadPrincipal)
+	if err := s.handleSimpleSpaceListMembers(e); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owner list members status = %d; body=%s", rec.Code, rec.Body.String())
 	}
 	body := decodeSimpleSpaceBody(t, rec)
 	members, ok := body["members"].([]any)
@@ -194,7 +216,7 @@ func TestSimpleSpaceCredentialExchangeUsesDelegationAndAuthorityKey(t *testing.T
 	spaceURI := "at://" + owner.Did + "/space/" + testSimpleSpaceType + "/credential"
 	if err := s.db.Create(context.Background(), &models.SimpleSpace{
 		URI: spaceURI, OwnerDID: owner.Did, Type: testSimpleSpaceType, SKey: "credential",
-		Policy: simpleSpacePolicyPublic, AppAccess: simpleSpaceAppAccessOpen,
+		Policy: simpleSpacePolicyMemberList, AppAccess: simpleSpaceAppAccessOpen,
 	}, nil).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +266,7 @@ func TestSimpleSpaceCredentialExchangeUsesDelegationAndAuthorityKey(t *testing.T
 	// A deleted authority is discovered by the exchange itself, even without
 	// going through the route middleware's availability check.
 	deletedAt := time.Now().UTC()
-	if err := s.db.Save(context.Background(), &models.SimpleSpace{URI: spaceURI, OwnerDID: owner.Did, Type: testSimpleSpaceType, SKey: "credential", Policy: simpleSpacePolicyPublic, AppAccess: simpleSpaceAppAccessOpen, Deleted: true, DeletedAt: &deletedAt}, nil).Error; err != nil {
+	if err := s.db.Save(context.Background(), &models.SimpleSpace{URI: spaceURI, OwnerDID: owner.Did, Type: testSimpleSpaceType, SKey: "credential", Policy: simpleSpacePolicyMemberList, AppAccess: simpleSpaceAppAccessOpen, Deleted: true, DeletedAt: &deletedAt}, nil).Error; err != nil {
 		t.Fatal(err)
 	}
 	e, rec = newRequestContext(http.MethodPost, "/xrpc/com.atproto.space.getSpaceCredential", `{"space":"`+spaceURI+`"}`, nil)
@@ -369,6 +391,7 @@ func TestSimpleSpaceCredentialExchangeConcurrentIdenticalBatchesOneSuccess(t *te
 func TestSimpleSpaceCredentialPolicyFailureDoesNotConsumeReplayArtifacts(t *testing.T) {
 	s := newTestServer(t)
 	owner := s.createTestAccount(t, "retry-owner.pds.test")
+	member := s.createTestAccount(t, "retry-member.pds.test")
 	spaceURI := "at://" + owner.Did + "/space/" + testSimpleSpaceType + "/retry"
 	if err := s.db.Create(context.Background(), &models.SimpleSpace{
 		URI: spaceURI, OwnerDID: owner.Did, Type: testSimpleSpaceType, SKey: "retry",
@@ -384,7 +407,7 @@ func TestSimpleSpaceCredentialPolicyFailureDoesNotConsumeReplayArtifacts(t *test
 	principal := &DelegationPrincipal{
 		SpaceURI: spaceURI, AuthorityDID: owner.Did, DPoPJKT: base64.RawURLEncoding.EncodeToString(make([]byte, 32)),
 		DPoPJTI: "retry-dpop", DPoPIssuedAt: time.Now(),
-		Claims: space.SpaceTokenClaims{Iss: owner.Did, Sub: spaceURI, Aud: &audience, JTI: "retry-delegation", Exp: time.Now().Add(time.Minute).Unix()},
+		Claims: space.SpaceTokenClaims{Iss: member.Did, Sub: spaceURI, Aud: &audience, JTI: "retry-delegation", Exp: time.Now().Add(time.Minute).Unix()},
 	}
 	first, rec := newRequestContext(http.MethodPost, "/xrpc/com.atproto.space.getSpaceCredential", `{"space":"`+spaceURI+`"}`, nil)
 	SetPrincipal(first, principal)
@@ -395,7 +418,7 @@ func TestSimpleSpaceCredentialPolicyFailureDoesNotConsumeReplayArtifacts(t *test
 		t.Fatalf("policy failure = %d %s", rec.Code, rec.Body.String())
 	}
 
-	if err := s.db.Create(context.Background(), &models.SimpleSpaceMember{Space: spaceURI, DID: owner.Did}, nil).Error; err != nil {
+	if err := s.db.Create(context.Background(), &models.SimpleSpaceMember{Space: spaceURI, DID: member.Did}, nil).Error; err != nil {
 		t.Fatal(err)
 	}
 	second, rec := newRequestContext(http.MethodPost, "/xrpc/com.atproto.space.getSpaceCredential", `{"space":"`+spaceURI+`"}`, nil)

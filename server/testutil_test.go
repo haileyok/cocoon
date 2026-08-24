@@ -63,6 +63,7 @@ func newTestServer(t *testing.T) *Server {
 		&models.Record{},
 		&models.Blob{},
 		&models.BlobPart{},
+		&models.BlobDeletion{},
 		&models.ReservedKey{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},

@@ -16,6 +16,7 @@ import (
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/oauth/scopes"
 	"github.com/haileyok/cocoon/space"
+	"github.com/ipfs/go-cid"
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )
@@ -183,6 +184,9 @@ func simpleSpaceManageAllowed(p *OAuthPrincipal, ref space.SpaceURI, action stri
 	if p == nil {
 		return false
 	}
+	if p.Legacy {
+		return action == "create" || p.Subject == string(ref.AuthorityDID)
+	}
 	for _, raw := range p.Scopes {
 		grant, err := scopes.Parse(raw)
 		if err == nil && grant.AllowsSpaceManage(ref, action, p.Subject) {
@@ -192,13 +196,20 @@ func simpleSpaceManageAllowed(p *OAuthPrincipal, ref space.SpaceURI, action stri
 	return false
 }
 
-func simpleSpaceReadAllowed(p *OAuthPrincipal, ref space.SpaceURI) bool {
-	if p == nil {
+// simpleSpaceOwnerReadAllowed mirrors the reference implementation: the
+// SimpleSpace configuration and member list are authority-owned state. OAuth
+// callers must therefore be the authority and hold a read_self grant. Members
+// use a Space credential for the data-plane config read instead.
+func simpleSpaceOwnerReadAllowed(p *OAuthPrincipal, ref space.SpaceURI) bool {
+	if p == nil || p.Subject == "" || p.Subject != string(ref.AuthorityDID) {
 		return false
+	}
+	if p.Legacy {
+		return true
 	}
 	for _, raw := range p.Scopes {
 		grant, err := scopes.Parse(raw)
-		if err == nil && grant.AllowsSpaceRead(ref, "", p.Subject) {
+		if err == nil && grant.AllowsSpaceReadSelf(ref, string(ref.AuthorityDID), p.Subject) {
 			return true
 		}
 	}
@@ -502,16 +513,29 @@ func (s *Server) handleSimpleSpaceDeleteSpace(e echo.Context) error {
 		if err := tx.Create(ctx, &tomb, nil).Error; err != nil && !errors.Is(err, gorm.ErrDuplicatedKey) && !strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return err
 		}
-		return markSimpleSpaceDeleted(tx, ctx, ref.String(), string(ref.AuthorityDID), deletedAt)
+		return markSimpleSpaceDeleted(tx, ctx, ref.String(), string(ref.AuthorityDID), deletedAt, s.s3Config)
 	}); err != nil {
 		return simpleSpaceInternal(e)
 	}
 	return e.NoContent(http.StatusOK)
 }
 
-func markSimpleSpaceDeleted(tx *db.DB, ctx context.Context, uri, authority string, deletedAt time.Time) error {
+func markSimpleSpaceDeleted(tx *db.DB, ctx context.Context, uri, authority string, deletedAt time.Time, s3Config *S3Config) error {
+	var blobRefs []models.SpaceBlobRef
+	if err := tx.Client().WithContext(ctx).Where("space = ? AND author = ?", uri, authority).Find(&blobRefs).Error; err != nil {
+		return err
+	}
 	for _, model := range []any{&models.SpaceRecord{}, &models.SpaceBlobRef{}, &models.SpaceRepoOp{}, &models.SpaceRepo{}, &models.SpaceWriter{}} {
 		if err := tx.Client().WithContext(ctx).Where("space = ? AND author = ?", uri, authority).Delete(model).Error; err != nil {
+			return err
+		}
+	}
+	for _, ref := range blobRefs {
+		parsed, err := cid.Parse(ref.CID)
+		if err != nil {
+			return err
+		}
+		if err := cleanupUnreferencedBlobsForCID(ctx, tx, authority, parsed.Bytes(), s3Config); err != nil {
 			return err
 		}
 	}
@@ -523,7 +547,7 @@ func markSimpleSpaceDeleted(tx *db.DB, ctx context.Context, uri, authority strin
 		return err
 	}
 	var registrations []models.SpaceNotifyRegistration
-	if err := tx.Client().WithContext(ctx).Where("space = ?", uri).Find(&registrations).Error; err != nil {
+	if err := tx.Client().WithContext(ctx).Where("space = ? AND expires_at > ?", uri, deletedAt).Find(&registrations).Error; err != nil {
 		return err
 	}
 	payload, _ := json.Marshal(map[string]string{"space": uri})
@@ -570,8 +594,8 @@ func (s *Server) handleSimpleSpaceGetSpace(e echo.Context) error {
 			return simpleSpaceError(e, http.StatusForbidden, "Forbidden")
 		}
 	case *OAuthPrincipal:
-		if p == nil || p.Subject == "" || !s.simpleSpaceUserAllowed(ctx, &row, p.Subject, p.ClientID, ref.String()) {
-			return simpleSpaceError(e, http.StatusForbidden, "NotAuthorized")
+		if p == nil || !simpleSpaceOwnerReadAllowed(p, ref) {
+			return helpers.InsufficientScopeError(e, "space:"+string(ref.SpaceType)+"?authority=self&skey="+string(ref.SKey)+"&action=read_self")
 		}
 	default:
 		return simpleSpaceUnauthorized(e)
@@ -579,22 +603,31 @@ func (s *Server) handleSimpleSpaceGetSpace(e echo.Context) error {
 	return e.JSON(http.StatusOK, ComAtprotoSimpleSpaceGetSpaceOutput{URI: row.URI, Policy: simpleSpacePolicyWire(row), AppAccess: simpleSpaceAppWire(row)})
 }
 
-func (s *Server) simpleSpaceUserAllowed(ctx context.Context, row *models.SimpleSpace, userDID, clientID, uri string) bool {
+// simpleSpacePolicyUserAllowed is the user perimeter shared by credential
+// minting and notifyWrite. App access is deliberately separate: notifyWrite is
+// sent by a PDS, not an OAuth application, so it has no client attestation.
+func (s *Server) simpleSpacePolicyUserAllowed(ctx context.Context, row *models.SimpleSpace, userDID, uri, clientID string) bool {
 	if row == nil || userDID == "" {
 		return false
 	}
+	if userDID == row.OwnerDID {
+		return true
+	}
 	switch row.Policy {
 	case simpleSpacePolicyPublic:
+		return true
 	case simpleSpacePolicyMemberList:
 		var member models.SimpleSpaceMember
-		if err := s.db.Client().WithContext(ctx).Where("space = ? AND did = ? AND removed_at IS NULL", uri, userDID).First(&member).Error; err != nil {
-			return false
-		}
+		return s.db.Client().WithContext(ctx).Where("space = ? AND did = ? AND removed_at IS NULL", uri, userDID).First(&member).Error == nil
 	case simpleSpacePolicyManagingApp:
-		if row.ManagingApp == nil || !s.checkManagingApp(ctx, *row.ManagingApp, uri, userDID, clientID) {
-			return false
-		}
+		return row.ManagingApp != nil && s.checkManagingApp(ctx, *row.ManagingApp, uri, userDID, clientID)
 	default:
+		return false
+	}
+}
+
+func (s *Server) simpleSpaceUserAllowed(ctx context.Context, row *models.SimpleSpace, userDID, clientID, uri string) bool {
+	if !s.simpleSpacePolicyUserAllowed(ctx, row, userDID, uri, clientID) {
 		return false
 	}
 	if row.AppAccess == simpleSpaceAppAccessAllowList {
@@ -715,8 +748,8 @@ func (s *Server) handleSimpleSpaceListMembers(e echo.Context) error {
 	if err != nil {
 		return simpleSpaceUnauthorized(e)
 	}
-	if !simpleSpaceReadAllowed(p, ref) {
-		return helpers.InsufficientScopeError(e, "space:"+string(ref.SpaceType)+"?authority="+string(ref.AuthorityDID)+"&skey="+string(ref.SKey)+"&action=read")
+	if !simpleSpaceOwnerReadAllowed(p, ref) {
+		return helpers.InsufficientScopeError(e, "space:"+string(ref.SpaceType)+"?authority=self&skey="+string(ref.SKey)+"&action=read_self")
 	}
 	if _, _, err := s.simpleSpaceLoad(e.Request().Context(), ref.String(), false); errors.Is(err, gorm.ErrRecordNotFound) {
 		return simpleSpaceNotFound(e)

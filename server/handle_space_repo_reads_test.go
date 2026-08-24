@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
@@ -183,6 +184,9 @@ func TestSpaceListRepoOpsAtomicPaginationAndCurrentValues(t *testing.T) {
 	if len(firstPage.Ops) != 2 || firstPage.Cursor == nil {
 		t.Fatalf("first page ops=%d cursor=%v; atomic revision was split", len(firstPage.Ops), firstPage.Cursor)
 	}
+	if !strings.Contains(*firstPage.Cursor, "/") {
+		t.Fatalf("cursor = %q, want rev/index format", *firstPage.Cursor)
+	}
 	if firstPage.Ops[0].Value != nil {
 		t.Fatal("superseded operation unexpectedly included a current value")
 	}
@@ -219,6 +223,83 @@ func TestSpaceListRepoOpsAtomicPaginationAndCurrentValues(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("old since status = %d", rec.Code)
+	}
+}
+
+func TestSpaceListRecordsMatchesPinnedWireShape(t *testing.T) {
+	s := newTestServer(t)
+	alice := s.createTestAccount(t, "list-records-wire.pds.test")
+	spaceURI := testSpaceURI(t, alice.Did)
+	applySpaceRecord(t, s, spaceURI, alice.Did, "com.example.record", "one", map[string]any{"text": "one"})
+	applySpaceRecord(t, s, spaceURI, alice.Did, "com.example.record", "two", map[string]any{"text": "two"})
+
+	target := "/xrpc/com.atproto.space.listRecords?space=" + spaceURI + "&repo=" + alice.Did + "&limit=1"
+	e, rec := newRequestContext(http.MethodGet, target, "", nil)
+	setSpaceCredential(e, spaceURI)
+	if err := s.handleSpaceListRecords(e); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list records status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	records, ok := body["records"].([]any)
+	if !ok || len(records) != 1 {
+		t.Fatalf("records = %#v", body["records"])
+	}
+	record := records[0].(map[string]any)
+	for _, key := range []string{"collection", "rkey", "cid", "value"} {
+		if _, ok := record[key]; !ok {
+			t.Errorf("listRecords item missing %q: %#v", key, record)
+		}
+	}
+	if _, ok := record["uri"]; ok {
+		t.Error("listRecords item unexpectedly contains uri")
+	}
+	cursor, ok := body["cursor"].(string)
+	if !ok || !strings.HasPrefix(cursor, "at://") {
+		t.Fatalf("cursor = %#v, want record URI", body["cursor"])
+	}
+}
+
+func TestSpaceListRepoOpsEmitsRequiredNullableFields(t *testing.T) {
+	s := newTestServer(t)
+	alice := s.createTestAccount(t, "list-ops-wire.pds.test")
+	spaceURI := testSpaceURI(t, alice.Did)
+	applySpaceRecord(t, s, spaceURI, alice.Did, "com.example.record", "one", map[string]any{"text": "one"})
+	if _, err := s.spaceRepoManager().DeleteRecord(t.Context(), spaceURI, alice.Did, "com.example.record", "one"); err != nil {
+		t.Fatal(err)
+	}
+
+	e, rec := newRequestContext(http.MethodGet, "/xrpc/com.atproto.space.listRepoOps?space="+spaceURI+"&repo="+alice.Did+"&limit=100", "", nil)
+	setSpaceCredential(e, spaceURI)
+	if err := s.handleSpaceListRepoOps(e); err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	ops, ok := body["ops"].([]any)
+	if !ok || len(ops) != 2 {
+		t.Fatalf("ops = %#v", body["ops"])
+	}
+	create := ops[0].(map[string]any)
+	delete := ops[1].(map[string]any)
+	if _, ok := create["cid"]; !ok {
+		t.Error("create op missing cid")
+	}
+	if value, ok := create["prev"]; !ok || value != nil {
+		t.Errorf("create prev = %#v, want explicit null", create["prev"])
+	}
+	if value, ok := delete["cid"]; !ok || value != nil {
+		t.Errorf("delete cid = %#v, want explicit null", delete["cid"])
+	}
+	if _, ok := delete["prev"]; !ok {
+		t.Error("delete op missing prev")
 	}
 }
 

@@ -25,6 +25,13 @@ make fmt           # go fmt ./...
 
 Keep `gofmt` and `go vet ./...` clean before pushing.
 
+## Atproto Spaces compatibility
+
+The detailed reference setup and test workflow lives in
+`.agents/skills/run-atproto-tests/SKILL.md`. It pins atproto PR #5187,
+explains fixture validation, focused PDS tests, and the Chromium sandbox
+workaround.
+
 ## How tests are organized
 
 - Tests live next to the code they cover as `*_test.go`.

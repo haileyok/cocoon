@@ -3,15 +3,18 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/space"
+	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )
 
@@ -20,6 +23,10 @@ func seedSpaceNotificationRegistration(t *testing.T, s *Server, service string, 
 	if err := s.db.Create(context.Background(), &models.SpaceNotifyRegistration{Space: testSpaceRef, Service: service, ExpiresAt: expires}, nil).Error; err != nil {
 		t.Fatalf("seed registration: %v", err)
 	}
+}
+
+func notificationTimePtr(value time.Time) *time.Time {
+	return &value
 }
 
 func TestSpaceRepoTransactionalCrashWindowDoesNotLeaveOutbox(t *testing.T) {
@@ -105,6 +112,7 @@ func TestSpaceRepoOutboxMetadataOnlyPayloadAndNoEvtman(t *testing.T) {
 
 func TestSpaceNotificationRegistrationExpiryAndMatchingCredential(t *testing.T) {
 	s := newTestServer(t)
+	s.config.Did = "did:example:authority"
 	now := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
 	s.SetSpaceNotificationClock(func() time.Time { return now })
 	body := `{"space":"` + testSpaceRef + `","service":"did:web:syncer.test#space"}`
@@ -168,6 +176,56 @@ func TestSpaceNotifyWriteIdempotentWriterUpdateAndForwarding(t *testing.T) {
 	}
 	if len(deliveries) != 1 {
 		t.Fatalf("duplicate receiver queued %d deliveries, want 1", len(deliveries))
+	}
+}
+
+func TestHandleSpaceNotifyWriteChecksAuthorityAndPolicy(t *testing.T) {
+	s := newTestServer(t)
+	authority := s.createTestAccount(t, "notify-authority.pds.test")
+	writer := s.createTestAccount(t, "notify-writer.pds.test")
+	s.config.Did = authority.Did
+	spaceURI := "at://" + authority.Did + "/space/com.example.space/notify"
+	if err := s.db.Create(t.Context(), &models.SimpleSpace{
+		URI: spaceURI, OwnerDID: authority.Did, Type: "com.example.space", SKey: "notify",
+		Policy: simpleSpacePolicyMemberList, AppAccess: simpleSpaceAppAccessOpen,
+	}, nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	newRequest := func(rev string) (echo.Context, *httptest.ResponseRecorder) {
+		body := `{"space":"` + spaceURI + `","repo":"` + writer.Did + `","rev":"` + rev + `","hash":"` + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32)) + `"}`
+		e, rec := newRequestContext(http.MethodPost, "/xrpc/com.atproto.space.notifyWrite", body, nil)
+		SetPrincipal(e, &ServiceAuthPrincipal{Issuer: writer.Did, Audience: authority.Did, LXM: SpaceNotifyWriteLXM})
+		return e, rec
+	}
+
+	e, rec := newRequest(spaceRepoClock.Next().String())
+	if err := s.handleSpaceNotifyWrite(e); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("unauthorized writer status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	if err := s.db.Create(t.Context(), &models.SimpleSpaceMember{Space: spaceURI, DID: writer.Did}, nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	e, rec = newRequest(spaceRepoClock.Next().String())
+	if err := s.handleSpaceNotifyWrite(e); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("authorized writer status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	otherSpace := "at://did:example:other/space/com.example.space/notify"
+	body := `{"space":"` + otherSpace + `","repo":"` + writer.Did + `","rev":"` + spaceRepoClock.Next().String() + `","hash":"` + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32)) + `"}`
+	e, rec = newRequestContext(http.MethodPost, "/xrpc/com.atproto.space.notifyWrite", body, nil)
+	SetPrincipal(e, &ServiceAuthPrincipal{Issuer: writer.Did, Audience: authority.Did, LXM: SpaceNotifyWriteLXM})
+	if err := s.handleSpaceNotifyWrite(e); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong authority status = %d; body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -357,6 +415,141 @@ func TestSpaceNotificationWorkerRetryExpiryAndRestart(t *testing.T) {
 	}
 	if row.Status != "expired" {
 		t.Fatalf("expired row status = %q", row.Status)
+	}
+}
+
+func TestSpaceNotificationWorkerPrunesTerminalDeliveryPayloadByAge(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	now := time.Date(2031, 2, 10, 4, 5, 6, 0, time.UTC)
+	retention := 7 * 24 * time.Hour
+	cutoff := now.Add(-retention)
+	activeExpiry := now.Add(time.Hour)
+	oldPayload := []byte(`{"space":"private-space","repo":"private-repo","rev":"private-rev","hash":"private-hash"}`)
+	rows := []models.SpaceNotifyDelivery{
+		{IdempotencyKey: "terminal-delivered-boundary", Kind: SpaceNotifyWriteLXM, Status: SpaceNotifyDeliveryDelivered, Payload: oldPayload, ExpiresAt: now.Add(-time.Hour), UpdatedAt: cutoff},
+		{IdempotencyKey: "terminal-expired-old", Kind: SpaceNotifyWriteLXM, Status: SpaceNotifyDeliveryExpired, Payload: oldPayload, ExpiresAt: now.Add(-2 * time.Hour), UpdatedAt: cutoff.Add(-time.Second)},
+		{IdempotencyKey: "terminal-failed-fresh", Kind: SpaceNotifyWriteLXM, Status: SpaceNotifyDeliveryFailed, Payload: oldPayload, ExpiresAt: now.Add(-time.Hour), UpdatedAt: cutoff.Add(time.Second)},
+		{IdempotencyKey: "active-pending-old", Kind: SpaceNotifyWriteLXM, Status: SpaceNotifyDeliveryPending, Payload: oldPayload, ExpiresAt: activeExpiry, NextAttemptAt: notificationTimePtr(now.Add(time.Hour)), UpdatedAt: cutoff.Add(-time.Hour)},
+		{IdempotencyKey: "active-retry-old", Kind: SpaceNotifyWriteLXM, Status: SpaceNotifyDeliveryRetry, Payload: oldPayload, ExpiresAt: activeExpiry, NextAttemptAt: notificationTimePtr(now.Add(time.Hour)), UpdatedAt: cutoff.Add(-time.Hour)},
+		{IdempotencyKey: "active-processing-old", Kind: SpaceNotifyWriteLXM, Status: "processing", Payload: oldPayload, ExpiresAt: activeExpiry, UpdatedAt: cutoff.Add(-time.Hour)},
+	}
+	for i := range rows {
+		if err := s.db.Create(ctx, &rows[i], nil).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := NewSpaceNotificationWorkerForDB(s.db, nil, func() time.Time { return now }, nil)
+	w.SetOptions(SpaceNotificationWorkerOptions{DeliveryRetention: retention, BatchSize: 10})
+	if n, err := w.RunOnce(ctx, 10); err != nil || n != 0 {
+		t.Fatalf("first cleanup n=%d err=%v", n, err)
+	}
+	for _, key := range []string{"terminal-delivered-boundary", "terminal-expired-old"} {
+		var row models.SpaceNotifyDelivery
+		if err := s.db.Client().Where("idempotency_key = ?", key).First(&row).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+			t.Fatalf("terminal row %q lookup=%v, want deleted", key, err)
+		}
+	}
+	for _, key := range []string{"terminal-failed-fresh", "active-pending-old", "active-retry-old", "active-processing-old"} {
+		var row models.SpaceNotifyDelivery
+		if err := s.db.Client().Where("idempotency_key = ?", key).First(&row).Error; err != nil {
+			t.Fatalf("retained row %q: %v", key, err)
+		}
+		if !bytes.Equal(row.Payload, oldPayload) {
+			t.Fatalf("retained row %q payload changed: %q", key, row.Payload)
+		}
+	}
+
+	// The row just beyond the boundary is deleted by a new worker after the
+	// clock advances, proving cleanup is durable across worker restarts.
+	now = now.Add(time.Second)
+	w = NewSpaceNotificationWorkerForDB(s.db, nil, func() time.Time { return now }, nil)
+	w.SetOptions(SpaceNotificationWorkerOptions{DeliveryRetention: retention, BatchSize: 10})
+	if n, err := w.RunOnce(ctx, 10); err != nil || n != 0 {
+		t.Fatalf("restart cleanup n=%d err=%v", n, err)
+	}
+	var row models.SpaceNotifyDelivery
+	if err := s.db.Client().Where("idempotency_key = ?", "terminal-failed-fresh").First(&row).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("boundary terminal after restart lookup=%v, want deleted", err)
+	}
+	if defaults := (SpaceNotificationWorkerOptions{}).defaults(); defaults.DeliveryRetention != SpaceNotifyDeliveryTTL {
+		t.Fatalf("default delivery retention=%s, want %s", defaults.DeliveryRetention, SpaceNotifyDeliveryTTL)
+	}
+}
+
+func TestNotificationCleanupErrorStillExpiresRegistrationAndReplay(t *testing.T) {
+	s := newTestServer(t)
+	ctx := context.Background()
+	now := time.Date(2031, 2, 11, 4, 5, 6, 0, time.UTC)
+	if err := s.db.Create(ctx, &models.SpaceNotifyRegistration{Space: testSpaceRef, Service: "did:web:expired.test#space", ExpiresAt: now.Add(-time.Second)}, nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Create(ctx, &models.SpaceReplayJTI{JTI: "cleanup-error-replay", TokenType: "dpop", ExpiresAt: now.Add(-time.Second)}, nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Client().Migrator().DropTable(&models.SpaceNotifyDelivery{}); err != nil {
+		t.Fatal(err)
+	}
+	w := NewSpaceNotificationWorkerForDB(s.db, nil, func() time.Time { return now }, nil)
+	if _, err := w.RunOnce(ctx, 1); err == nil {
+		t.Fatal("expected delivery cleanup error")
+	}
+	var registrationCount int64
+	if err := s.db.Client().Model(&models.SpaceNotifyRegistration{}).Count(&registrationCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if registrationCount != 0 {
+		t.Fatalf("expired registration remained after delivery cleanup failure: %d", registrationCount)
+	}
+	var replay models.SpaceReplayJTI
+	if err := s.db.Client().Where("jti = ?", "cleanup-error-replay").First(&replay).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("expired replay lookup=%v, want deleted", err)
+	}
+}
+
+func TestSpaceNotificationWorkerExpiresReplayRowsAcrossRestart(t *testing.T) {
+	s := newTestServer(t)
+	now := time.Date(2031, 2, 3, 4, 5, 6, 0, time.UTC)
+	deadline := now.Add(time.Hour)
+	freshDeadline := deadline.Add(time.Hour)
+	rows := []models.SpaceReplayJTI{
+		{JTI: "replay-expired", TokenType: "dpop", ExpiresAt: now.Add(-time.Second)},
+		{JTI: "replay-at-deadline", TokenType: "dpop", ExpiresAt: now},
+		{JTI: "replay-fresh", TokenType: "dpop", ExpiresAt: freshDeadline},
+	}
+	for i := range rows {
+		if err := s.db.Create(context.Background(), &rows[i], nil).Error; err != nil {
+			t.Fatalf("seed replay row %q: %v", rows[i].JTI, err)
+		}
+	}
+	clock := now
+	w := NewSpaceNotificationWorkerForDB(s.db, nil, func() time.Time { return clock }, nil)
+	if _, err := w.RunOnce(context.Background(), 1); err != nil {
+		t.Fatalf("first cleanup: %v", err)
+	}
+	var row models.SpaceReplayJTI
+	if err := s.db.Client().Where("jti = ?", "replay-expired").First(&row).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("expired replay lookup = %v, want deleted", err)
+	}
+	for _, jti := range []string{"replay-at-deadline", "replay-fresh"} {
+		row = models.SpaceReplayJTI{}
+		if err := s.db.Client().Where("jti = ?", jti).First(&row).Error; err != nil {
+			t.Fatalf("replay %q after first cleanup: %v", jti, err)
+		}
+	}
+
+	clock = deadline.Add(time.Nanosecond)
+	// A new worker instance proves cleanup is durable and clock-controlled.
+	w = NewSpaceNotificationWorkerForDB(s.db, nil, func() time.Time { return clock }, nil)
+	if _, err := w.RunOnce(context.Background(), 1); err != nil {
+		t.Fatalf("restart cleanup: %v", err)
+	}
+	if err := s.db.Client().Where("jti = ?", "replay-at-deadline").First(&row).Error; !errors.Is(err, gorm.ErrRecordNotFound) {
+		t.Fatalf("deadline replay lookup = %v, want deleted after boundary", err)
+	}
+	row = models.SpaceReplayJTI{}
+	if err := s.db.Client().Where("jti = ?", "replay-fresh").First(&row).Error; err != nil {
+		t.Fatalf("fresh replay lookup = %v, want retained", err)
 	}
 }
 

@@ -5,8 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -36,9 +34,10 @@ type ComAtprotoSpaceGetRecordResponse struct {
 }
 
 type ComAtprotoSpaceListRecordsRecord struct {
-	URI   string `json:"uri"`
-	CID   string `json:"cid"`
-	Value any    `json:"value,omitempty"`
+	Collection string `json:"collection"`
+	Rkey       string `json:"rkey"`
+	CID        string `json:"cid"`
+	Value      any    `json:"value,omitempty"`
 }
 
 type ComAtprotoSpaceListRecordsResponse struct {
@@ -51,18 +50,27 @@ type ComAtprotoSpaceGetLatestCommitResponse struct {
 }
 
 type ComAtprotoSpaceRepoOp struct {
-	Rev        string `json:"rev"`
-	Collection string `json:"collection"`
-	RKey       string `json:"rkey"`
-	CID        string `json:"cid,omitempty"`
-	Prev       string `json:"prev,omitempty"`
-	Value      any    `json:"value,omitempty"`
+	Rev        string  `json:"rev"`
+	Collection string  `json:"collection"`
+	RKey       string  `json:"rkey"`
+	CID        *string `json:"cid"`
+	Prev       *string `json:"prev"`
+	Value      any     `json:"value,omitempty"`
 }
 
 type ComAtprotoSpaceListRepoOpsResponse struct {
 	Cursor *string                 `json:"cursor,omitempty"`
 	Ops    []ComAtprotoSpaceRepoOp `json:"ops"`
 	Commit *space.SignedCommit     `json:"commit,omitempty"`
+}
+
+// spaceRepoQueryParam accepts the pinned `repo` parameter and temporarily
+// accepts Cocoon's pre-alpha `did` spelling for existing callers.
+func spaceRepoQueryParam(e echo.Context) string {
+	if repo := e.QueryParam("repo"); repo != "" {
+		return repo
+	}
+	return e.QueryParam("did")
 }
 
 func spaceJSONError(e echo.Context, status int, name string) error {
@@ -152,6 +160,9 @@ func oauthAllowsSpaceRead(p *OAuthPrincipal, value space.SpaceURI, author string
 	if p == nil || p.Subject == "" || p.Subject != author {
 		return false
 	}
+	if p.Legacy {
+		return true
+	}
 	parsed, err := scopes.ParseList(strings.Join(p.Scopes, " "))
 	if err != nil {
 		return false
@@ -238,7 +249,7 @@ func decodeSpaceRecord(row models.SpaceRecord) (any, error) {
 
 func (s *Server) handleSpaceGetRecord(e echo.Context) error {
 	ctx := e.Request().Context()
-	rawSpace, author := e.QueryParam("space"), e.QueryParam("did")
+	rawSpace, author := e.QueryParam("space"), spaceRepoQueryParam(e)
 	collection, rkey := e.QueryParam("collection"), e.QueryParam("rkey")
 	if rawSpace == "" || author == "" || collection == "" || rkey == "" {
 		return spaceInvalidRequest(e)
@@ -283,7 +294,7 @@ func (s *Server) handleSpaceGetRecord(e echo.Context) error {
 
 func (s *Server) handleSpaceListRecords(e echo.Context) error {
 	ctx := e.Request().Context()
-	rawSpace, author := e.QueryParam("space"), e.QueryParam("did")
+	rawSpace, author := e.QueryParam("space"), spaceRepoQueryParam(e)
 	if rawSpace == "" || author == "" {
 		return spaceInvalidRequest(e)
 	}
@@ -297,7 +308,7 @@ func (s *Server) handleSpaceListRecords(e echo.Context) error {
 			return spaceInvalidRequest(e)
 		}
 	}
-	limit, err := parseSpaceLimit(e, 50, 100)
+	limit, err := parseSpaceLimit(e, 50, 1000)
 	if err != nil {
 		return spaceInvalidRequest(e)
 	}
@@ -316,13 +327,18 @@ func (s *Server) handleSpaceListRecords(e echo.Context) error {
 	if err != nil {
 		return spaceInternalError(e)
 	}
-	sortSpaceRecords(rows, reverse)
+	// The reference orders by record URI descending by default; reverse=true
+	// switches to ascending order. The URI is also the opaque cursor value.
+	sortSpaceRecords(rows, !reverse)
 	cursor := e.QueryParam("cursor")
 	if cursor != "" {
 		filtered := rows[:0]
 		for _, row := range rows {
-			path := spacePath(row)
-			if (!reverse && path > cursor) || (reverse && path < cursor) {
+			uri, uriErr := spaceRecordURI(spaceRef, author, row.Collection, row.Rkey)
+			if uriErr != nil {
+				return spaceInternalError(e)
+			}
+			if (!reverse && uri < cursor) || (reverse && uri > cursor) {
 				filtered = append(filtered, row)
 			}
 		}
@@ -334,12 +350,13 @@ func (s *Server) handleSpaceListRecords(e echo.Context) error {
 	}
 	items := make([]ComAtprotoSpaceListRecordsRecord, 0, len(rows))
 	for _, row := range rows {
-		uri, err := spaceRecordURI(spaceRef, author, row.Collection, row.Rkey)
-		if err != nil {
-			return spaceInternalError(e)
+		item := ComAtprotoSpaceListRecordsRecord{
+			Collection: row.Collection,
+			Rkey:       row.Rkey,
+			CID:        row.CID,
 		}
-		item := ComAtprotoSpaceListRecordsRecord{URI: uri, CID: row.CID}
 		if !excludeValues {
+			var err error
 			item.Value, err = decodeSpaceRecord(row)
 			if err != nil {
 				return spaceInternalError(e)
@@ -349,7 +366,11 @@ func (s *Server) handleSpaceListRecords(e echo.Context) error {
 	}
 	response := ComAtprotoSpaceListRecordsResponse{Records: items}
 	if hasMore && len(rows) != 0 {
-		next := spacePath(rows[len(rows)-1])
+		last := rows[len(rows)-1]
+		next, err := spaceRecordURI(spaceRef, author, last.Collection, last.Rkey)
+		if err != nil {
+			return spaceInternalError(e)
+		}
 		response.Cursor = &next
 	}
 	return e.JSON(http.StatusOK, response)
@@ -381,7 +402,7 @@ func (s *Server) currentSpaceCommit(ctx context.Context, spaceRef space.SpaceURI
 
 func (s *Server) handleSpaceGetLatestCommit(e echo.Context) error {
 	ctx := e.Request().Context()
-	rawSpace, author := e.QueryParam("space"), e.QueryParam("did")
+	rawSpace, author := e.QueryParam("space"), spaceRepoQueryParam(e)
 	if rawSpace == "" || author == "" {
 		return spaceInvalidRequest(e)
 	}
@@ -424,7 +445,7 @@ func (s *Server) repoRecordsForCAR(ctx context.Context, spaceRef space.SpaceURI,
 
 func (s *Server) handleSpaceGetRepo(e echo.Context) error {
 	ctx := e.Request().Context()
-	rawSpace, author := e.QueryParam("space"), e.QueryParam("did")
+	rawSpace, author := e.QueryParam("space"), spaceRepoQueryParam(e)
 	if rawSpace == "" || author == "" {
 		return spaceInvalidRequest(e)
 	}
@@ -443,11 +464,18 @@ func (s *Server) handleSpaceGetRepo(e echo.Context) error {
 	if err != nil {
 		return spaceInternalError(e)
 	}
-	repoCommit, err := space.RepoCommitFromRecords(records)
+	recomputed, err := space.RepoCommitFromRecords(records)
 	if err != nil {
 		return spaceInternalError(e)
 	}
-	commit, err := s.signSpaceCommit(ctx, spaceRef, author, repo.Rev, repoCommit.Hash())
+	persisted, err := space.NewLtHash(repo.LtHash)
+	if err != nil || !bytes.Equal(recomputed.Hash(), persisted.Digest()) {
+		// Do not sign a CAR whose records disagree with the durable repository
+		// head. A client must recover from an explicit integrity failure rather
+		// than accepting a newly signed but divergent state.
+		return spaceInternalError(e)
+	}
+	commit, err := s.signSpaceCommit(ctx, spaceRef, author, repo.Rev, persisted.Digest())
 	if err != nil {
 		return spaceInternalError(e)
 	}
@@ -458,31 +486,30 @@ func (s *Server) handleSpaceGetRepo(e echo.Context) error {
 	return e.Stream(http.StatusOK, "application/vnd.ipld.car", bytes.NewReader(data))
 }
 
-type spaceOpCursor struct {
-	Rev string `json:"rev"`
-	Idx int    `json:"idx"`
+func encodeSpaceOpCursor(rev string, idx int) string {
+	return rev + "/" + strconv.Itoa(idx)
 }
 
-func encodeSpaceOpCursor(rev string, idx int) string {
-	data, _ := json.Marshal(spaceOpCursor{Rev: rev, Idx: idx})
-	return base64.RawURLEncoding.EncodeToString(data)
+type spaceOpCursor struct {
+	Rev string
+	Idx int
 }
 
 func decodeSpaceOpCursor(raw string) (spaceOpCursor, error) {
-	data, err := base64.RawURLEncoding.DecodeString(raw)
-	if err != nil {
-		return spaceOpCursor{}, err
+	separator := strings.LastIndexByte(raw, '/')
+	if separator <= 0 || separator == len(raw)-1 {
+		return spaceOpCursor{}, errors.New("invalid cursor")
 	}
-	var cursor spaceOpCursor
-	if err := json.Unmarshal(data, &cursor); err != nil || cursor.Rev == "" || cursor.Idx < 0 {
-		return spaceOpCursor{}, errors.New("invalid opaque cursor")
+	idx, err := strconv.Atoi(raw[separator+1:])
+	if err != nil || idx < 0 {
+		return spaceOpCursor{}, errors.New("invalid cursor index")
 	}
-	return cursor, nil
+	return spaceOpCursor{Rev: raw[:separator], Idx: idx}, nil
 }
 
 func (s *Server) handleSpaceListRepoOps(e echo.Context) error {
 	ctx := e.Request().Context()
-	rawSpace, author := e.QueryParam("space"), e.QueryParam("did")
+	rawSpace, author := e.QueryParam("space"), spaceRepoQueryParam(e)
 	if rawSpace == "" || author == "" {
 		return spaceInvalidRequest(e)
 	}
@@ -490,7 +517,7 @@ func (s *Server) handleSpaceListRepoOps(e echo.Context) error {
 	if err != nil {
 		return err
 	}
-	limit, err := parseSpaceLimit(e, 500, 1000)
+	limit, err := parseSpaceLimit(e, 100, 1000)
 	if err != nil {
 		return spaceInvalidRequest(e)
 	}
@@ -509,15 +536,6 @@ func (s *Server) handleSpaceListRepoOps(e echo.Context) error {
 	if err := s.db.Client().WithContext(ctx).Where("space = ? AND author = ?", spaceRef.String(), author).Order("rev ASC, idx ASC").Find(&rows).Error; err != nil {
 		return spaceInternalError(e)
 	}
-	if since := e.QueryParam("since"); since != "" {
-		filtered := rows[:0]
-		for _, row := range rows {
-			if row.Rev > since {
-				filtered = append(filtered, row)
-			}
-		}
-		rows = filtered
-	}
 	if rawCursor := e.QueryParam("cursor"); rawCursor != "" {
 		cursor, err := decodeSpaceOpCursor(rawCursor)
 		if err != nil {
@@ -526,6 +544,14 @@ func (s *Server) handleSpaceListRepoOps(e echo.Context) error {
 		filtered := rows[:0]
 		for _, row := range rows {
 			if row.Rev > cursor.Rev || (row.Rev == cursor.Rev && row.Idx > cursor.Idx) {
+				filtered = append(filtered, row)
+			}
+		}
+		rows = filtered
+	} else if since := e.QueryParam("since"); since != "" {
+		filtered := rows[:0]
+		for _, row := range rows {
+			if row.Rev > since {
 				filtered = append(filtered, row)
 			}
 		}
@@ -562,12 +588,12 @@ func (s *Server) handleSpaceListRepoOps(e echo.Context) error {
 	}
 	ops := make([]ComAtprotoSpaceRepoOp, 0, len(selected))
 	for _, row := range selected {
-		op := ComAtprotoSpaceRepoOp{Rev: row.Rev, Collection: row.Collection, RKey: row.Rkey}
-		if row.CurrentCID != nil {
-			op.CID = *row.CurrentCID
-		}
-		if row.PreviousCID != nil {
-			op.Prev = *row.PreviousCID
+		op := ComAtprotoSpaceRepoOp{
+			Rev:        row.Rev,
+			Collection: row.Collection,
+			RKey:       row.Rkey,
+			CID:        row.CurrentCID,
+			Prev:       row.PreviousCID,
 		}
 		if !excludeValues && row.CurrentCID != nil {
 			key := row.Collection + "/" + row.Rkey
@@ -598,14 +624,15 @@ func (s *Server) handleSpaceListRepoOps(e echo.Context) error {
 }
 
 // A writer may store either the serialized LtHash state or its sha256 digest.
+// The Lexicon's `bytes` encoding is base64url, not hexadecimal.
 func spaceHashHex(raw []byte) string {
 	if len(raw) == space.LtHashStateBytes {
 		if hash, err := space.NewLtHash(raw); err == nil {
-			return hex.EncodeToString(hash.Digest())
+			return base64.RawURLEncoding.EncodeToString(hash.Digest())
 		}
 	}
 	if len(raw) == sha256.Size {
-		return hex.EncodeToString(raw)
+		return base64.RawURLEncoding.EncodeToString(raw)
 	}
 	return ""
 }

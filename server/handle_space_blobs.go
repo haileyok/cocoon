@@ -3,18 +3,12 @@ package server
 import (
 	"bytes"
 	"errors"
-	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"path"
-	"sort"
+	"strconv"
 	"strings"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/oauth/scopes"
 	"github.com/haileyok/cocoon/space"
@@ -31,6 +25,9 @@ type ComAtprotoSpaceListBlobsResponse struct {
 func oauthAllowsBlobScope(p *OAuthPrincipal, detectedMIME string) bool {
 	if p == nil {
 		return false
+	}
+	if p.Legacy {
+		return true
 	}
 	parsed, err := scopes.ParseList(strings.Join(p.Scopes, " "))
 	if err != nil {
@@ -52,6 +49,9 @@ func oauthAllowsBlobScope(p *OAuthPrincipal, detectedMIME string) bool {
 func oauthHasBlobScope(p *OAuthPrincipal) bool {
 	if p == nil {
 		return false
+	}
+	if p.Legacy {
+		return true
 	}
 	parsed, err := scopes.ParseList(strings.Join(p.Scopes, " "))
 	if err != nil {
@@ -105,55 +105,26 @@ func (s *Server) findSpaceBlobRef(e echo.Context, spaceRef space.SpaceURI, autho
 
 func (s *Server) loadSpaceBlob(e echo.Context, author string, blobCID cid.Cid) ([]byte, string, error) {
 	ctx := e.Request().Context()
-	var blob models.Blob
-	if err := s.db.Client().WithContext(ctx).Where("did = ? AND cid = ?", author, blobCID.Bytes()).First(&blob).Error; err != nil {
+	ready, err := s.selectReadyBlob(ctx, author, blobCID.Bytes(), false)
+	if err != nil {
 		return nil, "", err
 	}
-	var data bytes.Buffer
-	switch blob.Storage {
-	case "", "sqlite":
-		var parts []models.BlobPart
-		if err := s.db.Client().WithContext(ctx).Where("blob_id = ?", blob.ID).Order("idx ASC").Find(&parts).Error; err != nil {
-			return nil, "", err
-		}
-		for _, part := range parts {
-			_, _ = data.Write(part.Data)
-		}
-	case "s3":
-		if s.s3Config == nil || !s.s3Config.BlobstoreEnabled {
-			return nil, "", fmt.Errorf("S3 blob storage is disabled")
-		}
-		config := &aws.Config{
-			Region:      aws.String(s.s3Config.Region),
-			Credentials: credentials.NewStaticCredentials(s.s3Config.AccessKey, s.s3Config.SecretKey, ""),
-		}
-		if s.s3Config.Endpoint != "" {
-			config.Endpoint = aws.String(s.s3Config.Endpoint)
-			config.S3ForcePathStyle = aws.Bool(true)
-		}
-		sess, err := session.NewSession(config)
-		if err != nil {
-			return nil, "", err
-		}
-		result, err := s3.New(sess).GetObject(&s3.GetObjectInput{
-			Bucket: aws.String(s.s3Config.Bucket),
-			Key:    aws.String(fmt.Sprintf("blobs/%s/%s", author, blobCID.String())),
-		})
-		if err != nil {
-			return nil, "", err
-		}
-		defer result.Body.Close()
-		if _, err := io.Copy(&data, result.Body); err != nil {
-			return nil, "", err
-		}
-	default:
-		return nil, "", fmt.Errorf("unknown blob storage %q", blob.Storage)
+	if ready == nil {
+		return nil, "", gorm.ErrRecordNotFound
 	}
-	return data.Bytes(), http.DetectContentType(data.Bytes()), nil
+	data, err := s.readReadyBlob(ctx, ready)
+	if err != nil {
+		return nil, "", err
+	}
+	mimeType := ready.Blob.MimeType
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	return data, mimeType, nil
 }
 
 func (s *Server) handleSpaceGetBlob(e echo.Context) error {
-	spaceRaw, author, rawCID := e.QueryParam("space"), e.QueryParam("did"), e.QueryParam("cid")
+	spaceRaw, author, rawCID := e.QueryParam("space"), spaceRepoQueryParam(e), e.QueryParam("cid")
 	if spaceRaw == "" || author == "" || rawCID == "" {
 		return spaceInvalidRequest(e)
 	}
@@ -184,7 +155,8 @@ func (s *Server) handleSpaceGetBlob(e echo.Context) error {
 	}
 	// Never redirect to CDNUrl: blob authorization must remain in this request.
 	e.Response().Header().Set(echo.HeaderContentDisposition, "attachment; filename="+blobCID.String())
-	return e.Stream(http.StatusOK, "application/octet-stream", bytes.NewReader(data))
+	e.Response().Header().Set(echo.HeaderContentLength, strconv.Itoa(len(data)))
+	return e.Stream(http.StatusOK, detectedMIME, bytes.NewReader(data))
 }
 
 func forbiddenSpaceBlobScope(e echo.Context) error {
@@ -193,7 +165,7 @@ func forbiddenSpaceBlobScope(e echo.Context) error {
 
 func (s *Server) handleSpaceListBlobs(e echo.Context) error {
 	ctx := e.Request().Context()
-	spaceRaw, author := e.QueryParam("space"), e.QueryParam("did")
+	spaceRaw, author := e.QueryParam("space"), e.QueryParam("repo")
 	if spaceRaw == "" || author == "" {
 		return spaceInvalidRequest(e)
 	}
@@ -209,28 +181,22 @@ func (s *Server) handleSpaceListBlobs(e echo.Context) error {
 	if p, ok := PrincipalFromContext(e).(*OAuthPrincipal); ok && !oauthHasBlobScope(p) {
 		return forbiddenSpaceBlobScope(e)
 	}
-	limit, err := parseSpaceLimit(e, 50, 1000)
+	limit, err := parseSpaceLimit(e, 500, 1000)
 	if err != nil {
 		return spaceInvalidRequest(e)
 	}
-	var refs []models.SpaceBlobRef
-	if err := s.db.Client().WithContext(ctx).Where("space = ? AND author = ?", spaceRef.String(), author).Find(&refs).Error; err != nil {
-		return spaceInternalError(e)
+	cursor := e.QueryParam("cursor")
+	query := s.db.Client().WithContext(ctx).
+		Model(&models.SpaceBlobRef{}).
+		Where("space = ? AND author = ?", spaceRef.String(), author).
+		Distinct("cid").
+		Order("cid ASC")
+	if cursor != "" {
+		query = query.Where("cid > ?", cursor)
 	}
-	sort.Slice(refs, func(i, j int) bool { return refs[i].CID < refs[j].CID })
-	// SpaceBlobRef's primary key prevents duplicates, but preserve a set here so
-	// old databases with duplicate rows cannot leak duplicate CIDs in the API.
-	cids := make([]string, 0, len(refs))
-	seen := make(map[string]struct{}, len(refs))
-	for _, ref := range refs {
-		if _, ok := seen[ref.CID]; ok {
-			continue
-		}
-		if cursor := e.QueryParam("cursor"); cursor != "" && ref.CID <= cursor {
-			continue
-		}
-		seen[ref.CID] = struct{}{}
-		cids = append(cids, ref.CID)
+	var cids []string
+	if err := query.Limit(limit+1).Pluck("cid", &cids).Error; err != nil {
+		return spaceInternalError(e)
 	}
 	hasMore := len(cids) > limit
 	if hasMore {

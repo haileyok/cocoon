@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/space"
 	"github.com/labstack/echo/v4"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -91,6 +93,9 @@ func (s *Server) handleSpaceRegisterNotify(e echo.Context) error {
 	if err != nil {
 		return spaceInvalidRequest(e)
 	}
+	if s.config == nil || s.config.Did != string(spaceRef.AuthorityDID) {
+		return spaceJSONError(e, http.StatusBadRequest, "SpaceNotFound")
+	}
 	if err := s.checkSpaceAvailable(e.Request().Context(), spaceRef.String(), string(spaceRef.AuthorityDID)); err != nil {
 		return spaceJSONError(e, http.StatusBadRequest, "SpaceNotFound")
 	}
@@ -128,6 +133,9 @@ func (s *Server) handleSpaceUnregisterNotify(e echo.Context) error {
 	if err != nil {
 		return spaceInvalidRequest(e)
 	}
+	if s.config == nil || s.config.Did != string(spaceRef.AuthorityDID) {
+		return spaceJSONError(e, http.StatusBadRequest, "SpaceNotFound")
+	}
 	if err := s.checkSpaceAvailable(e.Request().Context(), spaceRef.String(), string(spaceRef.AuthorityDID)); err != nil {
 		return spaceJSONError(e, http.StatusBadRequest, "SpaceNotFound")
 	}
@@ -159,6 +167,25 @@ func (s *Server) handleSpaceNotifyWrite(e echo.Context) error {
 	}
 	if _, err := syntax.ParseTID(req.Rev); err != nil {
 		return spaceInvalidRequest(e)
+	}
+	if principal.Audience != string(parsed.AuthorityDID) {
+		return spaceJSONError(e, http.StatusForbidden, "Forbidden")
+	}
+	row, _, loadErr := s.simpleSpaceLoad(e.Request().Context(), parsed.String(), false)
+	if errors.Is(loadErr, gorm.ErrRecordNotFound) {
+		// Notifications are best-effort. The reference treats an ungoverned
+		// or already-deleted local Space as a successful no-op so remote PDSes
+		// do not retry a notification nobody here can maintain.
+		return e.JSON(http.StatusOK, struct{}{})
+	}
+	if loadErr != nil {
+		return spaceInternalError(e)
+	}
+	// notifyWrite comes from a PDS, so it has no OAuth client attestation.
+	// Apply the same user policy as credential minting while intentionally
+	// ignoring appAccess allow-lists.
+	if !s.simpleSpacePolicyUserAllowed(e.Request().Context(), &row, req.Repo, parsed.String(), "") {
+		return spaceJSONError(e, http.StatusForbidden, "Forbidden")
 	}
 	hash, err := ParseSpaceNotificationHash(req.Hash)
 	if err != nil {

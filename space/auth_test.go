@@ -491,7 +491,7 @@ func TestReplayBatchRollbackAndConcurrentIdenticalMemoryBatches(t *testing.T) {
 	}
 	batch := []ReplayArtifact{
 		{JTI: "batch-first", TokenType: "delegation", ExpiresAt: expires},
-		{JTI: "batch-middle", TokenType: "dpop", ExpiresAt: expires},
+		{JTI: "batch-middle", TokenType: "delegation", ExpiresAt: expires},
 		{JTI: "batch-third", TokenType: "client", ExpiresAt: expires},
 	}
 	if err := store.ConsumeBatch(context.Background(), batch); !errors.Is(err, ErrReplay) {
@@ -539,6 +539,78 @@ func TestReplayBatchRollbackAndConcurrentIdenticalMemoryBatches(t *testing.T) {
 	}
 }
 
+func TestReplayNamespaceAllowsCrossTypeAndRejectsSameTypeDuplicates(t *testing.T) {
+	store := NewMemoryReplayStoreWithClock(testClock(testAuthNow))
+	expires := testAuthNow.Add(time.Hour)
+	if err := store.Consume(context.Background(), "same-jti", "delegation", expires); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Consume(context.Background(), "same-jti", "dpop", expires); err != nil {
+		t.Fatalf("same JTI across token types = %v", err)
+	}
+	if err := store.ConsumeBatch(context.Background(), []ReplayArtifact{
+		{JTI: "duplicate", TokenType: "delegation", ExpiresAt: expires},
+		{JTI: "duplicate", TokenType: "delegation", ExpiresAt: expires},
+	}); !errors.Is(err, ErrReplay) {
+		t.Fatalf("same-type duplicate batch = %v, want ErrReplay", err)
+	}
+}
+
+func TestReplayNamespaceCrossTypeConcurrency(t *testing.T) {
+	store := NewMemoryReplayStoreWithClock(testClock(testAuthNow))
+	expires := testAuthNow.Add(time.Hour)
+	types := []string{"delegation", "dpop", "service-auth", "client-attestation"}
+	start := make(chan struct{})
+	results := make(chan error, len(types))
+	var wg sync.WaitGroup
+	wg.Add(len(types))
+	for _, tokenType := range types {
+		go func(tokenType string) {
+			defer wg.Done()
+			<-start
+			results <- store.Consume(context.Background(), "cross-type-jti", tokenType, expires)
+		}(tokenType)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	for err := range results {
+		if err != nil {
+			t.Fatalf("cross-type concurrent consume = %v", err)
+		}
+	}
+}
+
+func TestGORMReplayLegacyRawJTIBlocksUntilExpiry(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "legacy-replay.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&models.SpaceReplayJTI{}); err != nil {
+		t.Fatal(err)
+	}
+	store := NewGORMReplayStore(db)
+	now := time.Now()
+	legacy := &models.SpaceReplayJTI{JTI: "legacy-jti", TokenType: "delegation", ExpiresAt: now.Add(time.Hour)}
+	if err := db.Create(legacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Consume(context.Background(), "legacy-jti", "dpop", now.Add(time.Hour)); !errors.Is(err, ErrReplay) {
+		t.Fatalf("unexpired legacy row = %v, want ErrReplay", err)
+	}
+	if err := db.Model(&models.SpaceReplayJTI{}).Where("jti = ?", legacy.JTI).
+		Update("expires_at", now.Add(-time.Second)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Consume(context.Background(), "legacy-jti", "dpop", now.Add(time.Hour)); err != nil {
+		t.Fatalf("namespaced consume after legacy removal = %v", err)
+	}
+	var row models.SpaceReplayJTI
+	if err := db.First(&row, "jti = ?", replayKey("legacy-jti", "dpop")).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGORMReplayBatchRollsBackOnReplay(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "replay.db")), &gorm.Config{})
 	if err != nil {
@@ -554,7 +626,7 @@ func TestGORMReplayBatchRollsBackOnReplay(t *testing.T) {
 	}
 	batch := []ReplayArtifact{
 		{JTI: "gorm-first", TokenType: "delegation", ExpiresAt: expires},
-		{JTI: "gorm-middle", TokenType: "dpop", ExpiresAt: expires},
+		{JTI: "gorm-middle", TokenType: "delegation", ExpiresAt: expires},
 		{JTI: "gorm-third", TokenType: "client", ExpiresAt: expires},
 	}
 	if err := store.ConsumeBatch(context.Background(), batch); !errors.Is(err, ErrReplay) {

@@ -180,6 +180,9 @@ func (s *Server) allowsSpaceOAuthWrite(principal *OAuthPrincipal, ref space.Spac
 	if principal == nil {
 		return false
 	}
+	if principal.Legacy {
+		return true
+	}
 	for _, raw := range principal.Scopes {
 		grant, err := scopes.Parse(raw)
 		if err != nil {
@@ -212,6 +215,12 @@ func mapSpaceOAuthWriteError(e echo.Context, err error) error {
 	}
 	if strings.Contains(err.Error(), "space unavailable") || strings.Contains(err.Error(), "tombstoned") {
 		return spaceOAuthInputError(e, "SpaceNotFound")
+	}
+	if strings.Contains(err.Error(), "MIME type does not match") {
+		return spaceOAuthInputError(e, "InvalidMimeType")
+	}
+	if strings.Contains(err.Error(), "size does not match") {
+		return spaceOAuthInputError(e, "InvalidSize")
 	}
 	if strings.Contains(err.Error(), "space ref:") || strings.Contains(err.Error(), "author DID:") || strings.Contains(err.Error(), "collection:") || strings.Contains(err.Error(), "rkey:") || strings.Contains(err.Error(), "record must be") || strings.Contains(err.Error(), "unknown operation") {
 		return spaceOAuthInputError(e, "InvalidRequest")

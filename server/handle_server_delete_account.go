@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/to"
@@ -11,9 +12,9 @@ import (
 	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
-	"github.com/ipfs/go-cid"
 	"github.com/labstack/echo/v4"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -21,6 +22,48 @@ type ComAtprotoServerDeleteAccountRequest struct {
 	Did      string `json:"did" validate:"required"`
 	Password string `json:"password" validate:"required"`
 	Token    string `json:"token" validate:"required"`
+}
+
+func enqueueBlobDeletion(ctx context.Context, tx *db.DB, blob models.Blob, config *S3Config, now time.Time) error {
+	bucket, objectKey, err := blobS3Target(blob, config)
+	if err != nil {
+		return err
+	}
+	idempotencyKey := blobDeletionIdempotencyKey(bucket, objectKey)
+	var existing models.BlobDeletion
+	findErr := tx.Client().WithContext(ctx).Where("idempotency_key = ?", idempotencyKey).First(&existing).Error
+	if findErr == nil {
+		// Repair rows produced by older versions that failed to snapshot the
+		// bucket, while preserving any already-snapshotted immutable target.
+		updates := map[string]any{"updated_at": now}
+		if existing.Bucket == "" {
+			updates["bucket"] = bucket
+		}
+		if existing.ObjectKey == "" {
+			updates["object_key"] = objectKey
+		}
+		// Rows written by versions that terminally failed at MaxAttempts must
+		// become eligible again when the same immutable generation is observed.
+		if existing.Status == BlobDeletionFailed {
+			updates["status"] = BlobDeletionPending
+			updates["attempt_count"] = 0
+			updates["next_attempt_at"] = nil
+			updates["last_error"] = ""
+		}
+		return tx.Client().WithContext(ctx).Model(&models.BlobDeletion{}).Where("id = ?", existing.ID).Updates(updates).Error
+	}
+	if !errors.Is(findErr, gorm.ErrRecordNotFound) {
+		return findErr
+	}
+	deletion := &models.BlobDeletion{
+		IdempotencyKey: idempotencyKey,
+		Bucket:         bucket,
+		ObjectKey:      objectKey,
+		Status:         BlobDeletionPending,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	return tx.Create(ctx, deletion, nil).Error
 }
 
 func (s *Server) handleServerDeleteAccount(e echo.Context) error {
@@ -129,7 +172,7 @@ func (s *Server) handleServerDeleteAccount(e echo.Context) error {
 			logger.Error("error creating space tombstone", "error", err)
 			return helpers.ServerError(e, nil)
 		}
-		if err := markSimpleSpaceDeleted(spaceDB, ctx, ownedSpace.URI, req.Did, deletedAt); err != nil {
+		if err := markSimpleSpaceDeleted(spaceDB, ctx, ownedSpace.URI, req.Did, deletedAt, s.s3Config); err != nil {
 			logger.Error("error deleting owned space data", "error", err)
 			return helpers.ServerError(e, nil)
 		}
@@ -178,28 +221,23 @@ func (s *Server) handleServerDeleteAccount(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	// Public blobs with a positive RefCount or a surviving permissioned
-	// SpaceBlobRef are still referenced. Do not remove their underlying object
-	// merely because the uploading account is being deleted. Invalid CIDs are
-	// skipped conservatively; the normal cleanup path removes their parts too.
+	// Blob storage is author-namespaced, so all blobs uploaded by the account
+	// are owned by it regardless of public ref_count or permissioned references
+	// using the same CID. Remove their parts before the blob rows.
 	var accountBlobs []models.Blob
-	if err := tx.WithContext(ctx).Where("did = ? AND ref_count <= ?", req.Did, 0).Find(&accountBlobs).Error; err != nil {
-		logger.Error("error finding deletable blobs", "error", err)
+	if err := tx.WithContext(ctx).Where("did = ?", req.Did).Find(&accountBlobs).Error; err != nil {
+		logger.Error("error finding account blobs", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 	for _, blob := range accountBlobs {
-		blobCID, err := cid.Cast(blob.Cid)
-		if err != nil {
-			logger.Warn("skipping blob with invalid CID during account deletion", "did", req.Did, "blob_id", blob.ID, "error", err)
-			continue
-		}
-		var survivingRefs int64
-		if err := tx.WithContext(ctx).Model(&models.SpaceBlobRef{}).Where("cid = ?", blobCID.String()).Count(&survivingRefs).Error; err != nil {
-			logger.Error("error checking permissioned blob references", "error", err)
-			return helpers.ServerError(e, nil)
-		}
-		if survivingRefs > 0 {
-			continue
+		if blob.Storage == "s3" {
+			// Resolve and snapshot the exact generation before deleting metadata.
+			// A missing bucket is a configuration/data error, so returning here
+			// rolls back the entire account deletion rather than losing the blob.
+			if err := enqueueBlobDeletion(ctx, db.NewDB(tx), blob, s.s3Config, deletedAt); err != nil {
+				logger.Error("error enqueueing S3 blob deletion", "error", err)
+				return helpers.ServerError(e, nil)
+			}
 		}
 		if err := tx.Exec("DELETE FROM blob_parts WHERE blob_id = ?", blob.ID).Error; err != nil {
 			logger.Error("error deleting blob parts", "error", err)

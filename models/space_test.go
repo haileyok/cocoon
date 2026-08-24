@@ -36,6 +36,9 @@ func TestSpaceModelsMigrateSQLite(t *testing.T) {
 	if !db.Migrator().HasIndex(&SpaceRepo{}, "idx_space_repos_space_author") {
 		t.Error("missing SpaceRepo space/author index")
 	}
+	if !db.Migrator().HasIndex(&SpaceBlobRef{}, "idx_space_blob_refs_space_author_cid") {
+		t.Error("missing SpaceBlobRef space/author/CID index")
+	}
 }
 
 func TestSpaceCompositeKeysIsolateSpacesAndAuthors(t *testing.T) {
@@ -123,5 +126,33 @@ func TestSpaceTombstoneIsUnique(t *testing.T) {
 	}
 	if err := db.Create(&tombstone).Error; err == nil {
 		t.Fatal("duplicate space tombstone was accepted")
+	}
+}
+
+func TestSpaceBlobRefIdentityIsUnique(t *testing.T) {
+	db := openSpaceSchemaDB(t)
+	if err := db.AutoMigrate(SpaceModels()...); err != nil {
+		t.Fatalf("migrate space models: %v", err)
+	}
+
+	ref := SpaceBlobRef{
+		Space:      "at://did:example:authority/space/com.example/one",
+		Author:     "did:example:alice",
+		Collection: "com.example.post",
+		Rkey:       "one",
+		CID:        "bafyref",
+	}
+	if err := db.Create(&ref).Error; err != nil {
+		t.Fatalf("create blob ref: %v", err)
+	}
+	// One blob may be referenced by multiple records. listBlobs must therefore
+	// DISTINCT CIDs in SQL, rather than assuming CID alone is unique.
+	otherRecord := ref
+	otherRecord.Rkey = "two"
+	if err := db.Create(&otherRecord).Error; err != nil {
+		t.Fatalf("create second reference to blob: %v", err)
+	}
+	if err := db.Create(&ref).Error; err == nil {
+		t.Fatal("duplicate space blob reference was accepted")
 	}
 }

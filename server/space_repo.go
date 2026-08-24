@@ -131,7 +131,9 @@ type SpaceRepoFailureHook func(SpaceRepoFailureStage) error
 // not expose XRPC/auth behavior: callers provide the already-authorized author.
 type SpaceRepoMan struct {
 	db                *db.DB
+	s3Config          *S3Config
 	clock             *syntax.TIDClock
+	host              string
 	notificationClock func() time.Time
 
 	failureMu   sync.RWMutex
@@ -154,9 +156,15 @@ func repoLock(key string) *sync.Mutex {
 
 // NewSpaceRepoMan constructs the persistence manager for a server.
 func NewSpaceRepoMan(s *Server) *SpaceRepoMan {
+	host := ""
+	if s != nil && s.config != nil {
+		host = s.config.Did
+	}
 	return &SpaceRepoMan{
 		db:                s.db,
+		s3Config:          s.s3Config,
 		clock:             spaceRepoClock,
+		host:              host,
 		notificationClock: spaceNotificationClock(s),
 		heads:             make(map[string]SpaceRepoBatch),
 	}
@@ -285,18 +293,53 @@ func (m *SpaceRepoMan) apply(ctx context.Context, spaceRef, author string, opera
 		// Blob namespace checks happen before any record/ref/op/head mutation.
 		seenBlobs := make(map[string]struct{})
 		for _, op := range prepared {
-			for _, blobCID := range op.blobs {
-				key := blobCID.String()
+			for _, blobRef := range op.blobRefs {
+				key := blobRef.CID.String()
 				if _, ok := seenBlobs[key]; ok {
 					continue
 				}
 				seenBlobs[key] = struct{}{}
-				var count int64
-				if err := tx.Client().WithContext(ctx).Model(&models.Blob{}).Where("did = ? AND cid = ?", author, blobCID.Bytes()).Count(&count).Error; err != nil {
+				blobQuery := tx.Client().WithContext(ctx).Where("did = ? AND cid = ?", author, blobRef.CID.Bytes()).Order("id DESC")
+				if tx.Client().Name() == "postgres" {
+					// Serialize Space publication with public zero-ref cleanup. A
+					// count-only query would allow a new SpaceBlobRef to commit after
+					// cleanup observed the old count.
+					blobQuery = blobQuery.Clauses(clause.Locking{Strength: "UPDATE"})
+				}
+				var blobs []models.Blob
+				if err := blobQuery.Find(&blobs).Error; err != nil {
 					return fmt.Errorf("check blob %s: %w", key, err)
 				}
-				if count == 0 {
+				if len(blobs) == 0 {
 					return fmt.Errorf("blob %s is not uploaded by author %s", key, author)
+				}
+				if blobRef.MetadataKnown {
+					matched := false
+					knownBlobs := 0
+					mimeMismatch := false
+					for _, blob := range blobs {
+						// Rows created before MIME/size persistence have neither
+						// value. Preserve their existing references; all new uploads
+						// carry both fields and are checked strictly.
+						if blob.MimeType == "" && blob.Size == 0 {
+							continue
+						}
+						knownBlobs++
+						if blob.MimeType != blobRef.MimeType {
+							mimeMismatch = true
+							continue
+						}
+						if blob.Size == blobRef.Size {
+							matched = true
+							break
+						}
+					}
+					if knownBlobs > 0 && !matched {
+						if mimeMismatch {
+							return fmt.Errorf("blob %s MIME type does not match uploaded blob", key)
+						}
+						return fmt.Errorf("blob %s size does not match uploaded blob", key)
+					}
 				}
 			}
 		}
@@ -334,9 +377,20 @@ func (m *SpaceRepoMan) apply(ctx context.Context, spaceRef, author string, opera
 			return err
 		}
 
+		cleanupCIDs := make(map[string]struct{})
 		for _, key := range touchedKeys {
 			before, hadBefore := old[key]
 			if hadBefore {
+				// Capture the actual persisted refs before deleting them. Existing
+				// records loaded above intentionally do not need to decode their
+				// values just to release their permissioned blob references.
+				var oldRefs []models.SpaceBlobRef
+				if err := tx.Client().WithContext(ctx).Where("space = ? AND author = ? AND collection = ? AND rkey = ?", canonicalSpace, author, before.Collection, before.Rkey).Find(&oldRefs).Error; err != nil {
+					return fmt.Errorf("load old blob refs %s: %w", key, err)
+				}
+				for _, ref := range oldRefs {
+					cleanupCIDs[ref.CID] = struct{}{}
+				}
 				if err := tx.Client().WithContext(ctx).Where("space = ? AND author = ? AND collection = ? AND rkey = ?", canonicalSpace, author, before.Collection, before.Rkey).Delete(&models.SpaceBlobRef{}).Error; err != nil {
 					return fmt.Errorf("delete old blob refs %s: %w", key, err)
 				}
@@ -348,6 +402,19 @@ func (m *SpaceRepoMan) apply(ctx context.Context, spaceRef, author string, opera
 						return fmt.Errorf("create blob ref %s: %w", key, err)
 					}
 				}
+			}
+		}
+		// A SpaceBlobRef is a visibility reference just like a public
+		// ref_count. Clean each CID only after this transaction's ref deletes
+		// are visible, while retaining it if another Space ref or public ref
+		// still exists.
+		for rawCID := range cleanupCIDs {
+			blobCID, err := cid.Parse(rawCID)
+			if err != nil {
+				return fmt.Errorf("parse released blob ref %s: %w", rawCID, err)
+			}
+			if err := cleanupUnreferencedBlobsForCID(ctx, tx, author, blobCID.Bytes(), m.s3Config); err != nil {
+				return fmt.Errorf("cleanup released blob %s: %w", rawCID, err)
 			}
 		}
 		if err := m.fail(SpaceRepoFailureAfterBlobMutation); err != nil {
@@ -378,18 +445,34 @@ func (m *SpaceRepoMan) apply(ctx context.Context, spaceRef, author string, opera
 		if err := tx.Save(ctx, &repo, nil).Error; err != nil {
 			return fmt.Errorf("update space repo head: %w", err)
 		}
+		// Keep the local writer set in the same transaction as the repo head. The
+		// writer row stores the notification digest (not the serialized LtHash
+		// state), and the conditional upsert prevents an older snapshot from
+		// regressing metadata learned from another host.
+		now := m.notificationClock
+		if now == nil {
+			now = spaceNotificationClock(nil)
+		}
+		notificationNow := now().UTC()
+		digest, err := spaceNotifyDigest(repo.LtHash)
+		if err != nil {
+			return fmt.Errorf("digest Space repo LtHash: %w", err)
+		}
+		accepted, err := upsertSpaceWriterSnapshot(ctx, tx, canonicalSpace, author, m.host, rev, digest, notificationNow, nil)
+		if err != nil {
+			return fmt.Errorf("upsert local Space writer: %w", err)
+		}
 		// The notification is an ordinary database outbox row. It is deliberately
 		// inserted before the transaction callback returns, and contains only the
 		// metadata needed by notifyWrite; no record value, collection, rkey, CID,
 		// or blob bytes ever cross this boundary. Endpoint resolution and sending
 		// are worker concerns, so a resolver cannot cause a repo transaction to
-		// block on or call the network.
-		now := m.notificationClock
-		if now == nil {
-			now = spaceNotificationClock(nil)
-		}
-		if err := enqueueSpaceRepoNotifyWrite(ctx, tx, canonicalSpace, author, rev, repo.LtHash, now().UTC()); err != nil {
-			return fmt.Errorf("enqueue Space notifyWrite: %w", err)
+		// block on or call the network. Do not forward a snapshot that the
+		// monotonic writer upsert rejected as stale.
+		if accepted {
+			if err := enqueueSpaceRepoNotifyWrite(ctx, tx, canonicalSpace, author, rev, digest, notificationNow); err != nil {
+				return fmt.Errorf("enqueue Space notifyWrite: %w", err)
+			}
 		}
 		if err := m.fail(SpaceRepoFailureAfterHeadUpdate); err != nil {
 			return err
@@ -444,6 +527,7 @@ type preparedSpaceOp struct {
 	previousCID string
 	cbor        []byte
 	blobs       []cid.Cid
+	blobRefs    []blobReferenceMetadata
 }
 
 func (m *SpaceRepoMan) prepareOperation(input SpaceRepoOperation, canonicalSpace, author string, state map[string]*spaceRecordState, hash *space.LtHash, authorize SpaceRepoActionAuthorizer) (SpaceRepoChange, preparedSpaceOp, error) {
@@ -515,15 +599,20 @@ func (m *SpaceRepoMan) prepareOperation(input SpaceRepoOperation, canonicalSpace
 	if err != nil {
 		return SpaceRepoChange{}, preparedSpaceOp{}, fmt.Errorf("record CID: %w", err)
 	}
-	blobs, err := getBlobCidsFromCbor(data)
+	blobRefs, err := getBlobReferencesFromCbor(data)
 	if err != nil {
 		return SpaceRepoChange{}, preparedSpaceOp{}, fmt.Errorf("record blob refs: %w", err)
 	}
+	blobCIDs := make([]cid.Cid, 0, len(blobRefs))
+	for _, blobRef := range blobRefs {
+		blobCIDs = append(blobCIDs, blobRef.CID)
+	}
 	op.cid = recordCID.String()
 	op.cbor = data
-	op.blobs = blobs
+	op.blobs = blobCIDs
+	op.blobRefs = blobRefs
 	change.CID = op.cid
-	state[key] = &spaceRecordState{row: models.SpaceRecord{Space: canonicalSpace, Author: author, Collection: collection, Rkey: rkey, CID: op.cid, CanonicalCBOR: append([]byte(nil), data...)}, blobs: blobs}
+	state[key] = &spaceRecordState{row: models.SpaceRecord{Space: canonicalSpace, Author: author, Collection: collection, Rkey: rkey, CID: op.cid, CanonicalCBOR: append([]byte(nil), data...)}, blobs: blobCIDs}
 	hash.Add(space.FormatElement(collection, rkey, op.cid))
 	return change, op, nil
 }

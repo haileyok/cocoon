@@ -128,8 +128,15 @@ type Blob struct {
 	CreatedAt string `gorm:"index"`
 	Did       string `gorm:"index;index:idx_blob_did_cid"`
 	Cid       []byte `gorm:"index;index:idx_blob_did_cid"`
+	MimeType  string
+	Size      int64
 	RefCount  int
 	Storage   string `gorm:"default:sqlite"`
+	// Bucket and ObjectKey are immutable S3 identity for this blob generation.
+	// Empty ObjectKey is retained for legacy rows, which resolve to the original
+	// blobs/{did}/{cid} location at read/deletion time.
+	Bucket    string
+	ObjectKey string
 }
 
 type BlobPart struct {
@@ -137,6 +144,23 @@ type BlobPart struct {
 	BlobID uint `gorm:"primaryKey"`
 	Idx    int  `gorm:"primaryKey"`
 	Data   []byte
+}
+
+// BlobDeletion is durable work for removing an S3-backed blob after its
+// account metadata has been deleted. ObjectKey and Bucket are snapshotted at
+// enqueue time so retries do not depend on mutable server configuration.
+type BlobDeletion struct {
+	ID             uint   `gorm:"primaryKey"`
+	IdempotencyKey string `gorm:"uniqueIndex"`
+	Bucket         string
+	ObjectKey      string
+	Status         string `gorm:"index:idx_blob_deletions_status"`
+	AttemptCount   int
+	NextAttemptAt  *time.Time `gorm:"index"`
+	LastError      string
+	DeletedAt      *time.Time
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type ReservedKey struct {

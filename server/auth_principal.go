@@ -62,6 +62,9 @@ type OAuthPrincipal struct {
 	DPoPJKT  string
 	Token    string
 	Repo     *models.RepoActor
+	// Legacy marks a password/session access token. Reference atproto permits
+	// these tokens on authorization routes and bypasses granular OAuth scopes.
+	Legacy bool
 }
 
 func (p *OAuthPrincipal) PrincipalType() PrincipalType { return PrincipalOAuth }
@@ -436,8 +439,11 @@ func (s *Server) AuthDispatcher(policy AuthPolicy, next echo.HandlerFunc) echo.H
 
 		switch policy {
 		case PolicyOAuthOnly:
+			if scheme == "bearer" {
+				return s.dispatchLegacySpaceOAuth(e, next, raw)
+			}
 			if scheme != "dpop" {
-				return authUnauthorized(e, "Space OAuth routes require DPoP authorization")
+				return authUnauthorized(e, "Space OAuth routes require Bearer or DPoP authorization")
 			}
 			kind, err := classifyDPoPToken(raw)
 			if err != nil || kind != authTokenOAuth {
@@ -446,6 +452,9 @@ func (s *Server) AuthDispatcher(policy AuthPolicy, next echo.HandlerFunc) echo.H
 			return s.dispatchOAuth(e, next, scheme, raw)
 
 		case PolicyOAuthOrSpace:
+			if scheme == "bearer" {
+				return s.dispatchLegacySpaceOAuth(e, next, raw)
+			}
 			if scheme == "dpop" {
 				kind, err := classifyDPoPToken(raw)
 				if err != nil {
@@ -644,6 +653,29 @@ func (s *Server) verifyOAuthAccessToken(raw string) error {
 	return nil
 }
 
+func (s *Server) dispatchLegacySpaceOAuth(e echo.Context, next echo.HandlerFunc, raw string) error {
+	return s.handleLegacySessionMiddleware(func(c echo.Context) error {
+		repo, _ := c.Get("repo").(*models.RepoActor)
+		subject, _ := c.Get("did").(string)
+		if subject == "" && repo != nil {
+			subject = repo.Repo.Did
+		}
+		if subject == "" {
+			return authUnauthorized(c, "legacy session subject is unavailable")
+		}
+		SetPrincipal(c, &OAuthPrincipal{
+			Subject: subject,
+			Token:   raw,
+			Repo:    repo,
+			Legacy:  true,
+		})
+		if err := s.assertSpaceRepoAvailable(c, subject); err != nil {
+			return err
+		}
+		return next(c)
+	})(e)
+}
+
 func (s *Server) dispatchOAuth(e echo.Context, next echo.HandlerFunc, scheme, raw string) error {
 	// Bearer tokens remain compatible with the existing token table, but a
 	// token that is structurally a JWT must not be a Space token. DPoP OAuth
@@ -797,21 +829,12 @@ func (s *Server) dispatchServiceAuth(e echo.Context, next echo.HandlerFunc, raw 
 	if err != nil || string(nsid) != strings.TrimPrefix(path, prefix) {
 		return authUnauthorized(e, "service-auth endpoint is invalid")
 	}
-	issuer, err := s.validateServiceAuth(e.Request().Context(), raw, string(nsid))
+	validated, err := s.validateServiceAuthToken(e.Request().Context(), raw, string(nsid))
 	if err != nil {
 		return authUnauthorized(e, "invalid service-auth token")
-	}
-	claims, err := peekJWTClaims(raw)
-	if err != nil {
-		return authUnauthorized(e, "invalid service-auth token")
-	}
-	audience, okAud := claims["aud"].(string)
-	lxm, okLXM := claims["lxm"].(string)
-	if !okAud || !okLXM || lxm != string(nsid) {
-		return authUnauthorized(e, "invalid service-auth claims")
 	}
 	SetPrincipal(e, &ServiceAuthPrincipal{
-		Issuer: issuer, Audience: audience, LXM: lxm, Token: raw,
+		Issuer: validated.Issuer, Audience: validated.Audience, LXM: validated.LXM, Token: raw,
 	})
 	return next(e)
 }
@@ -847,18 +870,33 @@ func (s *Server) spaceReplayStore() space.ReplayStore {
 }
 
 func (s *Server) requestURL(e echo.Context) string {
-	if e.Request().URL.IsAbs() {
-		return e.Request().URL.String()
+	req := e.Request()
+	host := ""
+	if s != nil && s.config != nil {
+		host = strings.TrimSpace(s.config.Hostname)
 	}
-	host := e.Request().Host
-	if host == "" && s.config != nil {
-		host = s.config.Hostname
+	if host == "" {
+		// New() requires a configured hostname. Keep a useful fallback for
+		// isolated tests/local callers that construct a Server directly, but
+		// never let Request.Host override a configured production hostname.
+		host = req.Host
 	}
+
+	// Public Cocoon deployments terminate TLS at the reverse proxy, so a
+	// missing Request.TLS is not evidence that the externally visible URL is
+	// plain HTTP. Only the explicit dev mode opts into HTTP; an absolute-form
+	// request URL (and its Host) is not trusted for either authority or scheme.
 	scheme := "https"
-	if e.Request().TLS == nil && strings.HasPrefix(e.Request().URL.String(), "http://") {
+	if s != nil && s.config != nil && s.config.Version == "dev" {
 		scheme = "http"
+	} else if req.TLS != nil {
+		scheme = "https"
 	}
-	return scheme + "://" + host + e.Request().URL.String()
+	path := req.URL.RequestURI()
+	if path == "" {
+		path = "/"
+	}
+	return scheme + "://" + host + path
 }
 
 func repoStatusErrorName(status string) string {

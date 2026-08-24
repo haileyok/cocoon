@@ -3,6 +3,7 @@ package space
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,13 @@ type ReplayArtifact struct {
 	JTI       string
 	TokenType string
 	ExpiresAt time.Time
+}
+
+// replayKey length-frames both fields so every token type/JTI pair has a
+// deterministic, collision-free persisted key, even if either field contains
+// delimiter characters.
+func replayKey(jti, tokenType string) string {
+	return strconv.Itoa(len(tokenType)) + ":" + tokenType + strconv.Itoa(len(jti)) + ":" + jti
 }
 
 // ReplayStore consumes a globally unique JTI exactly once. Implementations
@@ -79,10 +87,11 @@ func (s *MemoryReplayStore) ConsumeBatch(_ context.Context, artifacts []ReplayAr
 		if artifact.JTI == "" {
 			return errors.New("empty replay jti")
 		}
-		if _, duplicate := seen[artifact.JTI]; duplicate {
+		key := replayKey(artifact.JTI, artifact.TokenType)
+		if _, duplicate := seen[key]; duplicate {
 			return ErrReplay
 		}
-		seen[artifact.JTI] = struct{}{}
+		seen[key] = struct{}{}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -101,12 +110,12 @@ func (s *MemoryReplayStore) ConsumeBatch(_ context.Context, artifacts []ReplayAr
 		}
 	}
 	for _, artifact := range artifacts {
-		if _, exists := s.items[artifact.JTI]; exists {
+		if _, exists := s.items[replayKey(artifact.JTI, artifact.TokenType)]; exists {
 			return ErrReplay
 		}
 	}
 	for _, artifact := range artifacts {
-		s.items[artifact.JTI] = artifact.ExpiresAt
+		s.items[replayKey(artifact.JTI, artifact.TokenType)] = artifact.ExpiresAt
 	}
 	return nil
 }
@@ -117,6 +126,35 @@ func (s *MemoryReplayStore) ConsumeBatch(_ context.Context, artifacts []ReplayAr
 type GORMReplayStore struct{ DB *gorm.DB }
 
 func NewGORMReplayStore(db *gorm.DB) *GORMReplayStore { return &GORMReplayStore{DB: db} }
+
+// DeleteExpired removes at most limit replay rows whose deadline has passed.
+// The strict comparison preserves a replay row at its exact deadline, matching
+// MemoryReplayStore; it is removed on the first cleanup after that boundary.
+func (s *GORMReplayStore) DeleteExpired(ctx context.Context, now time.Time, limit int) (int, error) {
+	if s == nil || s.DB == nil {
+		return 0, ErrNilReplayStore
+	}
+	if limit <= 0 {
+		return 0, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var rows []models.SpaceReplayJTI
+	if err := s.DB.WithContext(ctx).Where("expires_at < ?", now).Order("expires_at ASC, jti ASC").Limit(limit).Find(&rows).Error; err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	jtis := make([]string, len(rows))
+	for i := range rows {
+		jtis[i] = rows[i].JTI
+	}
+	result := s.DB.WithContext(ctx).Where("expires_at < ? AND jti IN ?", now, jtis).Delete(&models.SpaceReplayJTI{})
+	return int(result.RowsAffected), result.Error
+}
+
 func (s *GORMReplayStore) Consume(ctx context.Context, jti, tokenType string, expiresAt time.Time) error {
 	return s.ConsumeBatch(ctx, []ReplayArtifact{{JTI: jti, TokenType: tokenType, ExpiresAt: expiresAt}})
 }
@@ -132,21 +170,35 @@ func (s *GORMReplayStore) ConsumeBatch(ctx context.Context, artifacts []ReplayAr
 		return errors.New("empty replay batch")
 	}
 	seen := make(map[string]struct{}, len(artifacts))
+	legacyJTIs := make([]string, 0, len(artifacts))
 	for _, artifact := range artifacts {
 		if artifact.JTI == "" {
 			return errors.New("empty replay jti")
 		}
-		if _, duplicate := seen[artifact.JTI]; duplicate {
+		key := replayKey(artifact.JTI, artifact.TokenType)
+		if _, duplicate := seen[key]; duplicate {
 			return ErrReplay
 		}
-		seen[artifact.JTI] = struct{}{}
+		seen[key] = struct{}{}
+		legacyJTIs = append(legacyJTIs, artifact.JTI)
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Rows written before namespacing retain the raw JTI. Until their
+		// deadline, they must block every token type rather than being bypassed.
+		var legacyCount int64
+		if err := tx.Model(&models.SpaceReplayJTI{}).
+			Where("expires_at >= ? AND jti IN ?", time.Now(), legacyJTIs).
+			Count(&legacyCount).Error; err != nil {
+			return err
+		}
+		if legacyCount != 0 {
+			return ErrReplay
+		}
 		for _, artifact := range artifacts {
-			row := &models.SpaceReplayJTI{JTI: artifact.JTI, TokenType: artifact.TokenType, ExpiresAt: artifact.ExpiresAt}
+			row := &models.SpaceReplayJTI{JTI: replayKey(artifact.JTI, artifact.TokenType), TokenType: artifact.TokenType, ExpiresAt: artifact.ExpiresAt}
 			if err := tx.Create(row).Error; err != nil {
 				if isUniqueViolation(err) {
 					return ErrReplay

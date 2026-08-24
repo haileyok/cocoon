@@ -113,6 +113,9 @@ func TestAccountDeleteCascadesSpaceDataAndNotifies(t *testing.T) {
 	if err := s.db.Create(ctx, &models.BlobPart{BlobID: publicBlob.ID, Idx: 0, Data: []byte("public")}, nil).Error; err != nil {
 		t.Fatalf("create public blob part: %v", err)
 	}
+	if err := s.db.Create(ctx, &models.SpaceBlobRef{Space: foreignSpace, Author: member.Did, Collection: "com.example.record", Rkey: "public", CID: publicCID.String()}, nil).Error; err != nil {
+		t.Fatalf("create surviving public blob ref: %v", err)
+	}
 
 	// These rows model both retryable and terminal stale writes. They must be
 	// removed by author/kind, while the deletion outbox row created below must
@@ -208,13 +211,24 @@ func TestAccountDeleteCascadesSpaceDataAndNotifies(t *testing.T) {
 	if err := s.db.First(ctx, &replay, "jti = ?", replayJTI).Error; err != nil {
 		t.Fatalf("global replay row was removed: %v", err)
 	}
-	var retainedShared models.Blob
-	if err := s.db.First(ctx, &retainedShared, "id = ?", sharedBlob.ID).Error; err != nil {
-		t.Fatalf("shared permissioned blob was deleted: %v", err)
+	for _, blob := range []models.Blob{*sharedBlob, *publicBlob} {
+		var count int64
+		if err := s.db.Client().Model(&models.Blob{}).Where("id = ?", blob.ID).Count(&count).Error; err != nil {
+			t.Fatalf("count deleted blob %d: %v", blob.ID, err)
+		}
+		if count != 0 {
+			t.Fatalf("deleted account blob %d remains", blob.ID)
+		}
+		if err := s.db.Client().Model(&models.BlobPart{}).Where("blob_id = ?", blob.ID).Count(&count).Error; err != nil {
+			t.Fatalf("count deleted blob parts %d: %v", blob.ID, err)
+		}
+		if count != 0 {
+			t.Fatalf("parts for deleted account blob %d remain", blob.ID)
+		}
 	}
-	var retainedPublic models.Blob
-	if err := s.db.First(ctx, &retainedPublic, "id = ?", publicBlob.ID).Error; err != nil {
-		t.Fatalf("public-referenced blob was deleted: %v", err)
+	var survivingPublicRef models.SpaceBlobRef
+	if err := s.db.First(ctx, &survivingPublicRef, "space = ? AND author = ? AND cid = ?", foreignSpace, member.Did, publicCID.String()).Error; err != nil {
+		t.Fatalf("surviving same-CID blob ref was deleted: %v", err)
 	}
 
 	// Reopen the SQLite file in a fresh GORM handle to prove tombstone and

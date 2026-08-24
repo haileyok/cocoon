@@ -1,0 +1,58 @@
+name: Atproto interop
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reference-client:
+    name: Pinned atproto client against Cocoon
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+      ATPROTO_ROOT: ${{ github.workspace }}/.atproto
+
+    steps:
+      - name: Check out Cocoon
+        uses: actions/checkout@v4
+
+      - name: Check out pinned atproto reference
+        uses: actions/checkout@v4
+        with:
+          repository: bluesky-social/atproto
+          ref: 89deb9faca20e56fa2a262fe9746ed52bc1095ba
+          path: .atproto
+          fetch-depth: 1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.11.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .atproto/.nvmrc
+          cache: pnpm
+          cache-dependency-path: .atproto/pnpm-lock.yaml
+
+      - name: Install pinned atproto dependencies
+        working-directory: .atproto
+        run: pnpm install --frozen-lockfile
+
+      - name: Build pinned atproto Space and PDS packages
+        run: |
+          pnpm --dir .atproto --filter @atproto/space... build
+          pnpm --dir .atproto --filter @atproto/pds... build
+
+      - name: Run generated atproto client against Cocoon
+        run: ./interop/atproto/run.sh

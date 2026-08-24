@@ -46,46 +46,114 @@ func init() {
 	})
 }
 
-func (s *Server) validateServiceAuth(ctx context.Context, rawToken string, nsid string) (string, error) {
+const serviceAuthReplayTokenType = "service-auth"
+
+type validatedServiceAuth struct {
+	Issuer   string
+	Audience string
+	LXM      string
+	JTI      string
+	Exp      int64
+}
+
+func (s *Server) validateServiceAuthToken(ctx context.Context, rawToken string, nsid string) (validatedServiceAuth, error) {
 	token := strings.TrimSpace(rawToken)
-	if token == "" || s == nil || s.passport == nil {
-		return "", errors.New("service-auth verifier is unavailable")
+	if token == "" || s == nil || s.passport == nil || s.config == nil {
+		return validatedServiceAuth{}, errors.New("service-auth verifier is unavailable")
 	}
-	parsedToken, err := jwt.ParseWithClaims(token, jwt.MapClaims{}, func(token *jwt.Token) (interface{}, error) {
-		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok {
-			return nil, errors.New("service-auth claims are invalid")
-		}
-		issuer, ok := claims["iss"].(string)
-		if !ok || issuer == "" {
-			return nil, errors.New("service-auth issuer is required")
-		}
-		if token.Method != jwt.GetSigningMethod("ES256K") || token.Header["typ"] != "JWT" {
-			return nil, errors.New("service-auth token must use ES256K/JWT")
-		}
-		kid, _ := token.Header["kid"].(string)
-		return didDocumentVerifier(ctx, s.passport, space.KeyResolutionRequest{
-			Issuer: issuer, Kid: kid, Algorithm: token.Method.Alg(),
-		})
-	})
-	if err != nil || parsedToken == nil || !parsedToken.Valid {
+
+	// ParseUnverified is used only to select the issuer/key. The signature is
+	// checked below using the DID-resolved verifier before any claims are
+	// trusted or replay state is consumed.
+	parsedToken, _, err := new(jwt.Parser).ParseUnverified(token, jwt.MapClaims{})
+	if err != nil || parsedToken == nil {
 		if err == nil {
-			err = errors.New("token signature is invalid")
+			err = errors.New("invalid token")
 		}
-		return "", fmt.Errorf("invalid token: %w", err)
+		return validatedServiceAuth{}, fmt.Errorf("invalid token: %w", err)
 	}
 	claims, ok := parsedToken.Claims.(jwt.MapClaims)
 	if !ok {
-		return "", errors.New("invalid service-auth claims")
+		return validatedServiceAuth{}, errors.New("invalid service-auth claims")
 	}
-	if err := validateServiceAuthClaims(claims, s.config.Did, nsid); err != nil {
-		return "", err
+	alg, ok := parsedToken.Header["alg"].(string)
+	if !ok || (alg != "ES256K" && alg != "ES256") || parsedToken.Method == nil || parsedToken.Method.Alg() != alg {
+		return validatedServiceAuth{}, errors.New("service-auth token must use ES256K or ES256")
+	}
+	if typ, ok := parsedToken.Header["typ"].(string); !ok || typ != "JWT" {
+		return validatedServiceAuth{}, errors.New("service-auth token must use JWT typ")
 	}
 	issuer, ok := claims["iss"].(string)
 	if !ok || issuer == "" {
-		return "", errors.New("service-auth issuer is required")
+		return validatedServiceAuth{}, errors.New("service-auth issuer is required")
 	}
-	return issuer, nil
+	kid := ""
+	if rawKid, present := parsedToken.Header["kid"]; present {
+		var ok bool
+		kid, ok = rawKid.(string)
+		if !ok || kid == "" {
+			return validatedServiceAuth{}, errors.New("service-auth kid must be a non-empty string")
+		}
+	}
+	keyRequest := space.KeyResolutionRequest{Issuer: issuer, Kid: kid, Algorithm: alg}
+	verifier, err := didDocumentVerifier(ctx, s.passport, keyRequest)
+	if err != nil {
+		return validatedServiceAuth{}, fmt.Errorf("resolve service-auth DID key: %w", err)
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return validatedServiceAuth{}, errors.New("invalid service-auth token structure")
+	}
+	signingInput := []byte(parts[0] + "." + parts[1])
+	signature, err := jwt.DecodeSegment(parts[2])
+	if err != nil {
+		return validatedServiceAuth{}, fmt.Errorf("invalid service-auth signature encoding: %w", err)
+	}
+	if verifyErr := verifier.Verify(signingInput, signature); verifyErr != nil {
+		// Passport-backed DID documents may be cached. Match Space token
+		// verification by refreshing exactly once after a signature failure;
+		// replay state is still untouched until this retry succeeds.
+		keyRequest.ForceRefresh = true
+		freshVerifier, refreshErr := didDocumentVerifier(ctx, s.passport, keyRequest)
+		if refreshErr != nil {
+			return validatedServiceAuth{}, fmt.Errorf("invalid service-auth signature: %w", verifyErr)
+		}
+		if freshErr := freshVerifier.Verify(signingInput, signature); freshErr != nil {
+			return validatedServiceAuth{}, fmt.Errorf("invalid service-auth signature: %w", freshErr)
+		}
+	}
+	if err := validateServiceAuthClaims(claims, s.config.Did, nsid); err != nil {
+		return validatedServiceAuth{}, err
+	}
+	audience, _ := claims["aud"].(string)
+	lxm, _ := claims["lxm"].(string)
+	jti, _ := claims["jti"].(string)
+	exp, err := serviceAuthNumericClaim(claims, "exp")
+	if err != nil {
+		return validatedServiceAuth{}, err
+	}
+
+	// A token is single-use only after signature and every semantic claim has
+	// passed. This ordering ensures malformed, misaddressed, or bad-signature
+	// retries do not burn a valid JTI.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := s.spaceReplayStore().Consume(ctx, jti, serviceAuthReplayTokenType, time.Unix(exp, 0).Add(serviceAuthClockSkew)); err != nil {
+		return validatedServiceAuth{}, fmt.Errorf("service-auth replay: %w", err)
+	}
+	return validatedServiceAuth{Issuer: issuer, Audience: audience, LXM: lxm, JTI: jti, Exp: exp}, nil
+}
+
+// validateServiceAuth retains the historical issuer-only helper contract for
+// handlers that only need the authenticated DID. The native auth dispatcher
+// uses validateServiceAuthToken so it can install the complete validated result.
+func (s *Server) validateServiceAuth(ctx context.Context, rawToken string, nsid string) (string, error) {
+	validated, err := s.validateServiceAuthToken(ctx, rawToken, nsid)
+	if err != nil {
+		return "", err
+	}
+	return validated.Issuer, nil
 }
 
 const (

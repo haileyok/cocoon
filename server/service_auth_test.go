@@ -17,6 +17,10 @@ import (
 // mintServiceAuthToken builds an ES256K service-auth JWT signed with the given
 // raw k256 key, mirroring how handleServerGetServiceAuth signs tokens.
 func mintServiceAuthToken(t *testing.T, signingKey []byte, iss, aud, lxm string, exp time.Time) string {
+	return mintServiceAuthTokenWithJTI(t, signingKey, iss, aud, lxm, exp, "test-jti")
+}
+
+func mintServiceAuthTokenWithJTI(t *testing.T, signingKey []byte, iss, aud, lxm string, exp time.Time, jti string) string {
 	t.Helper()
 
 	header, _ := json.Marshal(map[string]string{"alg": "ES256K", "typ": "JWT"})
@@ -26,7 +30,7 @@ func mintServiceAuthToken(t *testing.T, signingKey []byte, iss, aud, lxm string,
 		"lxm": lxm,
 		"iat": time.Now().Unix(),
 		"exp": exp.Unix(),
-		"jti": "test-jti",
+		"jti": jti,
 	})
 
 	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)

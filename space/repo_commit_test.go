@@ -3,6 +3,7 @@ package space
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/json"
 	"testing"
 
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
@@ -102,6 +103,31 @@ func TestSignVerifyCanonicalCommitAndTampering(t *testing.T) {
 	}
 	if err := (SignedCommit{Ver: CommitVersion, Hash: make([]byte, 31), IKM: make([]byte, 32), Sig: make([]byte, 64), MAC: make([]byte, 32)}).Validate(); err == nil {
 		t.Fatal("short commit hash accepted")
+	}
+}
+
+func TestSignedCommitJSONUsesLexBytes(t *testing.T) {
+	want := SignedCommit{
+		Ver:  CommitVersion,
+		Hash: bytes.Repeat([]byte{0x01}, CommitHashBytes),
+		IKM:  bytes.Repeat([]byte{0x02}, CommitIKMBytes),
+		Sig:  bytes.Repeat([]byte{0x03}, 64),
+		MAC:  bytes.Repeat([]byte{0x04}, CommitMACBytes),
+		Rev:  "0000000000000",
+	}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"$bytes"`)) {
+		t.Fatalf("signedCommit JSON did not use Lex bytes objects: %s", encoded)
+	}
+	var got SignedCommit
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Hash, want.Hash) || !bytes.Equal(got.IKM, want.IKM) || !bytes.Equal(got.Sig, want.Sig) || !bytes.Equal(got.MAC, want.MAC) || got.Rev != want.Rev {
+		t.Fatalf("JSON round trip changed commit: got=%#v want=%#v", got, want)
 	}
 }
 

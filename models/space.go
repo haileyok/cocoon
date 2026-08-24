@@ -52,11 +52,11 @@ type SpaceRepoOp struct {
 // full record identity in the key makes listBlobs authorization-scoped and lets
 // callers enumerate all references without a global blob visibility leak.
 type SpaceBlobRef struct {
-	Space      string `gorm:"primaryKey;index:idx_space_blob_refs_record"`
-	Author     string `gorm:"primaryKey;index:idx_space_blob_refs_record"`
+	Space      string `gorm:"primaryKey;index:idx_space_blob_refs_record;index:idx_space_blob_refs_space_author_cid"`
+	Author     string `gorm:"primaryKey;index:idx_space_blob_refs_record;index:idx_space_blob_refs_space_author_cid"`
 	Collection string `gorm:"primaryKey;index:idx_space_blob_refs_record"`
 	Rkey       string `gorm:"primaryKey;index:idx_space_blob_refs_record"`
-	CID        string `gorm:"column:cid;primaryKey;index:idx_space_blob_refs_cid"`
+	CID        string `gorm:"column:cid;primaryKey;index:idx_space_blob_refs_cid;index:idx_space_blob_refs_space_author_cid"`
 
 	CreatedAt time.Time
 	UpdatedAt time.Time

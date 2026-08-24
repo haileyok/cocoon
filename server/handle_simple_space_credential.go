@@ -67,11 +67,13 @@ func (s *Server) handleSimpleSpaceGetSpaceCredential(e echo.Context) error {
 		return credentialExchangeError(e, "InvalidClientAttestation")
 	}
 	clientID := clientResult.ClientID
-	if !s.simpleSpaceCredentialUserAllowed(ctx, &row, principal.Claims.Iss, clientID, ref.String()) {
-		return credentialExchangeError(e, "UserNotAuthorized")
-	}
+	// Match the reference perimeter order: an app allow-list is checked before
+	// user policy, and the authority is always admitted by the user policy.
 	if !simpleSpaceCredentialAppAllowed(&row, clientID) {
 		return credentialExchangeError(e, "AppNotAuthorized")
+	}
+	if !s.simpleSpaceCredentialUserAllowed(ctx, &row, principal.Claims.Iss, clientID, ref.String()) {
+		return credentialExchangeError(e, "UserNotAuthorized")
 	}
 
 	signer, err := s.simpleSpaceAuthoritySigner(ctx, ref)
@@ -204,20 +206,7 @@ func (s *Server) simpleSpaceCredentialClient(ctx context.Context, ref space.Spac
 }
 
 func (s *Server) simpleSpaceCredentialUserAllowed(ctx context.Context, row *models.SimpleSpace, userDID, clientID, uri string) bool {
-	if row == nil || userDID == "" {
-		return false
-	}
-	switch row.Policy {
-	case simpleSpacePolicyPublic:
-		return true
-	case simpleSpacePolicyMemberList:
-		var member models.SimpleSpaceMember
-		return s.db.Client().WithContext(ctx).Where("space = ? AND did = ? AND removed_at IS NULL", uri, userDID).First(&member).Error == nil
-	case simpleSpacePolicyManagingApp:
-		return row.ManagingApp != nil && s.checkManagingApp(ctx, *row.ManagingApp, uri, userDID, clientID)
-	default:
-		return false
-	}
+	return s.simpleSpacePolicyUserAllowed(ctx, row, userDID, uri, clientID)
 }
 
 func simpleSpaceCredentialAppAllowed(row *models.SimpleSpace, clientID string) bool {
