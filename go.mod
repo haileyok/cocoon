@@ -36,6 +36,7 @@ require (
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.1
+	lukechampine.com/blake3 v1.4.1
 )
 
 require (
@@ -136,5 +137,4 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/go-playground/assert.v1 v1.2.1 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	lukechampine.com/blake3 v1.4.1 // indirect
 )

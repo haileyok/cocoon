@@ -50,6 +50,51 @@ func NewManager(args ManagerArgs) *Manager {
 	}
 }
 
+// GetClientJWKS resolves the keys published by an OAuth client independently
+// of its token endpoint authentication method. Spaces client attestations use
+// these keys even when the client does not use private_key_jwt at the token
+// endpoint.
+func (cm *Manager) GetClientJWKS(ctx context.Context, clientId string) (jwk.Set, error) {
+	return cm.GetClientJWKSWithRefresh(ctx, clientId, false)
+}
+
+// GetClientJWKSWithRefresh resolves the keys published by an OAuth client,
+// optionally bypassing both the client metadata and JWKS caches. A refresh is
+// needed when a token signed by a newly rotated client key follows a cached
+// lookup of the old key.
+func (cm *Manager) GetClientJWKSWithRefresh(ctx context.Context, clientId string, forceRefresh bool) (jwk.Set, error) {
+	if forceRefresh {
+		// Inline metadata JWKS is covered by invalidating metadata; jwks_uri
+		// responses are covered by invalidating the separate JWKS cache.
+		cm.metadataCache.Invalidate(clientId)
+		cm.jwksCache.Invalidate(clientId)
+	}
+
+	metadata, err := cm.getClientMetadata(ctx, clientId)
+	if err != nil {
+		return nil, err
+	}
+	if metadata.JWKS != nil && len(metadata.JWKS.Keys) > 0 {
+		set := jwk.NewSet()
+		for _, rawKey := range metadata.JWKS.Keys {
+			encoded, err := json.Marshal(rawKey)
+			if err != nil {
+				return nil, err
+			}
+			key, err := helpers.ParseJWKFromBytes(encoded)
+			if err != nil {
+				return nil, err
+			}
+			set.AddKey(key)
+		}
+		return set, nil
+	}
+	if metadata.JWKSURI != nil {
+		return cm.getClientJwks(ctx, clientId, *metadata.JWKSURI)
+	}
+	return nil, fmt.Errorf("no valid jwks found in oauth client metadata")
+}
+
 func (cm *Manager) GetClient(ctx context.Context, clientId string) (*Client, error) {
 	metadata, err := cm.getClientMetadata(ctx, clientId)
 	if err != nil {
@@ -160,6 +205,7 @@ func (cm *Manager) getClientJwks(ctx context.Context, clientId, jwksUri string) 
 			return nil, errors.New("no keys in jwks response")
 		}
 
+		cm.jwksCache.Set(clientId, s, 10*time.Minute)
 		jwks = s
 	}
 

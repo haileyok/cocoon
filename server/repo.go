@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -29,6 +30,7 @@ import (
 	cbor "github.com/ipfs/go-ipld-cbor"
 	"github.com/ipld/go-car"
 	"github.com/multiformats/go-multihash"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
@@ -508,15 +510,35 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		var cids []cid.Cid
 		// whenever there is cid present, we know it's a create (dumb)
 		if entry.Cid != "" {
-			if err := rm.s.db.Create(ctx, &entry, []clause.Expression{clause.OnConflict{
-				Columns:   []clause.Column{{Name: "did"}, {Name: "nsid"}, {Name: "rkey"}},
-				UpdateAll: true,
-			}}).Error; err != nil {
-				return nil, err
-			}
+			// Keep the record row and its public blob references in one
+			// transaction. In particular, a record must not survive an upload
+			// that is still blocked in PutObject (or whose metadata publication
+			// later fails). An existing row means this is an update, so release
+			// only the old value's CIDs that are absent from the new value before
+			// retaining the new-only CIDs.
+			err := rm.s.db.Transaction(ctx, func(tx *db.DB) error {
+				var old models.Record
+				findErr := tx.Client().WithContext(ctx).
+					Where("did = ? AND nsid = ? AND rkey = ?", entry.Did, entry.Nsid, entry.Rkey).
+					First(&old).Error
+				if findErr != nil && !errors.Is(findErr, gorm.ErrRecordNotFound) {
+					return findErr
+				}
 
-			// increment the given blob refs, yay
-			cids, err = rm.incrementBlobRefs(ctx, urepo, entry.Value)
+				if err := tx.Create(ctx, &entry, []clause.Expression{clause.OnConflict{
+					Columns:   []clause.Column{{Name: "did"}, {Name: "nsid"}, {Name: "rkey"}},
+					UpdateAll: true,
+				}}).Error; err != nil {
+					return err
+				}
+				var err error
+				if errors.Is(findErr, gorm.ErrRecordNotFound) {
+					cids, err = rm.incrementBlobRefsInDB(ctx, tx, urepo, entry.Value)
+				} else {
+					cids, err = rm.updateBlobRefsInDB(ctx, tx, urepo, old.Value, entry.Value)
+				}
+				return err
+			})
 			if err != nil {
 				return nil, err
 			}
@@ -524,12 +546,14 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 			// as i noted above this is dumb. but we delete whenever the cid is nil. it works solely becaue the pkey
 			// is did + collection + rkey. i still really want to separate that out, or use a different type to make
 			// this less confusing/easy to read. alas, its 2 am and yea no
-			if err := rm.s.db.Delete(ctx, &entry, nil).Error; err != nil {
-				return nil, err
-			}
-
-			// TODO:
-			cids, err = rm.decrementBlobRefs(ctx, urepo, entry.Value)
+			var err error
+			err = rm.s.db.Transaction(ctx, func(tx *db.DB) error {
+				if err := tx.Delete(ctx, &entry, nil).Error; err != nil {
+					return err
+				}
+				cids, err = rm.decrementBlobRefsInDB(ctx, tx, urepo, entry.Value)
+				return err
+			})
 			if err != nil {
 				return nil, err
 			}
@@ -670,48 +694,314 @@ func collectPathNodeCIDs(n *mst.Node, key []byte) []cid.Cid {
 }
 
 func (rm *RepoMan) incrementBlobRefs(ctx context.Context, urepo models.Repo, cbor []byte) ([]cid.Cid, error) {
+	return rm.incrementBlobRefsInDB(ctx, rm.db, urepo, cbor)
+}
+
+func (rm *RepoMan) incrementBlobRefsInDB(ctx context.Context, database *db.DB, urepo models.Repo, cbor []byte) ([]cid.Cid, error) {
 	cids, err := getBlobCidsFromCbor(cbor)
 	if err != nil {
 		return nil, err
 	}
-
-	for _, c := range cids {
-		if err := rm.db.Exec(ctx, "UPDATE blobs SET ref_count = ref_count + 1 WHERE did = ? AND cid = ?", nil, urepo.Did, c.Bytes()).Error; err != nil {
-			return nil, err
-		}
+	if err := rm.validateBlobRefsInDB(ctx, database, urepo, cids); err != nil {
+		return nil, err
 	}
-
+	if err := rm.incrementBlobCIDsInDB(ctx, database, urepo, cids); err != nil {
+		return nil, err
+	}
 	return cids, nil
 }
 
+// updateBlobRefsInDB applies the set delta between two public record values.
+// Blob references are set-like: a CID mentioned more than once in a record
+// contributes one public reference, and a CID present in both values has a
+// net-zero change. Keeping this delta in the transaction prevents cleanup from
+// deleting a CID before its unchanged reference is retained.
+func (rm *RepoMan) updateBlobRefsInDB(ctx context.Context, database *db.DB, urepo models.Repo, oldCbor, newCbor []byte) ([]cid.Cid, error) {
+	oldCIDs, err := getBlobCidsFromCbor(oldCbor)
+	if err != nil {
+		return nil, err
+	}
+	newCIDs, err := getBlobCidsFromCbor(newCbor)
+	if err != nil {
+		return nil, err
+	}
+	if err := rm.validateBlobRefsInDB(ctx, database, urepo, newCIDs); err != nil {
+		return nil, err
+	}
+
+	newSet := make(map[string]struct{}, len(newCIDs))
+	for _, c := range newCIDs {
+		newSet[c.String()] = struct{}{}
+	}
+	oldSet := make(map[string]struct{}, len(oldCIDs))
+	for _, c := range oldCIDs {
+		oldSet[c.String()] = struct{}{}
+	}
+
+	removed := make([]cid.Cid, 0, len(oldCIDs))
+	for _, c := range oldCIDs {
+		if _, ok := newSet[c.String()]; !ok {
+			removed = append(removed, c)
+		}
+	}
+	added := make([]cid.Cid, 0, len(newCIDs))
+	for _, c := range newCIDs {
+		if _, ok := oldSet[c.String()]; !ok {
+			added = append(added, c)
+		}
+	}
+
+	// Decrementing removed CIDs reuses the normal transactional cleanup path,
+	// which checks both public ref_count and SpaceBlobRef before deleting a
+	// SQLite generation or enqueueing an S3 deletion.
+	if err := rm.decrementBlobCIDsInDB(ctx, database, urepo, removed); err != nil {
+		return nil, err
+	}
+	if err := rm.incrementBlobCIDsInDB(ctx, database, urepo, added); err != nil {
+		return nil, err
+	}
+	return newCIDs, nil
+}
+
+func (rm *RepoMan) validateBlobRefsInDB(ctx context.Context, database *db.DB, urepo models.Repo, cids []cid.Cid) error {
+	// Check every CID before changing any counter. An upload only becomes
+	// referenceable after its Blob row is published, and a missing row must not
+	// be silently treated as a successful no-op.
+	for _, c := range cids {
+		var count int64
+		if err := database.Client().WithContext(ctx).Model(&models.Blob{}).Where("did = ? AND cid = ?", urepo.Did, c.Bytes()).Count(&count).Error; err != nil {
+			return err
+		}
+		if count == 0 {
+			return fmt.Errorf("blob %s is not uploaded by author %s", c, urepo.Did)
+		}
+	}
+	return nil
+}
+
+func (rm *RepoMan) incrementBlobCIDsInDB(ctx context.Context, database *db.DB, urepo models.Repo, cids []cid.Cid) error {
+	for _, c := range cids {
+		result := database.Exec(ctx, "UPDATE blobs SET ref_count = ref_count + 1 WHERE did = ? AND cid = ?", nil, urepo.Did, c.Bytes())
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return fmt.Errorf("blob %s is not uploaded by author %s", c, urepo.Did)
+		}
+	}
+	return nil
+}
+
 func (rm *RepoMan) decrementBlobRefs(ctx context.Context, urepo models.Repo, cbor []byte) ([]cid.Cid, error) {
+	var cids []cid.Cid
+	err := rm.db.Transaction(ctx, func(tx *db.DB) error {
+		var err error
+		cids, err = rm.decrementBlobRefsInDB(ctx, tx, urepo, cbor)
+		return err
+	})
+	return cids, err
+}
+
+func (rm *RepoMan) decrementBlobRefsInDB(ctx context.Context, database *db.DB, urepo models.Repo, cbor []byte) ([]cid.Cid, error) {
 	cids, err := getBlobCidsFromCbor(cbor)
 	if err != nil {
 		return nil, err
 	}
+	if err := rm.decrementBlobCIDsInDB(ctx, database, urepo, cids); err != nil {
+		return nil, err
+	}
+	return cids, nil
+}
 
+func (rm *RepoMan) decrementBlobCIDsInDB(ctx context.Context, database *db.DB, urepo models.Repo, cids []cid.Cid) error {
 	for _, c := range cids {
-		var res struct {
-			ID    uint
-			Count int
+		// A legacy database may contain multiple immutable generations for one
+		// DID/CID. Public references were historically incremented on every
+		// matching row, so decrement every positive generation and then inspect
+		// the complete CID set for zero-ref cleanup. Do not use UPDATE ...
+		// RETURNING here: it reports only one row on SQLite/Postgres even when
+		// the update affects several generations.
+		if err := database.Exec(ctx, "UPDATE blobs SET ref_count = ref_count - 1 WHERE did = ? AND cid = ? AND ref_count > 0", nil, urepo.Did, c.Bytes()).Error; err != nil {
+			return err
 		}
-		if err := rm.db.Raw(ctx, "UPDATE blobs SET ref_count = ref_count - 1 WHERE did = ? AND cid = ? RETURNING id, ref_count", nil, urepo.Did, c.Bytes()).Scan(&res).Error; err != nil {
-			return nil, err
+		if err := cleanupUnreferencedBlobsForCID(ctx, database, urepo.Did, c.Bytes(), rm.s.s3Config); err != nil {
+			return err
 		}
+	}
+	return nil
+}
 
-		// TODO: this does _not_ handle deletions of blobs that are on s3 storage!!!! we need to get the blob, see what
-		// storage it is in, and clean up s3!!!!
-		if res.Count == 0 {
-			if err := rm.db.Exec(ctx, "DELETE FROM blobs WHERE id = ?", nil, res.ID).Error; err != nil {
-				return nil, err
+// cleanupUnreferencedBlob removes one immutable blob generation only after both
+// visibility classes have released it. The caller must use a transaction when
+// coordinating this with a public or Space reference mutation.
+func cleanupUnreferencedBlob(ctx context.Context, database *db.DB, blob models.Blob, s3Config *S3Config) error {
+	var current models.Blob
+	query := database.Client().WithContext(ctx).Where("id = ?", blob.ID)
+	if database.Client().Name() == "postgres" {
+		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := query.First(&current).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return err
+	}
+	if current.RefCount > 0 {
+		return nil
+	}
+	var permissionedRefs int64
+	if err := database.Client().WithContext(ctx).Model(&models.SpaceBlobRef{}).Where("author = ? AND cid = ?", current.Did, cidString(current.Cid)).Count(&permissionedRefs).Error; err != nil {
+		return err
+	}
+	if permissionedRefs > 0 {
+		return nil
+	}
+	if current.Storage == "s3" {
+		if err := enqueueBlobDeletion(ctx, database, current, s3Config, time.Now().UTC()); err != nil {
+			return err
+		}
+	}
+	if err := database.Exec(ctx, "DELETE FROM blobs WHERE id = ?", nil, current.ID).Error; err != nil {
+		return err
+	}
+	return database.Exec(ctx, "DELETE FROM blob_parts WHERE blob_id = ?", nil, current.ID).Error
+}
+
+func cleanupUnreferencedBlobsForCID(ctx context.Context, database *db.DB, did string, rawCID []byte, s3Config *S3Config) error {
+	var blobs []models.Blob
+	if err := database.Client().WithContext(ctx).Where("did = ? AND cid = ?", did, rawCID).Find(&blobs).Error; err != nil {
+		return err
+	}
+	for _, blob := range blobs {
+		if err := cleanupUnreferencedBlob(ctx, database, blob, s3Config); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cidString(raw []byte) string {
+	parsed, err := cid.Cast(raw)
+	if err != nil {
+		return ""
+	}
+	return parsed.String()
+}
+
+type blobReferenceMetadata struct {
+	CID           cid.Cid
+	MimeType      string
+	Size          int64
+	MetadataKnown bool
+}
+
+// getBlobReferencesFromCbor extracts typed blob references and their metadata.
+// Older Cocoon rows may not have persisted metadata, so callers can distinguish
+// those rows from newly uploaded blobs with MetadataKnown.
+func getBlobReferencesFromCbor(cbor []byte) ([]blobReferenceMetadata, error) {
+	if len(cbor) == 0 {
+		return nil, nil
+	}
+	decoded, err := atdata.UnmarshalCBOR(cbor)
+	if err != nil {
+		return nil, fmt.Errorf("error unmarshaling cbor: %w", err)
+	}
+
+	refs := make([]blobReferenceMetadata, 0)
+	seen := make(map[string]struct{})
+	appendRef := func(raw cid.Cid, mimeType string, size int64, sizeKnown bool) {
+		if !raw.Defined() {
+			return
+		}
+		key := raw.String()
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, blobReferenceMetadata{
+			CID:           raw,
+			MimeType:      mimeType,
+			Size:          size,
+			MetadataKnown: mimeType != "" && sizeKnown && size >= 0,
+		})
+	}
+	parseCID := func(raw any) (cid.Cid, bool) {
+		switch value := raw.(type) {
+		case atdata.CIDLink:
+			return cid.Cid(value), true
+		case cid.Cid:
+			return value, true
+		case *cid.Cid:
+			if value != nil {
+				return *value, true
 			}
-			if err := rm.db.Exec(ctx, "DELETE FROM blob_parts WHERE blob_id = ?", nil, res.ID).Error; err != nil {
-				return nil, err
+		case string:
+			parsed, parseErr := cid.Parse(value)
+			if parseErr == nil {
+				return parsed, true
 			}
+		case map[string]any:
+			if link, ok := value["$link"].(string); ok {
+				parsed, parseErr := cid.Parse(link)
+				if parseErr == nil {
+					return parsed, true
+				}
+			}
+		}
+		return cid.Undef, false
+	}
+	parseSize := func(raw any) (int64, bool) {
+		switch value := raw.(type) {
+		case int:
+			return int64(value), true
+		case int64:
+			return value, true
+		case uint64:
+			return int64(value), true
+		case float64:
+			return int64(value), value == float64(int64(value))
+		case float32:
+			return int64(value), value == float32(int64(value))
+		default:
+			return 0, false
 		}
 	}
 
-	return cids, nil
+	var visit func(any) error
+	visit = func(item any) error {
+		switch value := item.(type) {
+		case atdata.Blob:
+			appendRef(cid.Cid(value.Ref), value.MimeType, value.Size, value.Size >= 0)
+		case *atdata.Blob:
+			if value != nil {
+				appendRef(cid.Cid(value.Ref), value.MimeType, value.Size, value.Size >= 0)
+			}
+		case map[string]any:
+			if typ, ok := value["$type"].(string); ok && typ == "blob" {
+				if rawCID, ok := parseCID(value["ref"]); ok {
+					mimeType, _ := value["mimeType"].(string)
+					size, sizeKnown := parseSize(value["size"])
+					appendRef(rawCID, mimeType, size, sizeKnown)
+				}
+			}
+			for _, child := range value {
+				if err := visit(child); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, child := range value {
+				if err := visit(child); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := visit(decoded); err != nil {
+		return nil, err
+	}
+	return refs, nil
 }
 
 // to be honest, we could just store both the cbor and non-cbor in []entries above to avoid an additional
@@ -734,22 +1024,53 @@ func getBlobCidsFromCbor(cbor []byte) ([]cid.Cid, error) {
 	var deepiter func(any) error
 	deepiter = func(item any) error {
 		switch val := item.(type) {
+		case atdata.Blob:
+			cids = append(cids, cid.Cid(val.Ref))
+		case *atdata.Blob:
+			if val != nil {
+				cids = append(cids, cid.Cid(val.Ref))
+			}
+		case cid.Cid:
+			// A bare CID is not necessarily a blob reference (it may be an
+			// arbitrary record link), so only blob maps/atdata.Blob values are
+			// added above.
 		case map[string]any:
-			if val["$type"] == "blob" {
-				if ref, ok := val["ref"].(string); ok {
+			if typ, ok := val["$type"].(string); ok && typ == "blob" {
+				switch ref := val["ref"].(type) {
+				case string:
 					c, err := cid.Parse(ref)
 					if err != nil {
 						return err
 					}
 					cids = append(cids, c)
+				case cid.Cid:
+					cids = append(cids, ref)
+				case *cid.Cid:
+					if ref != nil {
+						cids = append(cids, *ref)
+					}
+				case map[string]any:
+					if link, ok := ref["$link"].(string); ok {
+						c, err := cid.Parse(link)
+						if err != nil {
+							return err
+						}
+						cids = append(cids, c)
+					}
 				}
-				for _, v := range val {
-					return deepiter(v)
+			}
+			// Do not return after the first child: nested blobs can occur in
+			// any field and in sibling array/map values.
+			for _, child := range val {
+				if err := deepiter(child); err != nil {
+					return err
 				}
 			}
 		case []any:
-			for _, v := range val {
-				deepiter(v)
+			for _, child := range val {
+				if err := deepiter(child); err != nil {
+					return err
+				}
 			}
 		}
 
@@ -760,5 +1081,22 @@ func getBlobCidsFromCbor(cbor []byte) ([]cid.Cid, error) {
 		return nil, err
 	}
 
-	return cids, nil
+	// A record may mention one uploaded blob in multiple nested fields. Blob
+	// references are set-like for permissioned records, and SpaceBlobRef's
+	// primary key requires one row per CID, so preserve first-seen order while
+	// removing duplicates.
+	seen := make(map[string]struct{}, len(cids))
+	unique := make([]cid.Cid, 0, len(cids))
+	for _, c := range cids {
+		if !c.Defined() {
+			continue
+		}
+		key := c.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, c)
+	}
+	return unique, nil
 }
