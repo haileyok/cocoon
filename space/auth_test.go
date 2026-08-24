@@ -225,6 +225,23 @@ func TestDPoPProofChecksAndReplay(t *testing.T) {
 	}
 }
 
+func TestDPoPProofAcceptsOptionalNonce(t *testing.T) {
+	signer := testP256Signer(t)
+	proof, err := CreateDpopProof(signer, CreateDpopProofOptions{
+		Htm: "POST", Htu: "https://host.example/xrpc/com.atproto.space.getSpaceCredential",
+		Nonce: "oauth-nonce", JTI: "dpop-with-nonce", Now: testClock(testAuthNow),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyDpopProof(context.Background(), proof, VerifyDpopProofOptions{
+		Htm: "POST", Htu: "https://host.example/xrpc/com.atproto.space.getSpaceCredential",
+		Now: testClock(testAuthNow),
+	}); err != nil {
+		t.Fatalf("nonce-bearing issuance proof rejected: %v", err)
+	}
+}
+
 func TestAtprotoES256KTokenAdapter(t *testing.T) {
 	key, err := atcrypto.GeneratePrivateKeyK256()
 	if err != nil {
