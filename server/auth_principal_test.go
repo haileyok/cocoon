@@ -680,6 +680,41 @@ func TestCORSAllowsBrowserSpaceCredentialExchange(t *testing.T) {
 	}
 }
 
+func TestProxyResponseHeadersPreserveCocoonCORS(t *testing.T) {
+	dst := make(http.Header)
+	dst.Set(echo.HeaderAccessControlAllowOrigin, "https://bsky.app")
+	dst.Set(echo.HeaderAccessControlAllowCredentials, "true")
+	dst.Set(echo.HeaderAccessControlExposeHeaders, "DPoP-Nonce,WWW-Authenticate")
+	dst.Set(echo.HeaderVary, echo.HeaderOrigin)
+
+	src := make(http.Header)
+	src.Set(echo.HeaderAccessControlAllowOrigin, "https://bsky.social")
+	src.Set(echo.HeaderAccessControlAllowCredentials, "false")
+	src.Set(echo.HeaderAccessControlExposeHeaders, "upstream-only")
+	src.Set(echo.HeaderVary, "Accept-Encoding")
+	src.Set(echo.HeaderContentType, echo.MIMEApplicationJSON)
+	src.Set("X-Upstream", "preserved")
+
+	copyProxyResponseHeaders(dst, src)
+
+	if got := dst.Get(echo.HeaderAccessControlAllowOrigin); got != "https://bsky.app" {
+		t.Fatalf("allow-origin = %q, want Cocoon origin", got)
+	}
+	if got := dst.Get(echo.HeaderAccessControlAllowCredentials); got != "true" {
+		t.Fatalf("allow-credentials = %q, want true", got)
+	}
+	if got := dst.Get(echo.HeaderAccessControlExposeHeaders); got != "DPoP-Nonce,WWW-Authenticate" {
+		t.Fatalf("expose-headers = %q, want Cocoon headers", got)
+	}
+	vary := strings.Join(dst.Values(echo.HeaderVary), ",")
+	if !strings.Contains(vary, echo.HeaderOrigin) || !strings.Contains(vary, "Accept-Encoding") {
+		t.Fatalf("vary = %q, want both local and upstream dimensions", vary)
+	}
+	if got := dst.Get("X-Upstream"); got != "preserved" {
+		t.Fatalf("upstream header = %q, want preserved", got)
+	}
+}
+
 func mustDecodeSegment(t *testing.T, segment string) []byte {
 	t.Helper()
 	decoded, err := base64.RawURLEncoding.DecodeString(segment)
