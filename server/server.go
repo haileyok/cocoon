@@ -260,16 +260,8 @@ func cocoonCORSConfig() middleware.CORSConfig {
 		AllowOriginFunc: func(origin string) (bool, error) {
 			return origin != "", nil
 		},
-		AllowHeaders: []string{
-			echo.HeaderOrigin,
-			echo.HeaderAccept,
-			echo.HeaderContentType,
-			echo.HeaderAuthorization,
-			"DPoP",
-			"atproto-proxy",
-			"atproto-accept-labelers",
-			"x-bsky-topics",
-		},
+		// Leave AllowHeaders empty so Echo reflects the browser's requested
+		// headers instead of requiring every client-specific header here.
 		AllowMethods: []string{
 			http.MethodGet,
 			http.MethodHead,
