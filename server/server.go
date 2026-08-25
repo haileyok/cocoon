@@ -268,6 +268,7 @@ func cocoonCORSConfig() middleware.CORSConfig {
 			"DPoP",
 			"atproto-proxy",
 			"atproto-accept-labelers",
+			"x-bsky-topics",
 		},
 		AllowMethods: []string{
 			http.MethodGet,
