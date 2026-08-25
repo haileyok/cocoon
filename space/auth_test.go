@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -239,6 +240,50 @@ func TestDPoPProofAcceptsOptionalNonce(t *testing.T) {
 		Now: testClock(testAuthNow),
 	}); err != nil {
 		t.Fatalf("nonce-bearing issuance proof rejected: %v", err)
+	}
+}
+
+func TestDPoPProofAcceptsStandardPublicJWKMetadata(t *testing.T) {
+	signer := testP256Signer(t)
+	proof, err := CreateDpopProof(signer, CreateDpopProofOptions{
+		Htm: "POST", Htu: "https://host.example/xrpc/com.atproto.space.getSpaceCredential",
+		JTI: "dpop-atcute-jwk", Now: testClock(testAuthNow),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := strings.Split(proof, ".")
+	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var header map[string]any
+	if err := json.Unmarshal(headerJSON, &header); err != nil {
+		t.Fatal(err)
+	}
+	jwk, ok := header["jwk"].(map[string]any)
+	if !ok {
+		t.Fatalf("DPoP header jwk = %T, want object", header["jwk"])
+	}
+	jwk["alg"] = "ES256"
+	jwk["kid"] = "dpop-key"
+	jwk["use"] = "sig"
+	headerBytes, err := json.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts[0] = base64.RawURLEncoding.EncodeToString(headerBytes)
+	signature, err := signer.Sign([]byte(parts[0] + "." + parts[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts[2] = base64.RawURLEncoding.EncodeToString(signature)
+
+	if _, err := VerifyDpopProof(context.Background(), strings.Join(parts, "."), VerifyDpopProofOptions{
+		Htm: "POST", Htu: "https://host.example/xrpc/com.atproto.space.getSpaceCredential",
+		Now: testClock(testAuthNow),
+	}); err != nil {
+		t.Fatalf("standard public JWK metadata rejected: %v", err)
 	}
 }
 

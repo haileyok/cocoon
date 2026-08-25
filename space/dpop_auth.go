@@ -418,9 +418,37 @@ func marshalP256JWK(key *ecdsa.PublicKey) ([]byte, error) {
 	return json.Marshal(p256JWK{Kty: "EC", Crv: "P-256", X: base64.RawURLEncoding.EncodeToString(x), Y: base64.RawURLEncoding.EncodeToString(y)})
 }
 func parseP256JWK(raw []byte) (*ecdsa.PublicKey, string, error) {
-	m, err := strictObject(raw, map[string]bool{"kty": true, "crv": true, "x": true, "y": true})
+	m, err := strictObject(raw, map[string]bool{
+		"kty": true, "crv": true, "x": true, "y": true,
+		// These are standard optional public-JWK members. atcute includes alg
+		// and use in DPoP proof keys, and some clients also include kid/key_ops.
+		"alg": true, "kid": true, "use": true, "key_ops": true,
+	})
 	if err != nil {
 		return nil, "", err
+	}
+	if rawAlg, ok := m["alg"]; ok {
+		alg, algErr := stringValue(rawAlg)
+		if algErr != nil || alg != "ES256" {
+			return nil, "", errors.New("JWK alg must be ES256")
+		}
+	}
+	if rawUse, ok := m["use"]; ok {
+		use, useErr := stringValue(rawUse)
+		if useErr != nil || use != "sig" {
+			return nil, "", errors.New("JWK use must be sig")
+		}
+	}
+	if rawKid, ok := m["kid"]; ok {
+		if _, kidErr := stringValue(rawKid); kidErr != nil {
+			return nil, "", errors.New("JWK kid must be a string")
+		}
+	}
+	if rawKeyOps, ok := m["key_ops"]; ok {
+		var keyOps []string
+		if err := json.Unmarshal(rawKeyOps, &keyOps); err != nil {
+			return nil, "", errors.New("JWK key_ops must be an array of strings")
+		}
 	}
 	kty, err := requiredString(m, "kty")
 	if err != nil || kty != "EC" {

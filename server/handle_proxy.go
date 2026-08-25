@@ -161,9 +161,27 @@ func (s *Server) handleProxy(e echo.Context) error {
 	}
 	defer resp.Body.Close()
 
-	for k, v := range resp.Header {
-		e.Response().Header().Set(k, strings.Join(v, ","))
-	}
+	copyProxyResponseHeaders(e.Response().Header(), resp.Header)
 
 	return e.Stream(resp.StatusCode, e.Response().Header().Get("content-type"), resp.Body)
+}
+
+// copyProxyResponseHeaders copies upstream response metadata without allowing
+// an AppView's CORS policy to replace Cocoon's policy for the browser request.
+// Vary is merged because the local CORS middleware already adds Origin and,
+// for preflights, the Access-Control-Request-* dimensions.
+func copyProxyResponseHeaders(dst, src http.Header) {
+	for k, v := range src {
+		lower := strings.ToLower(k)
+		if strings.HasPrefix(lower, "access-control-") {
+			continue
+		}
+		if lower == "vary" {
+			for _, value := range v {
+				dst.Add(k, value)
+			}
+			continue
+		}
+		dst.Set(k, strings.Join(v, ","))
+	}
 }
