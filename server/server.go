@@ -252,6 +252,40 @@ func (h *filteredHandler) WithGroup(name string) slog.Handler {
 	return &filteredHandler{level: h.level, handler: h.handler.WithGroup(name)}
 }
 
+func cocoonCORSConfig() middleware.CORSConfig {
+	return middleware.CORSConfig{
+		// Cocoon intentionally accepts requests from arbitrary web clients. Reflect
+		// the requested origin instead of emitting `*` alongside credentials, which
+		// browsers reject for credentialed CORS requests.
+		AllowOriginFunc: func(origin string) (bool, error) {
+			return origin != "", nil
+		},
+		AllowHeaders: []string{
+			echo.HeaderOrigin,
+			echo.HeaderAccept,
+			echo.HeaderContentType,
+			echo.HeaderAuthorization,
+			"DPoP",
+			"atproto-proxy",
+		},
+		AllowMethods: []string{
+			http.MethodGet,
+			http.MethodHead,
+			http.MethodPost,
+			http.MethodPut,
+			http.MethodPatch,
+			http.MethodDelete,
+			http.MethodOptions,
+		},
+		AllowCredentials: true,
+		ExposeHeaders: []string{
+			"DPoP-Nonce",
+			"WWW-Authenticate",
+		},
+		MaxAge: 100_000_000,
+	}
+}
+
 func New(args *Args) (*Server, error) {
 	if args.Logger == nil {
 		args.Logger = slog.Default()
@@ -304,13 +338,7 @@ func New(args *Args) (*Server, error) {
 	e.Pre(slogecho.New(args.Logger.With("component", "slogecho")))
 	e.Use(echo_session.Middleware(sessions.NewCookieStore([]byte(args.SessionSecret))))
 	e.Use(echoprometheus.NewMiddleware("cocoon"))
-	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
-		AllowOrigins:     []string{"*"},
-		AllowHeaders:     []string{"*"},
-		AllowMethods:     []string{"*"},
-		AllowCredentials: true,
-		MaxAge:           100_000_000,
-	}))
+	e.Use(middleware.CORSWithConfig(cocoonCORSConfig()))
 
 	vdtor := validator.New()
 	vdtor.RegisterValidation("atproto-handle", func(fl validator.FieldLevel) bool {

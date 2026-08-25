@@ -20,6 +20,7 @@ import (
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/space"
 	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v4/middleware"
 )
 
 type testDIDDocumentFetcher func(context.Context, string) (*cocoon_identity.DidDoc, error)
@@ -642,6 +643,40 @@ func TestEnabledSpaceRoutesUseNativeAuthPolicies(t *testing.T) {
 	s.echo.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotImplemented {
 		t.Fatalf("unimplemented Spaces method status = %d, want %d", rec.Code, http.StatusNotImplemented)
+	}
+}
+
+func TestCORSAllowsBrowserSpaceCredentialExchange(t *testing.T) {
+	e := echo.New()
+	e.Use(middleware.CORSWithConfig(cocoonCORSConfig()))
+	e.POST("/xrpc/com.atproto.space.getSpaceCredential", func(c echo.Context) error {
+		return c.NoContent(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodOptions, "/xrpc/com.atproto.space.getSpaceCredential", nil)
+	req.Header.Set(echo.HeaderOrigin, "https://pdsls.dev")
+	req.Header.Set(echo.HeaderAccessControlRequestMethod, http.MethodPost)
+	req.Header.Set(echo.HeaderAccessControlRequestHeaders, "authorization,content-type,dpop")
+	rec := httptest.NewRecorder()
+	e.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("preflight status = %d, want %d", rec.Code, http.StatusNoContent)
+	}
+	if got := rec.Header().Get(echo.HeaderAccessControlAllowOrigin); got != "https://pdsls.dev" {
+		t.Fatalf("allow-origin = %q, want reflected origin", got)
+	}
+	if got := rec.Header().Get(echo.HeaderAccessControlAllowCredentials); got != "true" {
+		t.Fatalf("allow-credentials = %q, want true", got)
+	}
+	allowHeaders := strings.ToLower(rec.Header().Get(echo.HeaderAccessControlAllowHeaders))
+	for _, want := range []string{"authorization", "content-type", "dpop"} {
+		if !strings.Contains(allowHeaders, want) {
+			t.Fatalf("allow-headers = %q, missing %q", allowHeaders, want)
+		}
+	}
+	if got := rec.Header().Get(echo.HeaderAccessControlAllowMethods); !strings.Contains(got, http.MethodPost) {
+		t.Fatalf("allow-methods = %q, missing POST", got)
 	}
 }
 
