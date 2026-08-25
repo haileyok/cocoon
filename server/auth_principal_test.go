@@ -656,7 +656,7 @@ func TestCORSAllowsBrowserSpaceCredentialExchange(t *testing.T) {
 	req := httptest.NewRequest(http.MethodOptions, "/xrpc/com.atproto.space.getSpaceCredential", nil)
 	req.Header.Set(echo.HeaderOrigin, "https://pdsls.dev")
 	req.Header.Set(echo.HeaderAccessControlRequestMethod, http.MethodPost)
-	req.Header.Set(echo.HeaderAccessControlRequestHeaders, "atproto-accept-labelers,authorization,content-type,dpop")
+	req.Header.Set(echo.HeaderAccessControlRequestHeaders, "atproto-accept-labelers,authorization,content-type,dpop,x-bsky-topics")
 	rec := httptest.NewRecorder()
 	e.ServeHTTP(rec, req)
 
@@ -670,7 +670,7 @@ func TestCORSAllowsBrowserSpaceCredentialExchange(t *testing.T) {
 		t.Fatalf("allow-credentials = %q, want true", got)
 	}
 	allowHeaders := strings.ToLower(rec.Header().Get(echo.HeaderAccessControlAllowHeaders))
-	for _, want := range []string{"authorization", "content-type", "dpop", "atproto-accept-labelers"} {
+	for _, want := range []string{"authorization", "content-type", "dpop", "atproto-accept-labelers", "x-bsky-topics"} {
 		if !strings.Contains(allowHeaders, want) {
 			t.Fatalf("allow-headers = %q, missing %q", allowHeaders, want)
 		}
