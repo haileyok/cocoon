@@ -267,6 +267,7 @@ func cocoonCORSConfig() middleware.CORSConfig {
 			echo.HeaderAuthorization,
 			"DPoP",
 			"atproto-proxy",
+			"atproto-accept-labelers",
 		},
 		AllowMethods: []string{
 			http.MethodGet,
