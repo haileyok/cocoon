@@ -1,6 +1,10 @@
 package server
 
 import (
+	"errors"
+	"time"
+
+	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/labstack/echo/v4"
@@ -19,20 +23,33 @@ func (s *Server) handleRefreshSession(e echo.Context) error {
 	ctx := e.Request().Context()
 	logger := s.logger.With("name", "handleServerRefreshSession")
 
+	if e.Get("legacyRefresh") != true {
+		return helpers.InvalidTokenError(e)
+	}
 	token := e.Get("token").(string)
 	repo := e.Get("repo").(*models.RepoActor)
 
-	if err := s.db.Exec(ctx, "DELETE FROM refresh_tokens WHERE token = ?", nil, token).Error; err != nil {
-		logger.Error("error getting refresh token from db", "error", err)
-		return helpers.ServerError(e, nil)
+	invalidRefresh := errors.New("refresh token is no longer valid")
+	var sess *Session
+	err := s.db.Transaction(ctx, func(tx *db.DB) error {
+		// Consume once, including when concurrent requests both passed middleware.
+		result := tx.Exec(ctx, "DELETE FROM refresh_tokens WHERE token = ? AND did = ? AND expires_at > ?", nil, token, repo.Repo.Did, time.Now())
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return invalidRefresh
+		}
+		if err := tx.Exec(ctx, "DELETE FROM tokens WHERE refresh_token = ?", nil, token).Error; err != nil {
+			return err
+		}
+		var err error
+		sess, err = s.createSessionWithDB(ctx, tx, &repo.Repo)
+		return err
+	})
+	if errors.Is(err, invalidRefresh) {
+		return helpers.InvalidTokenError(e)
 	}
-
-	if err := s.db.Exec(ctx, "DELETE FROM tokens WHERE refresh_token = ?", nil, token).Error; err != nil {
-		logger.Error("error deleting access token from db", "error", err)
-		return helpers.ServerError(e, nil)
-	}
-
-	sess, err := s.createSession(ctx, &repo.Repo)
 	if err != nil {
 		logger.Error("error creating new session for refresh", "error", err)
 		return helpers.ServerError(e, nil)
