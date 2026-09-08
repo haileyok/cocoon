@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -112,6 +113,52 @@ func TestRefreshSessionRejectsOtherCredentials(t *testing.T) {
 	}
 }
 
+func TestRefreshSessionBearerSchemeCase(t *testing.T) {
+	for _, scheme := range []string{"Bearer", "bearer", "BEARER"} {
+		t.Run(scheme, func(t *testing.T) {
+			s, session := setupRefreshTest(t)
+			if w := refreshRequest(s, scheme+" "+session.RefreshToken); w.Code != http.StatusOK {
+				t.Fatalf("valid refresh: %d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestRefreshSessionRejectsServiceAuth(t *testing.T) {
+	s, session := setupRefreshTest(t)
+	var beforeAccess []models.Token
+	var beforeRefresh []models.RefreshToken
+	if err := s.db.Client().Find(&beforeAccess).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Client().Find(&beforeRefresh).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(beforeAccess) != 1 || len(beforeRefresh) != 1 || beforeAccess[0].Token != session.AccessToken {
+		t.Fatal("expected original session in both credential tables")
+	}
+	repo, err := s.getRepoActorByDid(context.Background(), beforeAccess[0].Did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := mintServiceAuthToken(t, repo.SigningKey, repo.Repo.Did, testDid,
+		"com.atproto.server.refreshSession", time.Now().Add(time.Minute))
+	if w := refreshRequest(s, "Bearer "+token); w.Code < 400 || w.Code >= 500 {
+		t.Fatalf("expected service-auth rejection, got %d", w.Code)
+	}
+	var afterAccess []models.Token
+	var afterRefresh []models.RefreshToken
+	if err := s.db.Client().Find(&afterAccess).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Client().Find(&afterRefresh).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(beforeAccess, afterAccess) || !reflect.DeepEqual(beforeRefresh, afterRefresh) {
+		t.Fatal("service-auth rejection changed credential tables")
+	}
+}
+
 func TestRefreshSessionRotationAndReplay(t *testing.T) {
 	s, session := setupRefreshTest(t)
 	w := refreshRequest(s, "Bearer "+session.RefreshToken)
@@ -125,8 +172,8 @@ func TestRefreshSessionRotationAndReplay(t *testing.T) {
 	if next.AccessJwt == "" || next.RefreshJwt == "" || next.RefreshJwt == session.RefreshToken {
 		t.Fatal("missing or unchanged replacement credentials")
 	}
-	if w := refreshRequest(s, "Bearer "+session.RefreshToken); w.Code < 400 {
-		t.Fatal("consumed refresh token accepted")
+	if w := refreshRequest(s, "Bearer "+session.RefreshToken); w.Code < 400 || w.Code >= 500 {
+		t.Fatalf("expected consumed refresh token rejection, got %d", w.Code)
 	}
 	for _, tc := range []struct {
 		token string
@@ -136,7 +183,7 @@ func TestRefreshSessionRotationAndReplay(t *testing.T) {
 		r.Header.Set("Authorization", "Bearer "+tc.token)
 		w := httptest.NewRecorder()
 		s.echo.ServeHTTP(w, r)
-		if (tc.want == 200 && w.Code != 200) || (tc.want == 400 && w.Code < 400) {
+		if (tc.want == 200 && w.Code != 200) || (tc.want == 400 && (w.Code < 400 || w.Code >= 500)) {
 			t.Fatalf("access token status: %d", w.Code)
 		}
 	}
@@ -169,7 +216,7 @@ func TestRefreshSessionConcurrentConsumption(t *testing.T) {
 		go func() { results <- refreshRequest(s, "Bearer "+session.RefreshToken).Code }()
 	}
 	a, b := <-results, <-results
-	if !((a == 200 && b >= 400) || (b == 200 && a >= 400)) {
+	if !((a == 200 && b >= 400 && b < 500) || (b == 200 && a >= 400 && a < 500)) {
 		t.Fatalf("expected one success, got %d and %d", a, b)
 	}
 	var count int64
