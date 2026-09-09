@@ -10,7 +10,6 @@ import (
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/events"
 	"github.com/bluesky-social/indigo/util"
-	"github.com/haileyok/cocoon/identity"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/plc"
@@ -41,16 +40,18 @@ func (s *Server) handleIdentityUpdateHandle(e echo.Context) error {
 	ctx := context.WithValue(e.Request().Context(), "skip-cache", true)
 
 	if strings.HasPrefix(repo.Repo.Did, "did:plc:") {
-		log, err := identity.FetchDidAuditLog(ctx, nil, repo.Repo.Did)
+		lastOp, lastCid, err := s.plcClient.GetLastOp(ctx, repo.Repo.Did)
 		if err != nil {
-			logger.Error("error fetching doc", "error", err)
+			logger.Error("error fetching last plc operation", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
-		latest := log[len(log)-1]
+		if lastOp.Type == "plc_tombstone" {
+			return helpers.InputError(e, to.StringPtr("Did is tombstoned"))
+		}
 
 		var newAka []string
-		for _, aka := range latest.Operation.AlsoKnownAs {
+		for _, aka := range lastOp.AlsoKnownAs {
 			if aka == "at://"+repo.Handle {
 				continue
 			}
@@ -61,11 +62,11 @@ func (s *Server) handleIdentityUpdateHandle(e echo.Context) error {
 
 		op := plc.Operation{
 			Type:                "plc_operation",
-			VerificationMethods: latest.Operation.VerificationMethods,
-			RotationKeys:        latest.Operation.RotationKeys,
+			VerificationMethods: lastOp.VerificationMethods,
+			RotationKeys:        lastOp.RotationKeys,
 			AlsoKnownAs:         newAka,
-			Services:            latest.Operation.Services,
-			Prev:                &latest.Cid,
+			Services:            lastOp.Services,
+			Prev:                &lastCid,
 		}
 
 		k, err := atcrypto.ParsePrivateBytesK256(repo.SigningKey)

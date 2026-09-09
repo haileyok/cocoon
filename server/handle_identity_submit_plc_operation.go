@@ -65,12 +65,19 @@ func (s *Server) handleSubmitPlcOperation(e echo.Context) error {
 	if op.VerificationMethods["atproto"] != required.VerificationMethods["atproto"] {
 		return helpers.InputError(e, nil)
 	}
-	if op.AlsoKnownAs[0] != required.AlsoKnownAs[0] {
+	if len(op.AlsoKnownAs) == 0 || op.AlsoKnownAs[0] != required.AlsoKnownAs[0] {
+		// Reference parity: alsoKnownAs.at(0) must be at://<current handle>.
+		// The empty case is a 400 (the reference's .at(0) returns undefined and
+		// fails the same check), not an index-out-of-range panic.
 		return helpers.InputError(e, nil)
 	}
 
 	if err := s.plcClient.SendOperation(e.Request().Context(), repo.Repo.Did, &op); err != nil {
-		return err
+		// PLC rejected the operation (e.g. bad signature, wrong prev, or a
+		// tombstoned DID). The reference surfaces PlcClientError; returning
+		// it raw would echo the PLC body, so log and 500 without state changes.
+		logger.Error("plc rejected operation", "error", err)
+		return helpers.ServerError(e, nil)
 	}
 
 	if err := s.passport.BustDoc(context.TODO(), repo.Repo.Did); err != nil {

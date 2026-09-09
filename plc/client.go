@@ -163,7 +163,52 @@ func (c *Client) SendOperation(ctx context.Context, did string, op *Operation) e
 		return fmt.Errorf("error sending operation. status code: %d, response: %s", resp.StatusCode, string(b))
 	}
 
+	// Match the reference did-plc client, which throws PlcClientError for any
+	// non-2xx response. Without this, a PLC-side rejection (bad signature,
+	// wrong prev, tombstoned DID, ...) is reported as success and callers
+	// mutate local state while PLC state is unchanged.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("error sending operation: status code %d, response: %s", resp.StatusCode, string(b))
+	}
+
 	return nil
+}
+
+// GetLastOp fetches the most recent operation from the DID's audit log. It
+// mirrors the reference plcClient.getLastOp() used by signPlcOperation and
+// updateHandle: routing the fetch through the client (rather than a hardcoded
+// plc.directory URL) keeps the operation log source consistent with
+// sendOperation, and lets deployments point at a PLC mirror.
+func (c *Client) GetLastOp(ctx context.Context, did string) (*identity.DidLogEntry, string, error) {
+	ustr := c.service + "/" + url.QueryEscape(did) + "/log/audit"
+
+	req, err := http.NewRequestWithContext(ctx, "GET", ustr, nil)
+	if err != nil {
+		return nil, "", err
+	}
+
+	resp, err := c.h.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		io.Copy(io.Discard, resp.Body)
+		return nil, "", fmt.Errorf("could not find identity in plc registry")
+	}
+
+	var log identity.DidAuditLog
+	if err := json.NewDecoder(resp.Body).Decode(&log); err != nil {
+		return nil, "", err
+	}
+
+	if len(log) == 0 {
+		return nil, "", fmt.Errorf("no operations in plc log")
+	}
+
+	latest := log[len(log)-1]
+	return &latest.Operation, latest.Cid, nil
 }
 
 func DidFromOp(op *Operation) (string, error) {

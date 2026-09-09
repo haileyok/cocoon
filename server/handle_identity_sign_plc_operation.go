@@ -54,21 +54,24 @@ func (s *Server) handleSignPlcOperation(e echo.Context) error {
 	}
 
 	ctx := context.WithValue(e.Request().Context(), "skip-cache", true)
-	log, err := identity.FetchDidAuditLog(ctx, nil, repo.Repo.Did)
+	lastOp, lastCid, err := s.plcClient.GetLastOp(ctx, repo.Repo.Did)
 	if err != nil {
-		logger.Error("error fetching doc", "error", err)
+		logger.Error("error fetching last plc operation", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
-	latest := log[len(log)-1]
+	// Reference parity: refuse to build on a tombstoned DID.
+	if lastOp.Type == "plc_tombstone" {
+		return helpers.InputError(e, to.StringPtr("Did is tombstoned"))
+	}
 
 	op := plc.Operation{
 		Type:                "plc_operation",
-		VerificationMethods: latest.Operation.VerificationMethods,
-		RotationKeys:        latest.Operation.RotationKeys,
-		AlsoKnownAs:         latest.Operation.AlsoKnownAs,
-		Services:            latest.Operation.Services,
-		Prev:                &latest.Cid,
+		VerificationMethods: lastOp.VerificationMethods,
+		RotationKeys:        lastOp.RotationKeys,
+		AlsoKnownAs:         lastOp.AlsoKnownAs,
+		Services:            lastOp.Services,
+		Prev:                &lastCid,
 	}
 	if req.VerificationMethods != nil {
 		op.VerificationMethods = *req.VerificationMethods
