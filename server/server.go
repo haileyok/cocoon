@@ -7,6 +7,7 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"log/slog"
 	"net/http"
@@ -14,7 +15,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"text/template"
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -403,9 +403,7 @@ func New(args *Args) (*Server, error) {
 		return nil, err
 	}
 
-	oauthCli := &http.Client{
-		Timeout: 10 * time.Second,
-	}
+	oauthCli := helpers.NewSafeFetchClient()
 
 	var nonceSecret []byte
 	maybeSecret, err := os.ReadFile("nonce.secret")

@@ -30,10 +30,17 @@ func (s *Server) handleServerUpdateEmail(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
-	// To disable email auth factor a token is required.
-	// To enable email auth factor a token is not required.
-	// If updating an email address, a token will be sent anyway
+	// A token is required to disable email auth factor, and — when the
+	// current email address is confirmed — to change the address itself.
+	// The emailed token is delivered to the *current* (confirmed) address
+	// by requestEmailUpdate, proving control of it before the account is
+	// re-pointed at a new address.
 	if urepo.TwoFactorType != models.TwoFactorTypeNone && req.EmailAuthFactor == false && req.Token == "" {
+		return helpers.InvalidTokenError(e)
+	}
+
+	emailChanging := urepo.Email != req.Email
+	if emailChanging && urepo.EmailConfirmedAt != nil && req.Token == "" {
 		return helpers.InvalidTokenError(e)
 	}
 
