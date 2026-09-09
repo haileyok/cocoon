@@ -86,6 +86,10 @@ type Server struct {
 	scopeResolver scopes.PermissionSetResolver
 	fallbackProxy string
 
+	// Optional client override for proxy and feed-record requests. Nil keeps
+	// each path's existing default client.
+	proxyHTTPClient *http.Client
+
 	lastRequestCrawl time.Time
 	requestCrawlMu   sync.Mutex
 
