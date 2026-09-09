@@ -3,7 +3,9 @@ package server
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"net/http"
 	"slices"
 	"strings"
 
@@ -16,14 +18,28 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
+// importRepoMaxBodyBytes caps the size of an imported repo CAR. Records-only
+// CARs are typically tens of MB even for very large accounts, so 100 MB has
+// generous headroom while preventing an authenticated user from ballooning
+// the process heap with an unbounded read.
+const importRepoMaxBodyBytes = 100 << 20
+
 func (s *Server) handleRepoImportRepo(e echo.Context) error {
 	ctx := e.Request().Context()
 	logger := s.logger.With("name", "handleImportRepo")
 
 	urepo := e.Get("repo").(*models.RepoActor)
 
-	b, err := io.ReadAll(e.Request().Body)
+	body := http.MaxBytesReader(e.Response(), e.Request().Body, importRepoMaxBodyBytes)
+	b, err := io.ReadAll(body)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return e.JSON(http.StatusRequestEntityTooLarge, map[string]string{
+				"error":   "RequestEntityTooLarge",
+				"message": "imported repo CAR exceeds the 100 MB limit",
+			})
+		}
 		logger.Error("could not read bytes in import request", "error", err)
 		return helpers.ServerError(e, nil)
 	}
