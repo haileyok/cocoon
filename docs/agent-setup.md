@@ -8,12 +8,59 @@ output.
 
 Conventions used below:
 
-- `$HOST` — your PDS hostname (e.g. `pds.example.com`)
-- `$ADMIN_PASSWORD` — the value of `COCOON_ADMIN_PASSWORD` in `.env`
+- `$BASE` — the base URL of your PDS: `http://localhost:8080` for the binary
+  option, `https://$HOST` for Docker (where `$HOST` is your domain)
+- `$ADMIN_PASSWORD` — the value of `COCOON_ADMIN_PASSWORD`
 - Admin HTTP auth is HTTP Basic with username `admin` and that password
 - JSON parsing is with `jq`; commands are `bash`
 
 ## 1. Deploy
+
+You need a running Cocoon server reachable over HTTP. Two ways to get one —
+pick whichever fits your environment. The **binary** path is usually simpler
+for an agent that already controls a machine: no domain, no TLS, no Docker.
+
+### Option A: run the binary directly (no Docker, no domain required)
+
+Cocoon serves plain HTTP on `:8080`. For a single-operator private PDS this is
+enough: createAccount, createSession, OAuth, and all management endpoints work
+over HTTP. (A domain + TLS matters when other network participants — relays,
+other Bluesky clients — need to reach your PDS; the OAuth metadata advertises
+`https://` issuer URLs, so use Option B or a reverse proxy when you need
+federation.)
+
+```bash
+# 1. build — the -ldflags version stamp matters: without it the binary runs
+#    in "dev" mode and expects ./server/templates on disk at startup
+git clone https://github.com/haileyok/cocoon.git
+cd cocoon
+go build -ldflags "-X main.Version=agent" -o cocoon ./cmd/cocoon
+
+# 2. generate the two key files the server requires
+./cocoon create-rotation-key --out rotation.key
+./cocoon create-private-jwk --out jwk.key
+
+# 3. set the six required env vars and run
+export COCOON_DID="did:web:localhost"
+export COCOON_HOSTNAME="localhost"
+export COCOON_ROTATION_KEY_PATH="./rotation.key"
+export COCOON_JWK_PATH="./jwk.key"
+export COCOON_CONTACT_EMAIL="agent@example.com"
+export COCOON_ADMIN_PASSWORD="$(openssl rand -hex 16)"
+export COCOON_SESSION_SECRET="$(openssl rand -hex 32)"
+export COCOON_RELAYS=""   # optional; skip firehose crawl announcements
+
+./cocoon run &
+```
+
+All later steps then use `http://localhost:8080` as the base URL. The database
+is a single SQLite file (`cocoon.db` in the working directory) — easy to
+inspect, back up, or throw away.
+
+Prerequisite for `createAccount` without an explicit `did`: outbound network
+access to `https://plc.directory` (see section 3).
+
+### Option B: Docker Compose (domain + automatic HTTPS)
 
 Prerequisites: Docker and Docker Compose, a domain pointed at the server,
 ports 80/443 open.
@@ -24,7 +71,7 @@ cd cocoon
 cp .env.example .env
 ```
 
-Set these six required variables in `.env`:
+Set these variables in `.env`:
 
 ```bash
 COCOON_DID="did:web:$HOST"                 # or your did:plc
@@ -41,38 +88,47 @@ Start and wait for health:
 
 ```bash
 docker compose up -d
-# Poll until this returns 200:
+# Poll until this returns 200 (BASE is https://your-domain):
 curl -fsS "https://$HOST/xrpc/_health"
 ```
 
 The container generates `./rotation.key` and `./jwk.key` under `./keys/` on
 first boot if absent; data lives in `./data/`.
 
+Health check for either option:
+
+```bash
+curl -fsS "$BASE/xrpc/_health"   # $BASE is http://localhost:8080 or https://$HOST
+```
+
 ## 2. Invite code
 
 By default Cocoon requires an invite code to create an account. Three ways to
 get one:
 
-a. **Read the initial invite** the container creates on first boot:
+a. **Read the initial invite** the compose stack creates on first boot
+   (Docker option only — the binary path has no equivalent, use b or c):
 
 ```bash
 docker compose exec cocoon cat /keys/initial-invite-code.txt
 ```
 
-b. **Mint one over HTTP** (admin Basic auth):
+b. **Mint one over HTTP** (admin Basic auth) — works for either deployment:
 
 ```bash
 curl -fsS -u "admin:$ADMIN_PASSWORD" \
   -H 'Content-Type: application/json' \
   -d '{"useCount": 1}' \
-  "https://$HOST/xrpc/com.atproto.server.createInviteCode"
+  "${BASE}/xrpc/com.atproto.server.createInviteCode"
 # {"code":"<uuid>"}
 ```
 
-c. **Via the CLI** (machine-parseable with --json):
+c. **Via the CLI** (machine-parseable with --json), pointing at the same
+   database your server is running on:
 
 ```bash
-docker compose exec cocoon /cocoon create-invite-code --json --uses 1
+docker compose exec cocoon /cocoon create-invite-code --json --uses 1   # Docker
+./cocoon create-invite-code --json --uses 1                            # binary
 # {"code":"<code>","uses":1,"for":""}
 ```
 
@@ -83,11 +139,11 @@ otherwise anyone can create accounts.
 ## 3. Provision an account
 
 ```bash
-curl -fsS -X POST "https://$HOST/xrpc/com.atproto.server.createAccount" \
+curl -fsS -X POST "${BASE}/xrpc/com.atproto.server.createAccount" \
   -H 'Content-Type: application/json' \
   -d '{
     "email": "agent@example.com",
-    "handle": "agent.example.com",
+    "handle": "<your-handle>",   # e.g. agent.localhost (binary) or agent.your-domain (Docker)
     "password": "<choose-a-password>",
     "inviteCode": "<from-step-2>"
   }'
@@ -102,7 +158,8 @@ Notes:
   egress to `https://plc.directory`. To skip the network entirely, pass an
   existing `did` you control (advanced; see the atproto DID docs).
 - **Handles**: handles live under the PDS hostname by default (e.g.
-  `agent.pds.example.com`); subdomain handle resolution is served by the PDS's
+  `agent.localhost` for the binary option, `agent.pds.example.com` for
+  Docker); subdomain handle resolution is served by the PDS's
   `/.well-known/atproto-did` route.
 - **SMTP is optional**: all mail functions no-op when unset, and email
   confirmation is never a gate — the account is usable immediately.
@@ -115,9 +172,9 @@ For all XRPC calls you can use the legacy session tokens — this is the
 simplest authenticated path:
 
 ```bash
-curl -fsS -X POST "https://$HOST/xrpc/com.atproto.server.createSession" \
+curl -fsS -X POST "${BASE}/xrpc/com.atproto.server.createSession" \
   -H 'Content-Type: application/json' \
-  -d '{"identifier": "agent.example.com", "password": "<password>"}'
+  -d '{"identifier": "<your-handle>", "password": "<password>"}'
 # {"accessJwt": "...", "refreshJwt": "...", ...}
 ```
 
@@ -135,7 +192,7 @@ Prove the write loop works with a concrete record:
 
 ```bash
 RKEY="self-test-$(date +%s)"
-curl -fsS -X POST "https://$HOST/xrpc/com.atproto.repo.createRecord" \
+curl -fsS -X POST "${BASE}/xrpc/com.atproto.repo.createRecord" \
   -H "Authorization: Bearer $ACCESS_JWT" \
   -H 'Content-Type: application/json' \
   -d '{
@@ -150,7 +207,7 @@ curl -fsS -X POST "https://$HOST/xrpc/com.atproto.repo.createRecord" \
 Verify it reads back:
 
 ```bash
-curl -fsS "https://$HOST/xrpc/com.atproto.repo.getRecord?repo=<did>&collection=com.atproto.identity.verifiableStatement&rkey=$RKEY"
+curl -fsS "${BASE}/xrpc/com.atproto.repo.getRecord?repo=<did>&collection=com.atproto.identity.verifiableStatement&rkey=$RKEY"
 ```
 
 ## 6. Full OAuth client flow (DPoP-bound, spec-compliant)
@@ -167,8 +224,8 @@ Steps:
 1. **Fetch metadata**:
 
 ```bash
-curl -fsS "https://$HOST/.well-known/oauth-protected-resource"
-curl -fsS "https://$HOST/.well-known/oauth-authorization-server"
+curl -fsS "${BASE}/.well-known/oauth-protected-resource"
+curl -fsS "${BASE}/.well-known/oauth-authorization-server"
 ```
 
 2. **Register a client**: host a client metadata document at an `https://`
@@ -180,7 +237,7 @@ curl -fsS "https://$HOST/.well-known/oauth-authorization-server"
    authorization request and returns a `request_uri`:
 
 ```bash
-curl -fsS -X POST "https://$HOST/oauth/par" \
+curl -fsS -X POST "${BASE}/oauth/par" \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   -H "DPoP: <your-dpop-proof-jwt>" \
   --data-urlencode "client_id=http://localhost" \
@@ -200,7 +257,7 @@ curl -fsS -X POST "https://$HOST/oauth/par" \
 4. **Admin-minted consent** — replaces the human "Accept" click:
 
 ```bash
-curl -fsS -X POST "https://$HOST/admin/oauth/authorize" \
+curl -fsS -X POST "${BASE}/admin/oauth/authorize" \
   -u "admin:$ADMIN_PASSWORD" \
   -H 'Content-Type: application/json' \
   -d '{"requestUri": "<request_uri from step 3>", "did": "<did from step 3 of setup>"}'
@@ -214,7 +271,7 @@ curl -fsS -X POST "https://$HOST/admin/oauth/authorize" \
 5. **Token exchange** (standard OAuth):
 
 ```bash
-curl -fsS -X POST "https://$HOST/oauth/token" \
+curl -fsS -X POST "${BASE}/oauth/token" \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   -H "DPoP: <your-dpop-proof-jwt>" \
   --data-urlencode "grant_type=authorization_code" \
@@ -235,14 +292,14 @@ All admin HTTP endpoints use Basic auth (`admin:$ADMIN_PASSWORD`).
 **List accounts** (paginated; `limit` default 100, max 500; `offset` for paging):
 
 ```bash
-curl -fsS -u "admin:$ADMIN_PASSWORD" "https://$HOST/admin/accounts?limit=100&offset=0"
+curl -fsS -u "admin:$ADMIN_PASSWORD" "${BASE}/admin/accounts?limit=100&offset=0"
 # [{"did":"...","handle":"...","email":"...","active":true,"status":"","createdAt":"..."}]
 ```
 
 **Account detail**:
 
 ```bash
-curl -fsS -u "admin:$ADMIN_PASSWORD" "https://$HOST/admin/account?did=<did>"
+curl -fsS -u "admin:$ADMIN_PASSWORD" "${BASE}/admin/account?did=<did>"
 # {"did":"...","handle":"...","email":"...","emailConfirmed":false,"active":true,"status":"","twoFactorType":"none","createdAt":"...","rev":"..."}
 ```
 
@@ -256,7 +313,8 @@ are not currently produced by this implementation).
 **Reset a password** (CLI, machine-parseable):
 
 ```bash
-docker compose exec cocoon /cocoon reset-password --json --did <did>
+docker compose exec cocoon /cocoon reset-password --json --did <did>   # Docker
+./cocoon reset-password --json --did <did>                            # binary
 # {"did":"...","password":"..."}
 ```
 
@@ -274,6 +332,10 @@ docker compose run --rm cocoon /cocoon recommit-repos --json --dids <did>[,<did2
 docker compose start cocoon
 ```
 
+For the binary option: stop the server process (Ctrl-C or `kill <pid>`), run
+`./cocoon recommit-repos --json --dids <did>[,...]`, then restart
+`./cocoon run`.
+
 ## 8. Troubleshooting
 
 **Startup exits immediately** — these validation errors are fatal and specific
@@ -286,12 +348,15 @@ docker compose start cocoon
 - `SESSION SECRET WAS NOT SET. THIS IS REQUIRED.` → `COCOON_SESSION_SECRET` missing (panics)
 - `database-url must be set when using postgres` → using `db-type=postgres` without `COCOON_DATABASE_URL`
 
-**Health**: `curl -fsS "https://$HOST/xrpc/_health"` must return 200.
+**Health**: `curl -fsS "${BASE}/xrpc/_health"` must return 200.
 
-**Where things live**:
+**Where things live** (Docker option):
 
 - `./data/` — SQLite database (or Postgres if configured)
 - `./keys/` — `rotation.key`, `jwk.key`, `initial-invite-code.txt`
+
+For the binary option: everything is in the working directory where you ran
+`./cocoon run` — `cocoon.db` (SQLite), `rotation.key`, `jwk.key`.
 
 **Account creation hangs** → check network egress to `https://plc.directory`
 (the `did:plc` minting path).
