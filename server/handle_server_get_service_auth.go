@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -35,6 +36,14 @@ func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
 
 	if err := e.Validate(req); err != nil {
 		return helpers.InputError(e, nil)
+	}
+
+	if !s.hasRPCScope(e, req.Aud, req.Lxm) {
+		lxm := req.Lxm
+		if lxm == "" {
+			lxm = "*"
+		}
+		return helpers.InsufficientScopeError(e, "rpc:"+lxm+"?aud="+url.QueryEscape(req.Aud))
 	}
 
 	exp := int64(req.Exp)

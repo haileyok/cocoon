@@ -18,6 +18,33 @@ func ctxWithScopes(scopes any) echo.Context {
 	return c
 }
 
+func TestHasRPCScopeStateAndAudience(t *testing.T) {
+	var s Server
+	const method = "app.bsky.feed.getTimeline"
+	for _, tc := range []struct {
+		name, scheme, aud string
+		scopes            any
+		want              bool
+	}{
+		{"missing OAuth state", "DPoP", testDid, nil, false},
+		{"malformed OAuth state", "DPoP", testDid, "transition:generic", false},
+		{"empty OAuth state", "DPoP", testDid, []string{}, false},
+		{"legacy bearer", "bearer", testDid, nil, true},
+		{"invalid double wildcard", "DPoP", testDid, []string{"rpc:*?aud=*"}, false},
+		{"matching service fragment", "DPoP", "did:web:appview.test#view", []string{"rpc:" + method + "?aud=did:web:appview.test%23view"}, true},
+		{"different service fragment", "DPoP", "did:web:appview.test#other", []string{"rpc:" + method + "?aud=did:web:appview.test%23view"}, false},
+		{"fragment must not be discarded", "DPoP", "did:web:appview.test", []string{"rpc:" + method + "?aud=did:web:appview.test%23view"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := ctxWithScopes(tc.scopes)
+			c.Request().Header.Set("Authorization", tc.scheme+" token")
+			if got := s.hasRPCScope(c, tc.aud, method); got != tc.want {
+				t.Fatalf("hasRPCScope = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestHasRepoScope(t *testing.T) {
 	s := newTestServer(t)
 

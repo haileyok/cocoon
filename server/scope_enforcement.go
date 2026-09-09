@@ -1,9 +1,49 @@
 package server
 
 import (
+	"strings"
+
 	"github.com/haileyok/cocoon/oauth/scopes"
 	"github.com/labstack/echo/v4"
 )
+
+// hasRPCScope checks the exact method and audience before delegating authority.
+// An omitted method requests an unrestricted token and requires lxm=*.
+func (s *Server) hasRPCScope(e echo.Context, aud, lxm string) bool {
+	raw := e.Get("scopes")
+	if raw == nil {
+		// Only authenticated legacy bearer requests may omit OAuth scope state.
+		scheme, _, _ := strings.Cut(e.Request().Header.Get("Authorization"), " ")
+		return strings.EqualFold(scheme, "Bearer")
+	}
+	granted, ok := raw.([]string)
+	if !ok {
+		return false
+	}
+	if lxm == "" {
+		lxm = "*"
+	}
+	for _, tok := range granted {
+		sc, err := scopes.Parse(tok)
+		if err != nil {
+			continue
+		}
+		if sc.Resource == scopes.ResourceTransition {
+			chat := strings.HasPrefix(lxm, "chat.bsky.")
+			if (sc.Transition == "generic" && !chat) || (sc.Transition == "chat.bsky" && chat) {
+				return true
+			}
+		}
+		if sc.Resource == scopes.ResourceRPC && (sc.Aud == aud || sc.Aud == "*") {
+			for _, method := range sc.Lxm {
+				if method == lxm || method == "*" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
 
 // actionForOpType maps a repo OpType to its scope action verb.
 func actionForOpType(t OpType) string {
