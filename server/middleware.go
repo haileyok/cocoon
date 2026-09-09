@@ -50,6 +50,11 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 			return helpers.ServerError(e, nil)
 		}
 
+		isRefresh := e.Request().URL.Path == "/xrpc/com.atproto.server.refreshSession"
+		if isRefresh && !strings.EqualFold(pts[0], "Bearer") {
+			return helpers.InvalidTokenError(e)
+		}
+
 		// move on to oauth session middleware if this is a dpop token
 		if pts[0] == "DPoP" {
 			return next(e)
@@ -166,10 +171,9 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 			}
 		}
 
-		isRefresh := e.Request().URL.Path == "/xrpc/com.atproto.server.refreshSession"
 		scope, _ := claims["scope"].(string)
 
-		if isRefresh && scope != "com.atproto.refresh" {
+		if isRefresh && (hasLxm || scope != "com.atproto.refresh") {
 			return helpers.InvalidTokenError(e)
 		} else if !hasLxm && !isRefresh && scope != "com.atproto.access" {
 			return helpers.InvalidTokenError(e)
@@ -225,6 +229,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 		e.Set("repo", repo)
 		e.Set("did", did)
 		e.Set("token", tokenstr)
+		e.Set("legacyRefresh", isRefresh)
 
 		if err := next(e); err != nil {
 			return helpers.InvalidTokenError(e)

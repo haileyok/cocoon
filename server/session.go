@@ -6,6 +6,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/google/uuid"
+	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/models"
 )
 
@@ -15,6 +16,11 @@ type Session struct {
 }
 
 func (s *Server) createSession(ctx context.Context, repo *models.Repo) (*Session, error) {
+	return s.createSessionWithDB(ctx, s.db, repo)
+}
+
+// createSessionWithDB lets refresh rotation persist both tokens in its transaction.
+func (s *Server) createSessionWithDB(ctx context.Context, database *db.DB, repo *models.Repo) (*Session, error) {
 	now := time.Now()
 	accexp := now.Add(3 * time.Hour)
 	refexp := now.Add(7 * 24 * time.Hour)
@@ -51,7 +57,7 @@ func (s *Server) createSession(ctx context.Context, repo *models.Repo) (*Session
 		return nil, err
 	}
 
-	if err := s.db.Create(ctx, &models.Token{
+	if err := database.Create(ctx, &models.Token{
 		Token:        accessString,
 		Did:          repo.Did,
 		RefreshToken: refreshString,
@@ -61,7 +67,7 @@ func (s *Server) createSession(ctx context.Context, repo *models.Repo) (*Session
 		return nil, err
 	}
 
-	if err := s.db.Create(ctx, &models.RefreshToken{
+	if err := database.Create(ctx, &models.RefreshToken{
 		Token:     refreshString,
 		Did:       repo.Did,
 		CreatedAt: now,
