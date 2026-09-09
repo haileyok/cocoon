@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -17,7 +18,7 @@ import (
 	secp256k1secec "gitlab.com/yawning/secp256k1-voi/secec"
 )
 
-func (s *Server) getAtprotoProxyEndpointFromRequest(e echo.Context) (string, string, error) {
+func (s *Server) getAtprotoProxyEndpointFromRequest(e echo.Context) (string, string, string, error) {
 	svc := e.Request().Header.Get("atproto-proxy")
 	if svc == "" && s.config.FallbackProxy != "" {
 		svc = s.config.FallbackProxy
@@ -25,7 +26,7 @@ func (s *Server) getAtprotoProxyEndpointFromRequest(e echo.Context) (string, str
 
 	svcPts := strings.Split(svc, "#")
 	if len(svcPts) != 2 {
-		return "", "", fmt.Errorf("invalid service header")
+		return "", "", "", fmt.Errorf("invalid service header")
 	}
 
 	svcDid := svcPts[0]
@@ -33,7 +34,7 @@ func (s *Server) getAtprotoProxyEndpointFromRequest(e echo.Context) (string, str
 
 	doc, err := s.passport.FetchDoc(e.Request().Context(), svcDid)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
 	var endpoint string
@@ -43,7 +44,7 @@ func (s *Server) getAtprotoProxyEndpointFromRequest(e echo.Context) (string, str
 		}
 	}
 
-	return endpoint, svcDid, nil
+	return endpoint, svcDid, svc, nil
 }
 
 func (s *Server) handleProxy(e echo.Context) error {
@@ -56,10 +57,15 @@ func (s *Server) handleProxy(e echo.Context) error {
 		return fmt.Errorf("incorrect number of parts")
 	}
 
-	endpoint, svcDid, err := s.getAtprotoProxyEndpointFromRequest(e)
+	endpoint, svcDid, audience, err := s.getAtprotoProxyEndpointFromRequest(e)
 	if err != nil {
 		logger.Error("could not get atproto proxy", "error", err)
 		return helpers.ServerError(e, nil)
+	}
+	// Authorize the selected DID#service, while retaining the bare DID in
+	// the outgoing service token for compatibility with upstream services.
+	if !s.hasRPCScope(e, audience, pts[2]) {
+		return helpers.InsufficientScopeError(e, "rpc:"+pts[2]+"?aud="+url.QueryEscape(audience))
 	}
 
 	requrl := e.Request().URL
@@ -155,7 +161,11 @@ func (s *Server) handleProxy(e echo.Context) error {
 		req.Header.Del("authorization")
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	client := s.proxyHTTPClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

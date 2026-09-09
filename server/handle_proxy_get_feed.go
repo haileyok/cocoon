@@ -1,6 +1,8 @@
 package server
 
 import (
+	"net/url"
+
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/api/bsky"
@@ -16,14 +18,22 @@ func (s *Server) handleProxyBskyFeedGetFeed(e echo.Context) error {
 		return helpers.InputError(e, to.StringPtr("invalid feed uri"))
 	}
 
-	appViewEndpoint, _, err := s.getAtprotoProxyEndpointFromRequest(e)
+	appViewEndpoint, _, audience, err := s.getAtprotoProxyEndpointFromRequest(e)
 	if err != nil {
 		e.Logger().Error("could not get atproto proxy", "error", err)
 		return helpers.ServerError(e, nil)
 	}
+	// Both operations are authorized against the selected AppView, before
+	// looking up the generator whose DID is used in the outgoing service token.
+	for _, method := range []string{"app.bsky.feed.getFeed", "app.bsky.feed.getFeedSkeleton"} {
+		if !s.hasRPCScope(e, audience, method) {
+			return helpers.InsufficientScopeError(e, "rpc:"+method+"?aud="+url.QueryEscape(audience))
+		}
+	}
 
 	appViewClient := xrpc.Client{
-		Host: appViewEndpoint,
+		Host:   appViewEndpoint,
+		Client: s.proxyHTTPClient,
 	}
 	feedRecord, err := atproto.RepoGetRecord(e.Request().Context(), &appViewClient, "", feedUri.Collection().String(), feedUri.Authority().String(), feedUri.RecordKey().String())
 	feedGeneratorDid := feedRecord.Value.Val.(*bsky.FeedGenerator).Did
