@@ -49,6 +49,16 @@ func (db *DB) Begin(ctx context.Context) *gorm.DB {
 	return db.cli.WithContext(ctx).Begin()
 }
 
+// Transaction runs fn with a DB wrapper bound to one GORM transaction. Every
+// helper called on the callback value uses that transaction rather than the
+// root connection. The transaction commits when fn returns nil and rolls back
+// otherwise.
+func (db *DB) Transaction(ctx context.Context, fn func(*DB) error) error {
+	return db.cli.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return fn(NewDB(tx))
+	})
+}
+
 func (db *DB) Client() *gorm.DB {
 	return db.cli
 }
