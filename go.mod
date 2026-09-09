@@ -6,6 +6,7 @@ require (
 	github.com/Azure/go-autorest/autorest/to v0.4.1
 	github.com/aws/aws-sdk-go v1.55.8
 	github.com/bluesky-social/go-util v0.0.0-20260221095237-38d8022e3dc1
+	github.com/bluesky-social/gttp v0.1.0
 	github.com/bluesky-social/indigo v0.0.0-20260308004230-c55a189a51a9
 	github.com/btcsuite/websocket v0.0.0-20150119174127-31079b680792
 	github.com/domodwyer/mailyak/v3 v3.6.2
@@ -32,7 +33,7 @@ require (
 	github.com/urfave/cli/v2 v2.27.7
 	github.com/whyrusleeping/cbor-gen v0.3.1
 	gitlab.com/yawning/secp256k1-voi v0.0.0-20230925100816-f2616030848b
-	golang.org/x/crypto v0.48.0
+	golang.org/x/crypto v0.50.0
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.1
@@ -85,6 +86,7 @@ require (
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
+	github.com/klauspost/compress v1.18.6 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/labstack/gommon v0.4.2 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
@@ -127,10 +129,10 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.1 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
-	golang.org/x/net v0.51.0 // indirect
+	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
