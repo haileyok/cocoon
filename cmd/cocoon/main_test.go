@@ -223,6 +223,39 @@ func TestRecommitReposJson(t *testing.T) {
 	}
 }
 
+// TestRecommitReposJsonStdoutPureUnderProductionErrWriter reproduces the
+// production wiring — newApp sets ErrWriter to os.Stdout — and asserts the
+// stdout payload still parses as JSON: banners and the migration logger must
+// go to real stderr, never through App.ErrWriter.
+func TestRecommitReposJsonStdoutPureUnderProductionErrWriter(t *testing.T) {
+	dbPath := setupTestDb(t)
+
+	did := "did:plc:recommitpurityabcdefg"
+	rootC, err := cid.Decode("bafyreib77klh3jlrqhxnp5g4bgnknpriegseaxa5uq5ktjcvmjn7vwdy4e")
+	if err != nil {
+		t.Fatalf("decode cid: %v", err)
+	}
+	seedRepo(t, dbPath, did, "badrev", rootC.Bytes())
+
+	var buf bytes.Buffer
+	app := newApp("test")
+	app.Writer = &buf
+	// exactly the production mis-direction: ErrWriter == stdout target
+	app.ErrWriter = &buf
+
+	if err := app.Run([]string{"cocoon", "--db-name", dbPath, "recommit-repos", "--json", "--dids", did}); err != nil {
+		t.Fatalf("app.Run: %v", err)
+	}
+
+	var results []map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &results); err != nil {
+		t.Fatalf("stdout is not pure JSON under production ErrWriter wiring: %q: %v", buf.String(), err)
+	}
+	if len(results) != 1 || results[0]["did"] != did {
+		t.Fatalf("unexpected results: %s", buf.String())
+	}
+}
+
 func seedRepo(t *testing.T, dbPath, did, rev string, root []byte) {
 	t.Helper()
 

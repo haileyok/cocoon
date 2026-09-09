@@ -246,8 +246,9 @@ curl -fsS -u "admin:$ADMIN_PASSWORD" "https://$HOST/admin/account?did=<did>"
 # {"did":"...","handle":"...","email":"...","emailConfirmed":false,"active":true,"status":"","twoFactorType":"none","createdAt":"...","rev":"..."}
 ```
 
-`active` is derived (true unless the account is taken down/suspended/deactivated);
-`status` is the specific state (`takendown`/`suspended`/`deactivated`) or empty.
+`active` is derived (true unless the account is deactivated);
+`status` is `"deactivated"` or empty (other states like takendown/suspended
+are not currently produced by this implementation).
 
 **Mint invite codes** — see step 2. `createInviteCodes` (plural) takes
 `{"useCount": N}` and mints multiple codes.

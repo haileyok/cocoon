@@ -479,13 +479,15 @@ var runRecommitRepos = &cli.Command{
 		}
 
 		dryRun := !cmd.Bool("confirm")
+		// Banners and the migration logger go to real stderr so stdout stays
+		// pure (JSON or prose) even when the app's ErrWriter is overridden.
 		if dryRun {
-			fmt.Fprintln(cmd.App.ErrWriter, "DRY RUN — no changes will be made. Re-run with --confirm to apply.")
+			fmt.Fprintln(os.Stderr, "DRY RUN — no changes will be made. Re-run with --confirm to apply.")
 		} else {
-			fmt.Fprintln(cmd.App.ErrWriter, "APPLYING changes. Ensure the PDS is STOPPED to avoid firehose sequence collisions.")
+			fmt.Fprintln(os.Stderr, "APPLYING changes. Ensure the PDS is STOPPED to avoid firehose sequence collisions.")
 		}
 
-		logger := slog.New(slog.NewTextHandler(cmd.App.ErrWriter, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 		results, err := server.RunRecommitMigration(context.Background(), gdb, server.RecommitOptions{
 			Dids:              dids,
 			DryRun:            dryRun,

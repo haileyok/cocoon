@@ -75,7 +75,7 @@ func (s *Server) handleAdminAccounts(e echo.Context) error {
 	}
 
 	var repos []models.RepoActor
-	if err := s.db.Raw(ctx, "SELECT r.*, a.* FROM repos r LEFT JOIN actors a ON r.did = a.did ORDER BY r.created_at DESC LIMIT ? OFFSET ?", nil, limit, offset).Scan(&repos).Error; err != nil {
+	if err := s.db.Raw(ctx, "SELECT r.*, a.* FROM repos r LEFT JOIN actors a ON r.did = a.did ORDER BY r.created_at DESC, r.did LIMIT ? OFFSET ?", nil, limit, offset).Scan(&repos).Error; err != nil {
 		logger.Error("error listing accounts", "error", err)
 		return helpers.ServerError(e, nil)
 	}

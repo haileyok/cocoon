@@ -86,10 +86,19 @@ func (s *Server) handleAdminOauthAuthorize(e echo.Context) error {
 
 	code := oauth.GenerateCode()
 
-	if err := s.db.Exec(ctx, "UPDATE oauth_authorization_requests SET sub = ?, code = ?, accepted = ?, ip = ? WHERE request_id = ?", nil, repo.Repo.Did, code, true, e.RealIP(), reqId).Error; err != nil {
-		logger.Error("error updating authorization request", "error", err)
+	// Guard the UPDATE with sub/code IS NULL so two concurrent admin calls
+	// cannot both mint codes for the same pending request; the loser gets the
+	// same already-authorized error the pre-check produces.
+	res := s.db.Exec(ctx, "UPDATE oauth_authorization_requests SET sub = ?, code = ?, accepted = ?, ip = ? WHERE request_id = ? AND sub IS NULL AND code IS NULL", nil, repo.Repo.Did, code, true, e.RealIP(), reqId)
+	if res.Error != nil {
+		logger.Error("error updating authorization request", "error", res.Error)
 		return helpers.ServerError(e, nil)
 	}
+	if res.RowsAffected == 0 {
+		return helpers.InputError(e, to.StringPtr("this request was already authorized"))
+	}
+
+	logger.Info("admin-minted oauth authorization", "request_id", reqId, "client_id", authReq.ClientId, "sub", repo.Repo.Did, "ip", e.RealIP())
 
 	return e.JSON(200, AdminOauthAuthorizeResponse{
 		Code:        code,
