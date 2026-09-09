@@ -403,9 +403,7 @@ func New(args *Args) (*Server, error) {
 		return nil, err
 	}
 
-	oauthCli := &http.Client{
-		Timeout: 10 * time.Second,
-	}
+	oauthCli := helpers.NewSafeFetchClient()
 
 	var nonceSecret []byte
 	maybeSecret, err := os.ReadFile("nonce.secret")
