@@ -46,13 +46,15 @@ func (bs *SqliteBlockstore) Get(ctx context.Context, cid cid.Cid) (blocks.Block,
 		return maybeBlock, nil
 	}
 
-	if err := bs.db.Raw(ctx, "SELECT * FROM blocks WHERE did = ? AND cid = ?", nil, bs.did, cid.Bytes()).Scan(&block).Error; err != nil {
-		return nil, err
+	result := bs.db.Raw(ctx, "SELECT * FROM blocks WHERE did = ? AND cid = ?", nil, bs.did, cid.Bytes()).Scan(&block)
+	if result.Error != nil {
+		return nil, result.Error
 	}
 
-	// GORM's Scan does not error when no rows match; treat a missing row as a
-	// not-found error so callers (eg partial MST loads) see proper semantics.
-	if len(block.Value) == 0 {
+	// GORM's Scan does not error when no rows match; use the row count as the
+	// existence signal (not payload length: a stored zero-length block is a
+	// hit) so callers (eg partial MST loads) see proper not-found semantics.
+	if result.RowsAffected == 0 {
 		return nil, ipld.ErrNotFound{
 			Cid: cid,
 		}
