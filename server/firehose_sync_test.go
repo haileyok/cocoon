@@ -100,6 +100,14 @@ func TestApplyWritesEmitsPrevData(t *testing.T) {
 	}
 	defer cancel()
 
+	// capture the expected prevData before the write: the previous commit's
+	// MST root. (The previous commit block itself is deleted once superseded,
+	// matching the reference PDS, so it cannot be read back afterwards.)
+	wantPrev, err := readCommitData(ctx, s.getBlockstore(acct.Did), root)
+	if err != nil {
+		t.Fatalf("readCommitData: %v", err)
+	}
+
 	rec := MarshalableMap{
 		"$type":     "app.bsky.feed.post",
 		"text":      "hello world",
@@ -111,11 +119,6 @@ func TestApplyWritesEmitsPrevData(t *testing.T) {
 		Record:     &rec,
 	}}, nil); err != nil {
 		t.Fatalf("applyWrites: %v", err)
-	}
-
-	wantPrev, err := readCommitData(ctx, s.getBlockstore(acct.Did), root)
-	if err != nil {
-		t.Fatalf("readCommitData: %v", err)
 	}
 
 	select {

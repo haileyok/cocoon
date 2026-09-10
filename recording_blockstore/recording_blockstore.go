@@ -14,6 +14,9 @@ type RecordingBlockstore struct {
 
 	inserts map[cid.Cid]blockformat.Block
 	reads   map[cid.Cid]blockformat.Block
+	// deletions recorded by CID, so they can be filtered out of any derived
+	// views of this session's writes
+	deleted map[cid.Cid]struct{}
 }
 
 func New(base blockstore.Blockstore) *RecordingBlockstore {
@@ -21,6 +24,7 @@ func New(base blockstore.Blockstore) *RecordingBlockstore {
 		base:    base,
 		inserts: make(map[cid.Cid]blockformat.Block),
 		reads:   make(map[cid.Cid]blockformat.Block),
+		deleted: make(map[cid.Cid]struct{}),
 	}
 }
 
@@ -42,7 +46,23 @@ func (bs *RecordingBlockstore) GetSize(ctx context.Context, c cid.Cid) (int, err
 }
 
 func (bs *RecordingBlockstore) DeleteBlock(ctx context.Context, c cid.Cid) error {
-	return bs.base.DeleteBlock(ctx, c)
+	if err := bs.base.DeleteBlock(ctx, c); err != nil {
+		return err
+	}
+	bs.deleted[c] = struct{}{}
+	delete(bs.inserts, c)
+	return nil
+}
+
+// DeleteMany removes several blocks at once from the base store, recording
+// the deletions so they are excluded from GetWriteLog.
+func (bs *RecordingBlockstore) DeleteMany(ctx context.Context, cids []cid.Cid) error {
+	for _, c := range cids {
+		if err := bs.DeleteBlock(ctx, c); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (bs *RecordingBlockstore) Put(ctx context.Context, block blockformat.Block) error {
