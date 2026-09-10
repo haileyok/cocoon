@@ -10,13 +10,14 @@ import (
 // hasRPCScope checks the exact method and audience before delegating authority.
 // An omitted method requests an unrestricted token and requires lxm=*.
 func (s *Server) hasRPCScope(e echo.Context, aud, lxm string) bool {
-	raw := e.Get("scopes")
-	if raw == nil {
-		// Only authenticated legacy bearer requests may omit OAuth scope state.
-		scheme, _, _ := strings.Cut(e.Request().Header.Get("Authorization"), " ")
-		return strings.EqualFold(scheme, "Bearer")
+	kind := e.Get("credentialKind")
+	if kind == credentialLegacyAccess || kind == credentialService {
+		return true
 	}
-	granted, ok := raw.([]string)
+	if kind != credentialOAuth {
+		return false
+	}
+	granted, ok := e.Get("scopes").([]string)
 	if !ok {
 		return false
 	}
@@ -59,21 +60,18 @@ func actionForOpType(t OpType) string {
 	}
 }
 
-// hasRepoScope reports whether the current session is permitted to perform a
-// repo write of action on collection.
-//
-// Sessions without OAuth scopes (password/legacy access tokens, which never set
-// "scopes") are unrestricted, as is the legacy broad-write transition:generic
-// scope. Otherwise the granted scopes must include a repo: scope covering the
-// collection and action.
+// hasRepoScope checks write permission for a collection and action.
 func (s *Server) hasRepoScope(e echo.Context, collection, action string) bool {
-	raw := e.Get("scopes")
-	if raw == nil {
+	kind := e.Get("credentialKind")
+	if kind == credentialLegacyAccess || kind == credentialService {
 		return true
 	}
-	granted, ok := raw.([]string)
+	if kind != credentialOAuth {
+		return false
+	}
+	granted, ok := e.Get("scopes").([]string)
 	if !ok {
-		return true
+		return false
 	}
 
 	for _, tok := range granted {
