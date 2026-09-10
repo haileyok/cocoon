@@ -9,6 +9,7 @@ import (
 	"github.com/haileyok/cocoon/models"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
+	ipld "github.com/ipfs/go-ipld-format"
 	"gorm.io/gorm/clause"
 )
 
@@ -45,8 +46,18 @@ func (bs *SqliteBlockstore) Get(ctx context.Context, cid cid.Cid) (blocks.Block,
 		return maybeBlock, nil
 	}
 
-	if err := bs.db.Raw(ctx, "SELECT * FROM blocks WHERE did = ? AND cid = ?", nil, bs.did, cid.Bytes()).Scan(&block).Error; err != nil {
-		return nil, err
+	result := bs.db.Raw(ctx, "SELECT * FROM blocks WHERE did = ? AND cid = ?", nil, bs.did, cid.Bytes()).Scan(&block)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+
+	// GORM's Scan does not error when no rows match; use the row count as the
+	// existence signal (not payload length: a stored zero-length block is a
+	// hit) so callers (eg partial MST loads) see proper not-found semantics.
+	if result.RowsAffected == 0 {
+		return nil, ipld.ErrNotFound{
+			Cid: cid,
+		}
 	}
 
 	b, err := blocks.NewBlockWithCid(block.Value, cid)
@@ -81,8 +92,39 @@ func (bs *SqliteBlockstore) Put(ctx context.Context, block blocks.Block) error {
 	return nil
 }
 
-func (bs *SqliteBlockstore) DeleteBlock(context.Context, cid.Cid) error {
-	panic("not implemented")
+func (bs *SqliteBlockstore) DeleteBlock(ctx context.Context, c cid.Cid) error {
+	return bs.DeleteMany(ctx, []cid.Cid{c})
+}
+
+// DeleteMany removes the given blocks from the underlying storage. Blocks
+// that are not present are ignored (delete is idempotent), matching the
+// reference PDS behavior for removedCids.
+func (bs *SqliteBlockstore) DeleteMany(ctx context.Context, cids []cid.Cid) error {
+	if len(cids) == 0 {
+		return nil
+	}
+
+	if bs.readonly {
+		return fmt.Errorf("cannot delete from readonly blockstore")
+	}
+
+	did := bs.did
+	if err := bs.db.Transaction(ctx, func(tx *db.DB) error {
+		for _, c := range cids {
+			if err := tx.Exec(ctx, "DELETE FROM blocks WHERE did = ? AND cid = ?", nil, did, c.Bytes()).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	for _, c := range cids {
+		delete(bs.inserts, c)
+	}
+
+	return nil
 }
 
 func (bs *SqliteBlockstore) Has(context.Context, cid.Cid) (bool, error) {

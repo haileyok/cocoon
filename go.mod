@@ -22,6 +22,7 @@ require (
 	github.com/ipfs/go-cid v0.6.0
 	github.com/ipfs/go-ipfs-blockstore v1.3.1
 	github.com/ipfs/go-ipld-cbor v0.2.1
+	github.com/ipfs/go-ipld-format v0.6.3
 	github.com/ipld/go-car v0.6.3
 	github.com/joho/godotenv v1.5.1
 	github.com/labstack/echo-contrib v0.50.1
@@ -71,7 +72,6 @@ require (
 	github.com/ipfs/go-dsqueue v0.2.0 // indirect
 	github.com/ipfs/go-ipfs-ds-help v1.1.1 // indirect
 	github.com/ipfs/go-ipfs-util v0.0.3 // indirect
-	github.com/ipfs/go-ipld-format v0.6.3 // indirect
 	github.com/ipfs/go-ipld-legacy v0.3.0 // indirect
 	github.com/ipfs/go-libipfs v0.7.0 // indirect
 	github.com/ipfs/go-log v1.0.5 // indirect

@@ -173,6 +173,7 @@ func main() {
 			runCreateInviteCode,
 			runResetPassword,
 			runRecommitRepos,
+			runGcRepos,
 		},
 		ErrWriter: os.Stdout,
 		Version:   Version,
@@ -483,6 +484,89 @@ var runRecommitRepos = &cli.Command{
 		}
 		if failures > 0 {
 			return fmt.Errorf("%d repo(s) failed", failures)
+		}
+		return nil
+	},
+}
+
+var runGcRepos = &cli.Command{
+	Name:  "gc-repos",
+	Usage: "Delete blocks unreachable from repos' current head commits",
+	Description: "For each listed repo, walks the MST at the current head and deletes every block " +
+		"not reachable from it: superseded MST nodes, blocks of deleted or overwritten records, " +
+		"and historical commit objects — the strata accumulated before commits started deleting " +
+		"their removedCids. This shrinks the database and future getRepo exports.\n\n" +
+		"Dry-run by default; pass --confirm to apply. Run with the PDS STOPPED (a concurrent write " +
+		"would race this pass). For SQLite, run VACUUM afterwards to return the freed space to the OS. " +
+		"The repos themselves are never mutated: no new commits, no firehose events.",
+	Flags: []cli.Flag{
+		&cli.StringSliceFlag{
+			Name:     "dids",
+			Usage:    "repos to process (repeat the flag or comma-separate)",
+			Required: true,
+		},
+		&cli.BoolFlag{
+			Name:  "confirm",
+			Usage: "actually delete garbage blocks (otherwise dry-run)",
+		},
+	},
+	Action: func(cmd *cli.Context) error {
+		dids := cmd.StringSlice("dids")
+		if len(dids) == 0 {
+			return fmt.Errorf("at least one --dids value is required")
+		}
+		for _, d := range dids {
+			if _, err := syntax.ParseDID(d); err != nil {
+				return fmt.Errorf("invalid did %q: %w", d, err)
+			}
+		}
+
+		gdb, err := newDb(cmd)
+		if err != nil {
+			return err
+		}
+
+		dryRun := !cmd.Bool("confirm")
+		if dryRun {
+			fmt.Println("DRY RUN — no changes will be made. Re-run with --confirm to apply.")
+		} else {
+			fmt.Println("APPLYING changes. Ensure the PDS is STOPPED so no write races this pass.")
+		}
+
+		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		results, err := server.RunRepoGcMigration(context.Background(), gdb, server.RepoGcOptions{
+			Dids:              dids,
+			DryRun:            dryRun,
+			BlockstoreVariant: cmd.String("blockstore-variant"),
+			Logger:            logger,
+		})
+		if err != nil {
+			return err
+		}
+
+		var failures int
+		for _, r := range results {
+			if r.Err != nil {
+				failures++
+				fmt.Printf("  %s: ERROR: %v\n", r.Did, r.Err)
+				continue
+			}
+			switch {
+			case dryRun && r.RemovedBlocks > 0:
+				fmt.Printf("  %s: would delete %d of %d blocks (head %s, %d live)\n", r.Did, r.RemovedBlocks, r.TotalBlocks, r.Head, r.LiveBlocks)
+			case dryRun:
+				fmt.Printf("  %s: already clean (head %s, %d live)\n", r.Did, r.Head, r.LiveBlocks)
+			case r.RemovedBlocks > 0:
+				fmt.Printf("  %s: deleted %d of %d blocks (head %s, %d live)\n", r.Did, r.RemovedBlocks, r.TotalBlocks, r.Head, r.LiveBlocks)
+			default:
+				fmt.Printf("  %s: already clean (head %s, %d live)\n", r.Did, r.Head, r.LiveBlocks)
+			}
+		}
+		if failures > 0 {
+			return fmt.Errorf("%d repo(s) failed", failures)
+		}
+		if !dryRun {
+			fmt.Println("Done. For SQLite, run VACUUM to return freed space to the OS.")
 		}
 		return nil
 	},

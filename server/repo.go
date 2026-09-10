@@ -250,6 +250,91 @@ func putRecordBlock(ctx context.Context, bs blockstore.Blockstore, rec *Marshala
 	return c, nil
 }
 
+// collectTreeBlocks gathers the CIDs of all MST node blocks reachable from a
+// tree root, plus the CIDs of all leaf (record) values.
+func collectTreeBlocks(n *mst.Node, nodes map[cid.Cid]struct{}, leaves map[cid.Cid]struct{}) {
+	if n == nil {
+		return
+	}
+	if n.CID != nil {
+		nodes[*n.CID] = struct{}{}
+	}
+	for _, e := range n.Entries {
+		if e.Child != nil {
+			collectTreeBlocks(e.Child, nodes, leaves)
+		}
+		if e.IsValue() && e.Value != nil {
+			leaves[*e.Value] = struct{}{}
+		}
+	}
+}
+
+// computeRemovedCids returns the set of block CIDs that should be deleted
+// from storage after a commit that moved the MST from prev to curr:
+//
+//   - MST node blocks reachable from prev but not from curr
+//   - record blocks linked from prev but not from curr (updates/deletes)
+//   - the previous commit block(s)
+//   - blocks written by this commit (newBlocks) that ended up unlinked, eg a
+//     record created and then deleted within the same batch
+//
+// newRoot (the new commit block) is always kept.
+//
+// This mirrors the reference PDS DataDiff removedCids computation, including
+// its add/remove cancel-out for same-batch churn.
+func computeRemovedCids(prev *mst.Node, curr *mst.Node, prevCommitCids []cid.Cid, newBlocks []cid.Cid, newRoot cid.Cid) []cid.Cid {
+	prevNodes := map[cid.Cid]struct{}{}
+	prevLeaves := map[cid.Cid]struct{}{}
+	collectTreeBlocks(prev, prevNodes, prevLeaves)
+
+	currNodes := map[cid.Cid]struct{}{}
+	currLeaves := map[cid.Cid]struct{}{}
+	collectTreeBlocks(curr, currNodes, currLeaves)
+
+	linked := func(c cid.Cid) bool {
+		if c == newRoot {
+			return true
+		}
+		if _, ok := currNodes[c]; ok {
+			return true
+		}
+		if _, ok := currLeaves[c]; ok {
+			return true
+		}
+		return false
+	}
+
+	removed := map[cid.Cid]struct{}{}
+	for c := range prevNodes {
+		if !linked(c) {
+			removed[c] = struct{}{}
+		}
+	}
+	for c := range prevLeaves {
+		if !linked(c) {
+			removed[c] = struct{}{}
+		}
+	}
+	for _, c := range prevCommitCids {
+		if !linked(c) {
+			removed[c] = struct{}{}
+		}
+	}
+	// blocks written this commit that are not linked from the new root are
+	// garbage (eg create+delete of the same rkey in one batch)
+	for _, c := range newBlocks {
+		if !linked(c) {
+			removed[c] = struct{}{}
+		}
+	}
+
+	out := make([]cid.Cid, 0, len(removed))
+	for c := range removed {
+		out = append(out, c)
+	}
+	return out
+}
+
 // TODO make use of swap commit
 func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []Op, swapCommit *string) ([]ApplyWriteResult, error) {
 	rootcid, err := cid.Cast(urepo.Root)
@@ -274,8 +359,13 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 	var entries []models.Record
 	var newroot cid.Cid
 	var rev string
+	var removedCids []cid.Cid
 
 	if err := rm.withRepo(ctx, urepo.Did, rootcid, func(r *atp.Repo) (cid.Cid, error) {
+		// Snapshot the pre-write tree so we can compute which blocks this
+		// commit supersedes (removedCids) after mutating.
+		prevTree := r.MST.Copy()
+
 		entries = make([]models.Record, 0, len(writes))
 		for i, op := range writes {
 			// updates or deletes must supply an rkey
@@ -430,6 +520,16 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 			return cid.Undef, commitErr
 		}
 
+		// Compute the blocks superseded by this commit, mirroring the
+		// reference PDS: every MST node CID that was reachable before and is
+		// not reachable now, every record CID that is no longer linked, the
+		// previous commit block, and same-batch garbage (eg create+delete).
+		var newBlocks []cid.Cid
+		for _, blk := range bs.GetWriteLog() {
+			newBlocks = append(newBlocks, blk.Cid())
+		}
+		removedCids = computeRemovedCids(prevTree.Root, r.MST.Root, []cid.Cid{rootcid}, newBlocks, newroot)
+
 		return newroot, nil
 	}); err != nil {
 		return nil, err
@@ -560,6 +660,26 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 
 	if err := rm.s.UpdateRepo(ctx, urepo.Did, newroot, rev); err != nil {
 		return nil, err
+	}
+
+	// Delete the blocks superseded by this commit, matching the reference PDS
+	// (which deletes commit.removedCids alongside applying the new blocks).
+	// This runs after the firehose event is built and published: the event CAR
+	// embeds the removed record blocks so consumers can apply the ops.
+	//
+	// TODO: this delete is not atomic with the block insert above; a crash
+	// between the two leaves a superseded block stranded in storage (bloat,
+	// not corruption).
+	if len(removedCids) > 0 {
+		dm, ok := dbs.(interface {
+			DeleteMany(context.Context, []cid.Cid) error
+		})
+		if !ok {
+			return nil, fmt.Errorf("blockstore does not support deleting superseded blocks")
+		}
+		if err := dm.DeleteMany(ctx, removedCids); err != nil {
+			return nil, fmt.Errorf("deleting superseded blocks: %w", err)
+		}
 	}
 
 	for i := range results {
