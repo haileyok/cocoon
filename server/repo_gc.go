@@ -100,56 +100,47 @@ func (s *Server) repoGcOne(ctx context.Context, did string, dryRun bool) RepoGcR
 
 	res.LiveBlocks = int64(len(live))
 
-	// Count current rows and find the unreachable ones in one query.
-	var total int64
-	if err := s.db.Client().Table("blocks").Where("did = ?", did).Count(&total).Error; err != nil {
-		res.Err = fmt.Errorf("count blocks: %w", err)
+	// Load and validate every block row BEFORE any accounting or the dry-run
+	// return, so dry-run and --confirm observe identical corruption behavior
+	// and the removal count comes from actual rows, not a subtraction that
+	// assumes every live CID has a row.
+	var rows []models.Block
+	if err := s.db.Client().Table("blocks").Where("did = ?", did).Find(&rows).Error; err != nil {
+		res.Err = fmt.Errorf("load blocks: %w", err)
 		return res
 	}
-	res.TotalBlocks = total
-	res.RemovedBlocks = total - res.LiveBlocks
+	var dead []cid.Cid
+	for _, row := range rows {
+		c, err := cid.Cast(row.Cid)
+		if err != nil {
+			// A row whose cid column cannot even be parsed signals real
+			// corruption; fail this repo's pass rather than guessing at a
+			// deletion key (cid.Undef would not match the stored bytes).
+			res.Err = fmt.Errorf("unparseable block cid row for did %s: %w", did, err)
+			return res
+		}
+		if _, ok := live[c]; !ok {
+			dead = append(dead, c)
+		}
+	}
+	res.TotalBlocks = int64(len(rows))
+	res.RemovedBlocks = int64(len(dead))
 
 	if dryRun {
 		return res
 	}
 
-	if res.RemovedBlocks > 0 {
-		// Delete in batches over the live set rather than building a giant
-		// NOT IN clause: fetch candidate cids, filter against live, delete.
-		var rows []models.Block
-		if err := s.db.Client().Table("blocks").Where("did = ?", did).Find(&rows).Error; err != nil {
-			res.Err = fmt.Errorf("load blocks: %w", err)
+	if len(dead) > 0 {
+		dm, ok := s.getBlockstore(did).(interface {
+			DeleteMany(context.Context, []cid.Cid) error
+		})
+		if !ok {
+			res.Err = fmt.Errorf("blockstore does not support deleting blocks")
 			return res
 		}
-		var dead []cid.Cid
-		for _, row := range rows {
-			c, err := cid.Cast(row.Cid)
-			if err != nil {
-				// A row whose cid column cannot even be parsed signals real
-				// corruption; fail this repo's pass rather than guessing at a
-				// deletion key (cid.Undef would not match the stored bytes).
-				res.Err = fmt.Errorf("unparseable block cid row for did %s: %w", did, err)
-				return res
-			}
-			if _, ok := live[c]; !ok {
-				dead = append(dead, c)
-			}
-		}
-		if len(dead) > 0 {
-			dm, ok := s.getBlockstore(did).(interface {
-				DeleteMany(context.Context, []cid.Cid) error
-			})
-			if !ok {
-				res.Err = fmt.Errorf("blockstore does not support deleting blocks")
-				return res
-			}
-			if err := dm.DeleteMany(ctx, dead); err != nil {
-				res.Err = fmt.Errorf("delete garbage blocks: %w", err)
-				return res
-			}
-			res.RemovedBlocks = int64(len(dead))
-		} else {
-			res.RemovedBlocks = 0
+		if err := dm.DeleteMany(ctx, dead); err != nil {
+			res.Err = fmt.Errorf("delete garbage blocks: %w", err)
+			return res
 		}
 	}
 

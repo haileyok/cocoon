@@ -198,14 +198,18 @@ func TestRunRepoGcMigrationCorruptCidRowFails(t *testing.T) {
 		t.Fatalf("insert corrupt block row: %v", err)
 	}
 
-	results, err := RunRepoGcMigration(context.Background(), s.db.Client(), RepoGcOptions{
-		Dids: []string{did},
-	})
-	if err != nil {
-		t.Fatalf("RunRepoGcMigration: %v", err)
-	}
-	if len(results) != 1 || results[0].Err == nil {
-		t.Fatalf("expected an error result for the corrupt cid row, got %+v", results)
+	// dry-run and apply must behave identically: both fail on the corrupt row
+	for _, dryRun := range []bool{true, false} {
+		results, err := RunRepoGcMigration(context.Background(), s.db.Client(), RepoGcOptions{
+			Dids:   []string{did},
+			DryRun: dryRun,
+		})
+		if err != nil {
+			t.Fatalf("RunRepoGcMigration(dryRun=%v): %v", dryRun, err)
+		}
+		if len(results) != 1 || results[0].Err == nil {
+			t.Fatalf("dryRun=%v: expected an error result for the corrupt cid row, got %+v", dryRun, results)
+		}
 	}
 
 	// nothing may have been deleted: the pass aborts before any deletion
@@ -215,5 +219,60 @@ func TestRunRepoGcMigrationCorruptCidRowFails(t *testing.T) {
 	}
 	if n < 1 {
 		t.Fatalf("expected blocks to remain, got %d", n)
+	}
+}
+
+// TestRunRepoGcMigrationMissingLiveRowNoNegativeAccounting asserts that when
+// a referenced (live) record block has no row in the blocks table, the GC
+// does not report a negative removal count — dead blocks are counted from
+// actual rows, never by subtraction.
+func TestRunRepoGcMigrationMissingLiveRowNoNegativeAccounting(t *testing.T) {
+	s := newTestServer(t)
+	s.evtman = newTestEvtman(t)
+	s.repoman = NewRepoMan(s)
+	did := gcCreateChurnedRepo(t, s)
+	garbage := gcInsertGarbageBlocks(t, s, did, 2)
+
+	// remove one live record block's row entirely (simulating a missing row)
+	leaves := walkMstLeaves(t, s, did)
+	var victim cid.Cid
+	found := false
+	for _, c := range leaves {
+		victim = c
+		found = true
+		break
+	}
+	if !found {
+		t.Fatal("no live leaves to remove")
+	}
+	if err := s.db.Client().Exec("DELETE FROM blocks WHERE did = ? AND cid = ?", did, victim.Bytes()).Error; err != nil {
+		t.Fatalf("delete live row: %v", err)
+	}
+
+	for _, dryRun := range []bool{true, false} {
+		results, err := RunRepoGcMigration(context.Background(), s.db.Client(), RepoGcOptions{
+			Dids:   []string{did},
+			DryRun: dryRun,
+		})
+		if err != nil {
+			t.Fatalf("RunRepoGcMigration(dryRun=%v): %v", dryRun, err)
+		}
+		if len(results) != 1 || results[0].Err != nil {
+			t.Fatalf("dryRun=%v: unexpected results: %+v", dryRun, results)
+		}
+		r := results[0]
+		if r.RemovedBlocks < 0 || r.RemovedBlocks > r.TotalBlocks {
+			t.Fatalf("dryRun=%v: nonsensical removal count: removed=%d total=%d", dryRun, r.RemovedBlocks, r.TotalBlocks)
+		}
+		if r.RemovedBlocks != int64(len(garbage)) {
+			t.Fatalf("dryRun=%v: expected %d removals, got %d", dryRun, len(garbage), r.RemovedBlocks)
+		}
+	}
+
+	// garbage is gone; the still-live rows that remain are intact
+	for _, g := range garbage {
+		if blockExists(t, s, did, g) {
+			t.Fatalf("garbage block %s still present after gc", g)
+		}
 	}
 }
