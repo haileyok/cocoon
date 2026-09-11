@@ -145,7 +145,7 @@ type RepoCommit struct {
 	Rev string `json:"rev"`
 }
 
-func openRepo(ctx context.Context, bs blockstore.Blockstore, rootCid cid.Cid, did string) (*atp.Repo, error) {
+func openRepo(ctx context.Context, bs atp.RepoBlockSource, rootCid cid.Cid, did string) (*atp.Repo, error) {
 	commitBlock, err := bs.Get(ctx, rootCid)
 	if err != nil {
 		return nil, fmt.Errorf("reading commit block: %w", err)
