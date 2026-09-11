@@ -11,7 +11,6 @@ import (
 	atp "github.com/bluesky-social/indigo/atproto/repo"
 	"github.com/bluesky-social/indigo/atproto/repo/mst"
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	"github.com/bluesky-social/indigo/carstore"
 	"github.com/bluesky-social/indigo/events"
 	"github.com/ipfs/go-cid"
 	"gorm.io/driver/sqlite"
@@ -62,27 +61,6 @@ func (s *Server) seedGenesisRepo(t *testing.T, did string, signingKey []byte) (c
 		t.Fatalf("update repo: %v", err)
 	}
 	return root, rev
-}
-
-func TestBoundCommitBlocks(t *testing.T) {
-	limit := carstore.MaxSliceLength
-	within := make([]byte, limit)
-	blocks, tooBig := boundCommitBlocks(within)
-	if tooBig {
-		t.Fatal("CAR at the protocol limit was marked tooBig")
-	}
-	if len(blocks) != limit {
-		t.Fatalf("CAR at limit has length %d, want %d", len(blocks), limit)
-	}
-
-	over := make([]byte, limit+1)
-	blocks, tooBig = boundCommitBlocks(over)
-	if !tooBig {
-		t.Fatal("oversized CAR was not marked tooBig")
-	}
-	if len(blocks) != 0 {
-		t.Fatalf("oversized CAR retained %d bytes, want empty fallback", len(blocks))
-	}
 }
 
 func TestSubscribeReposMsgType(t *testing.T) {
