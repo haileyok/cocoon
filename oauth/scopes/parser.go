@@ -7,6 +7,7 @@ package scopes
 
 import (
 	"fmt"
+	"mime"
 	"net/url"
 	"strings"
 
@@ -209,7 +210,35 @@ func parseBlob(raw, positional string, hasPositional bool, params url.Values) (*
 	if len(accept) == 0 {
 		return nil, fmt.Errorf("blob scope %q requires an accept pattern", raw)
 	}
+	for i, pattern := range accept {
+		normalized, err := normalizeMIMEPattern(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("blob scope %q has invalid accept pattern %q: %w", raw, pattern, err)
+		}
+		accept[i] = normalized
+	}
 	return &Scope{Raw: raw, Resource: ResourceBlob, Accept: accept}, nil
+}
+
+func normalizeMIMEPattern(pattern string) (string, error) {
+	mediaType, params, err := mime.ParseMediaType(pattern)
+	if err != nil {
+		return "", err
+	}
+	if len(params) != 0 {
+		return "", fmt.Errorf("parameters are not allowed")
+	}
+
+	parts := strings.Split(mediaType, "/")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("must contain one type/subtype separator")
+	}
+	if strings.Contains(mediaType, "*") && mediaType != "*/*" {
+		if parts[1] != "*" || strings.Contains(parts[0], "*") {
+			return "", fmt.Errorf("wildcards must be type/* or */*")
+		}
+	}
+	return strings.ToLower(mediaType), nil
 }
 
 func parseAccount(raw, positional string, hasPositional bool, params url.Values) (*Scope, error) {
@@ -224,10 +253,6 @@ func parseAccount(raw, positional string, hasPositional bool, params url.Values)
 	case "", "read":
 		action = "read"
 	case "manage":
-		// only repo supports manage
-		if positional != "repo" {
-			return nil, fmt.Errorf("account scope %q does not support action=manage", raw)
-		}
 	default:
 		return nil, fmt.Errorf("account scope %q has invalid action %q", raw, action)
 	}
@@ -272,6 +297,37 @@ func (s *Scope) AllowsRepoWrite(collection, action string) bool {
 	}
 	for _, c := range s.Collections {
 		if c == "*" || c == collection {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowsAccount checks attribute access; manage implies read.
+func (s *Scope) AllowsAccount(attr, action string) bool {
+	if s == nil || s.Resource != ResourceAccount || s.Attr != attr {
+		return false
+	}
+	return s.Action == action || (s.Action == "manage" && action == "read")
+}
+
+// AllowsIdentity checks attribute access, including identity:*.
+func (s *Scope) AllowsIdentity(attr string) bool {
+	return s != nil && s.Resource == ResourceIdentity && (s.Attr == "*" || s.Attr == attr)
+}
+
+// AllowsBlob reports whether this scope accepts a concrete MIME type.
+func (s *Scope) AllowsBlob(mediaType string) bool {
+	if s == nil || s.Resource != ResourceBlob {
+		return false
+	}
+	normalized, err := normalizeMIMEPattern(mediaType)
+	if err != nil || strings.Contains(normalized, "*") {
+		return false
+	}
+	typeName := strings.SplitN(normalized, "/", 2)[0]
+	for _, pattern := range s.Accept {
+		if pattern == "*/*" || pattern == normalized || pattern == typeName+"/*" {
 			return true
 		}
 	}

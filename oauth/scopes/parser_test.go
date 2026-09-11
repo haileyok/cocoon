@@ -47,12 +47,20 @@ func TestParseValid(t *testing.T) {
 			&Scope{Raw: "blob:image/*", Resource: ResourceBlob, Accept: []string{"image/*"}},
 		},
 		{
+			"blob:IMAGE/PNG",
+			&Scope{Raw: "blob:IMAGE/PNG", Resource: ResourceBlob, Accept: []string{"image/png"}},
+		},
+		{
 			"account:email",
 			&Scope{Raw: "account:email", Resource: ResourceAccount, Attr: "email", Action: "read"},
 		},
 		{
 			"account:repo?action=manage",
 			&Scope{Raw: "account:repo?action=manage", Resource: ResourceAccount, Attr: "repo", Action: "manage"},
+		},
+		{
+			"account:email?action=manage",
+			&Scope{Raw: "account:email?action=manage", Resource: ResourceAccount, Attr: "email", Action: "manage"},
 		},
 		{
 			"identity:*",
@@ -89,8 +97,12 @@ func TestParseInvalid(t *testing.T) {
 		"include:not_a_valid_nsid",
 		"include:",
 		"account:bogus",
-		"account:email?action=manage",
 		"identity:bogus",
+		"blob:image/p*",
+		"blob:im*age/*",
+		"blob:*/png",
+		"blob:image/png;quality=high",
+		"blob:not-a-mime-type",
 	}
 
 	for _, raw := range invalid {
@@ -137,6 +149,84 @@ func TestAllowsRepoWrite(t *testing.T) {
 			}
 			if got := sc.AllowsRepoWrite(tt.collection, tt.action); got != tt.want {
 				t.Fatalf("AllowsRepoWrite(%q,%q) = %v, want %v", tt.collection, tt.action, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAllowsAccount(t *testing.T) {
+	tests := []struct {
+		scope, attr, action string
+		want                bool
+	}{
+		{"account:email", "email", "read", true},
+		{"account:email", "email", "manage", false},
+		{"account:email?action=manage", "email", "manage", true},
+		{"account:email?action=manage", "email", "read", true},
+		{"account:email?action=manage", "repo", "read", false},
+		{"account:repo?action=manage", "email", "read", false},
+		{"identity:handle", "email", "read", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.scope+"_"+tt.attr+"_"+tt.action, func(t *testing.T) {
+			sc, err := Parse(tt.scope)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got := sc.AllowsAccount(tt.attr, tt.action); got != tt.want {
+				t.Fatalf("AllowsAccount(%q, %q) = %v, want %v", tt.attr, tt.action, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAllowsIdentity(t *testing.T) {
+	tests := []struct {
+		scope, attr string
+		want        bool
+	}{
+		{"identity:handle", "handle", true},
+		{"identity:handle", "email", false},
+		{"identity:*", "handle", true},
+		{"identity:*", "anything", true},
+		{"account:email", "email", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.scope+"_"+tt.attr, func(t *testing.T) {
+			sc, err := Parse(tt.scope)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got := sc.AllowsIdentity(tt.attr); got != tt.want {
+				t.Fatalf("AllowsIdentity(%q) = %v, want %v", tt.attr, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAllowsBlob(t *testing.T) {
+	tests := []struct {
+		scope, mediaType string
+		want             bool
+	}{
+		{"blob:image/png", "image/png", true},
+		{"blob:image/png", "IMAGE/PNG", true},
+		{"blob:image/png", "image/jpeg", false},
+		{"blob:image/*", "image/png", true},
+		{"blob:image/*", "video/mp4", false},
+		{"blob:*/*", "application/octet-stream", true},
+		{"blob:*/*", "invalid", false},
+		{"blob:*/*", "image/png; charset=utf-8", false},
+		{"account:email", "image/png", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.scope+"_"+tt.mediaType, func(t *testing.T) {
+			sc, err := Parse(tt.scope)
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if got := sc.AllowsBlob(tt.mediaType); got != tt.want {
+				t.Fatalf("AllowsBlob(%q) = %v, want %v", tt.mediaType, got, tt.want)
 			}
 		})
 	}

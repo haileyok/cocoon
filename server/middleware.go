@@ -230,6 +230,13 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 		e.Set("did", did)
 		e.Set("token", tokenstr)
 		e.Set("legacyRefresh", isRefresh)
+		kind := credentialLegacyAccess
+		if isRefresh {
+			kind = credentialLegacyRefresh
+		} else if hasLxm {
+			kind = credentialService
+		}
+		e.Set("credentialKind", kind)
 
 		if err := next(e); err != nil {
 			return helpers.InvalidTokenError(e)
@@ -255,7 +262,7 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		}
 
 		if pts[0] != "DPoP" {
-			return next(e)
+			return s.authorizeEndpoint(e, next)
 		}
 
 		accessToken := pts[1]
@@ -323,7 +330,8 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		e.Set("did", repo.Repo.Did)
 		e.Set("token", accessToken)
 		e.Set("scopes", strings.Split(oauthToken.Parameters.Scope, " "))
+		e.Set("credentialKind", credentialOAuth)
 
-		return next(e)
+		return s.authorizeEndpoint(e, next)
 	}
 }

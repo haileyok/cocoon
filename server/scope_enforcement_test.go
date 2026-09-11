@@ -14,6 +14,9 @@ func ctxWithScopes(scopes any) echo.Context {
 	c, _ := newRequestContext(http.MethodPost, "/", "", nil)
 	if scopes != nil {
 		c.Set("scopes", scopes)
+		c.Set("credentialKind", credentialOAuth)
+	} else {
+		c.Set("credentialKind", credentialLegacyAccess)
 	}
 	return c
 }
@@ -38,6 +41,9 @@ func TestHasRPCScopeStateAndAudience(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := ctxWithScopes(tc.scopes)
 			c.Request().Header.Set("Authorization", tc.scheme+" token")
+			if tc.scheme == "DPoP" {
+				c.Set("credentialKind", credentialOAuth)
+			}
 			if got := s.hasRPCScope(c, tc.aud, method); got != tc.want {
 				t.Fatalf("hasRPCScope = %v, want %v", got, tc.want)
 			}
@@ -106,6 +112,7 @@ func TestCreateRecordInsufficientScope(t *testing.T) {
 	body := `{"repo":"` + ra.Repo.Did + `","collection":"earth.cirrus.check.othertestrecord","record":{"foo":"bar"}}`
 	c, rec := newRequestContext(http.MethodPost, "/xrpc/com.atproto.repo.createRecord", body, nil)
 	c.Set("repo", ra)
+	c.Set("credentialKind", credentialOAuth)
 	c.Set("scopes", []string{"atproto", "repo:earth.cirrus.check.testrecord"})
 
 	if err := s.handleCreateRecord(c); err != nil {
@@ -121,6 +128,7 @@ func TestPutRecordInsufficientScope(t *testing.T) {
 	body := `{"repo":"` + ra.Repo.Did + `","collection":"earth.cirrus.check.othertestrecord","rkey":"self","record":{"foo":"bar"}}`
 	c, rec := newRequestContext(http.MethodPost, "/xrpc/com.atproto.repo.putRecord", body, nil)
 	c.Set("repo", ra)
+	c.Set("credentialKind", credentialOAuth)
 	c.Set("scopes", []string{"atproto", "repo:earth.cirrus.check.testrecord"})
 
 	if err := s.handlePutRecord(c); err != nil {
@@ -136,6 +144,7 @@ func TestDeleteRecordInsufficientScope(t *testing.T) {
 	body := `{"repo":"` + ra.Repo.Did + `","collection":"earth.cirrus.check.othertestrecord","rkey":"self"}`
 	c, rec := newRequestContext(http.MethodPost, "/xrpc/com.atproto.repo.deleteRecord", body, nil)
 	c.Set("repo", ra)
+	c.Set("credentialKind", credentialOAuth)
 	c.Set("scopes", []string{"atproto", "repo:earth.cirrus.check.testrecord"})
 
 	if err := s.handleDeleteRecord(c); err != nil {
@@ -151,6 +160,7 @@ func TestApplyWritesInsufficientScope(t *testing.T) {
 	body := `{"repo":"` + ra.Repo.Did + `","writes":[{"$type":"com.atproto.repo.applyWrites#create","collection":"earth.cirrus.check.othertestrecord","rkey":"self","value":{"foo":"bar"}}]}`
 	c, rec := newRequestContext(http.MethodPost, "/xrpc/com.atproto.repo.applyWrites", body, nil)
 	c.Set("repo", ra)
+	c.Set("credentialKind", credentialOAuth)
 	c.Set("scopes", []string{"atproto", "repo:earth.cirrus.check.testrecord"})
 
 	if err := s.handleApplyWrites(c); err != nil {
