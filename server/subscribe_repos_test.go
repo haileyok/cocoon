@@ -646,16 +646,13 @@ func TestSubscribeReposDoesNotSignalOutdatedCursorWithinWindow(t *testing.T) {
 	}
 }
 
-// TestSubscribeReposSignalsFutureCursor asserts a cursor ahead of every event we
-// have is refused with a FutureCursor error frame, and that the connection is
-// then closed rather than left open on a stream that can never produce an event
-// above that seq.
-//
-// This is the case that silently hangs a consumer: nothing above the cursor can
-// ever be sent, so without a refusal the consumer waits forever. The relay
-// treats FutureCursor as "drop the connection and reset this host to idle",
-// which is the recovery path. (cmd/relay/relay/slurper.go)
-func TestSubscribeReposSignalsFutureCursor(t *testing.T) {
+// TestSubscribeReposFutureCursorStaysLive covers Cocoon's resettable sequence
+// space. A relay can remember a cursor above the current retained tip after the
+// event table is reset or restored. Rejecting that cursor with FutureCursor
+// causes indigo's relay to mark the host idle and stop crawling it; it does not
+// reset the stored cursor. Cocoon must therefore keep the subscription live and
+// deliver newly-broadcast events even while their seq is below the stale cursor.
+func TestSubscribeReposFutureCursorStaysLive(t *testing.T) {
 	s := newSubscribeTestServer(t)
 	_, newest := seedEvents(t, s, 3)
 
@@ -664,33 +661,27 @@ func TestSubscribeReposSignalsFutureCursor(t *testing.T) {
 	c := dialSubscribeRepos(t, url, &ahead)
 	defer c.Close()
 
-	f := readWSFrame(t, c)
-	if f.header.Op != events.EvtKindErrorFrame {
-		t.Fatalf("frame op = %d, want %d (error frame)", f.header.Op, events.EvtKindErrorFrame)
-	}
-	ef := f.decodeError(t)
-	if ef.Error != "FutureCursor" {
-		t.Errorf("error frame name = %q, want FutureCursor", ef.Error)
-	}
-
-	// The handler must not keep the stream open: there is nothing it could ever
-	// send. The close frame proves the teardown is deliberate.
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		if err := c.SetReadDeadline(deadline); err != nil {
-			t.Fatalf("set deadline: %v", err)
-		}
-		_, _, err := c.ReadMessage()
-		if err != nil {
-			if !websocket.IsCloseError(err, websocket.CloseGoingAway) &&
-				!websocket.IsCloseError(err, websocket.CloseNormalClosure) {
-				t.Fatalf("stream ended without a deliberate close: %v", err)
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				emitAccountEvent(s)
 			}
-			return
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("future cursor: handler left the connection open")
-		}
+	}()
+
+	f := readWSFrame(t, c)
+	if f.header.Op == events.EvtKindErrorFrame {
+		t.Fatalf("future cursor was rejected: %+v", f.decodeError(t))
+	}
+	if f.header.Op != events.EvtKindMessage || f.header.MsgType != "#account" {
+		t.Fatalf("frame = {op:%d t:%q}, want a live #account event", f.header.Op, f.header.MsgType)
 	}
 }
 
