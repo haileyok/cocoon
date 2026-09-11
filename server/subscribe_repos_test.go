@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -320,6 +321,139 @@ func TestSubscribeReposWriteDeadlineUnwindsOnWedgedPeer(t *testing.T) {
 
 	if got := gaugeRelaysConnected(t); got != 0 {
 		t.Errorf("cocoon_relays_connected = %v, want 0 after the wedged peer forced a teardown", got)
+	}
+}
+
+// TestSubscribeReposPingsAnIdleStream asserts the handler keeps a silent stream
+// observably alive on its own schedule. An idle PDS emits nothing, and a
+// websocket carrying no traffic in either direction is dropped by middleboxes —
+// and read as a dead host by a consumer whose liveness check only resets on a
+// pong. Without server-initiated pings, a quiet cocoon is indistinguishable
+// from a down one.
+func TestSubscribeReposPingsAnIdleStream(t *testing.T) {
+	defer func(prev time.Duration) { wsPingInterval = prev }(wsPingInterval)
+	wsPingInterval = 200 * time.Millisecond
+
+	s := newSubscribeTestServer(t)
+	dial := serveSubscribeRepos(t, s)
+
+	c := dial("relay/idle-ping")
+	defer c.Close()
+
+	// Record pings as they arrive. A read timeout is fatal on a gorilla client
+	// (a second read panics), so this blocks on one read while control frames
+	// are dispatched to the handler.
+	var pings atomic.Int32
+	c.SetPingHandler(func(string) error {
+		pings.Add(1)
+		return nil
+	})
+
+	// No events are emitted at all: the ping must arrive on its own.
+	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_, _, _ = c.ReadMessage()
+
+	if got := pings.Load(); got == 0 {
+		t.Fatal("idle stream received no ping; a silent connection would be dropped upstream")
+	}
+}
+
+// TestSubscribeReposClosesGracefully asserts the handler sends a websocket close
+// frame before tearing the connection down.
+//
+// A bare TCP close carries no close code, so the peer surfaces it as
+// "close 1006 (abnormal closure): unexpected EOF" — the same shape as a crash.
+// A routine teardown must look like a normal going-away instead.
+//
+// The teardown here is server-initiated: the client handshakes and then never
+// answers a ping, so the handler reaps it. That path exists only because the
+// read deadline is enforced, and the close frame exists only because the
+// teardown announces itself.
+func TestSubscribeReposClosesGracefully(t *testing.T) {
+	defer func(pi, pt time.Duration) {
+		wsPingInterval, wsPongTimeout = pi, pt
+	}(wsPingInterval, wsPongTimeout)
+	wsPingInterval = 150 * time.Millisecond
+	wsPongTimeout = 500 * time.Millisecond
+
+	s := newSubscribeTestServer(t)
+	dial := serveSubscribeRepos(t, s)
+
+	c := dial("relay/graceful-close")
+	defer c.Close()
+
+	awaitFirstEvent(t, s, c)
+
+	// Stay silent: read frames, but never answer the server's pings.
+	c.SetPingHandler(func(string) error { return nil })
+
+	_ = c.SetReadDeadline(time.Now().Add(20 * time.Second))
+	for {
+		mt, _, err := c.ReadMessage()
+		if err != nil {
+			if websocket.IsCloseError(err, websocket.CloseGoingAway) {
+				return // close frame arrived — correct
+			}
+			t.Fatalf("connection dropped without a close frame (relay would log 1006): %v", err)
+		}
+		if mt == websocket.CloseMessage {
+			return
+		}
+	}
+}
+
+// TestSubscribeReposDetectsSilentPeer asserts a half-open connection is
+// reaped. A peer that vanishes without a FIN produces no read error of its own,
+// so only an unanswered ping — and the resulting read-deadline expiry — reveals
+// that it is gone. Without this the handler sits on a dead socket, holding its
+// event-manager subscription open indefinitely.
+func TestSubscribeReposDetectsSilentPeer(t *testing.T) {
+	defer func(pi, pt time.Duration) {
+		wsPingInterval, wsPongTimeout = pi, pt
+	}(wsPingInterval, wsPongTimeout)
+	wsPingInterval = 150 * time.Millisecond
+	wsPongTimeout = 500 * time.Millisecond
+
+	s := newSubscribeTestServer(t)
+
+	e := echo.New()
+	e.GET("/xrpc/com.atproto.sync.subscribeRepos", s.handleSyncSubscribeRepos)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{Handler: e}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	// Handshake, then go silent: never answer a ping, never send anything.
+	nc := wedgedPeer(t, ln.Addr().String())
+	defer func() {
+		runtime.KeepAlive(nc)
+		_ = nc.Close()
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for handlerGoroutines() == 0 {
+		emitAccountEvent(s)
+		if time.Now().After(deadline) {
+			t.Fatal("handler never registered a subscriber")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// The silent peer must be reaped once its pongs stop arriving, with no
+	// in-band signal of any kind to prompt it.
+	reaped := time.Now().Add(15 * time.Second)
+	for handlerGoroutines() != 0 {
+		if time.Now().After(reaped) {
+			t.Fatal("handler never reaped a silent peer: an unanswered ping must expire the read deadline")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if got := gaugeRelaysConnected(t); got != 0 {
+		t.Errorf("cocoon_relays_connected = %v, want 0 after a silent peer was reaped", got)
 	}
 }
 
