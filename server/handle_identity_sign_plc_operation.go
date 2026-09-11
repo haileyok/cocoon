@@ -53,6 +53,24 @@ func (s *Server) handleSignPlcOperation(e echo.Context) error {
 		return helpers.ExpiredTokenError(e)
 	}
 
+	// Atomically claim (consume) the token BEFORE building the operation.
+	// The check above runs against this request's repo snapshot; a concurrent
+	// request with the same token would pass the same check. A conditional
+	// UPDATE that only matches the still-unconsumed, unexpired token ensures
+	// exactly one request wins (fail-closed: a signing failure burns the
+	// token, but the user can simply request a new one).
+	claimed := s.db.Client().Exec(
+		"UPDATE repos SET plc_operation_code = NULL, plc_operation_code_expires_at = NULL WHERE did = ? AND plc_operation_code = ? AND plc_operation_code_expires_at > ?",
+		repo.Repo.Did, req.Token, time.Now().UTC(),
+	)
+	if claimed.Error != nil {
+		logger.Error("error claiming plc operation token", "error", claimed.Error)
+		return helpers.ServerError(e, nil)
+	}
+	if claimed.RowsAffected != 1 {
+		return helpers.InvalidTokenError(e)
+	}
+
 	ctx := context.WithValue(e.Request().Context(), "skip-cache", true)
 	lastOp, lastCid, err := s.plcClient.GetLastOp(ctx, repo.Repo.Did)
 	if err != nil {
@@ -94,11 +112,6 @@ func (s *Server) handleSignPlcOperation(e echo.Context) error {
 
 	if err := s.plcClient.SignOp(k, &op); err != nil {
 		logger.Error("error signing plc operation", "error", err)
-		return helpers.ServerError(e, nil)
-	}
-
-	if err := s.db.Exec(ctx, "UPDATE repos SET plc_operation_code = NULL, plc_operation_code_expires_at = NULL WHERE did = ?", nil, repo.Repo.Did).Error; err != nil {
-		logger.Error("error updating repo", "error", err)
 		return helpers.ServerError(e, nil)
 	}
 
