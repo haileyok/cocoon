@@ -351,8 +351,12 @@ func TestSubscribeReposWriteDeadlineUnwindsOnWedgedPeer(t *testing.T) {
 
 	s := newSubscribeTestServer(t)
 
+	handlerDone := make(chan struct{})
 	e := echo.New()
-	e.GET("/xrpc/com.atproto.sync.subscribeRepos", s.handleSyncSubscribeRepos)
+	e.GET("/xrpc/com.atproto.sync.subscribeRepos", func(c echo.Context) error {
+		defer close(handlerDone)
+		return s.handleSyncSubscribeRepos(c)
+	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -365,6 +369,8 @@ func TestSubscribeReposWriteDeadlineUnwindsOnWedgedPeer(t *testing.T) {
 	defer func() {
 		runtime.KeepAlive(nc)
 		_ = nc.Close()
+		// Include the handler's deferred close frame before restoring wsWriteTimeout.
+		<-handlerDone
 	}()
 
 	// Wait for the server to register the subscriber. The peer is not reading,
