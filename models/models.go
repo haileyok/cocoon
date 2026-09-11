@@ -24,13 +24,14 @@ type Repo struct {
 	EmailVerificationCodeExpiresAt *time.Time
 	EmailUpdateCode                *string
 	EmailUpdateCodeExpiresAt       *time.Time
-	PasswordResetCode              *string
+	PasswordResetCode              *string `gorm:"index"`
 	PasswordResetCodeExpiresAt     *time.Time
 	PlcOperationCode               *string
 	PlcOperationCodeExpiresAt      *time.Time
 	AccountDeleteCode              *string
 	AccountDeleteCodeExpiresAt     *time.Time
 	Password                       string
+	SessionVersion                 int64 `gorm:"not null;default:0"`
 	SigningKey                     []byte
 	Rev                            string
 	Root                           []byte
@@ -84,18 +85,20 @@ type InviteCode struct {
 }
 
 type Token struct {
-	Token        string `gorm:"primaryKey"`
-	Did          string `gorm:"index"`
-	RefreshToken string `gorm:"index"`
-	CreatedAt    time.Time
-	ExpiresAt    time.Time `gorm:"index:,sort:asc"`
+	Token          string `gorm:"primaryKey"`
+	Did            string `gorm:"index"`
+	SessionVersion int64  `gorm:"not null;default:0"`
+	RefreshToken   string `gorm:"index"`
+	CreatedAt      time.Time
+	ExpiresAt      time.Time `gorm:"index:,sort:asc"`
 }
 
 type RefreshToken struct {
-	Token     string `gorm:"primaryKey"`
-	Did       string `gorm:"index"`
-	CreatedAt time.Time
-	ExpiresAt time.Time `gorm:"index:,sort:asc"`
+	Token          string `gorm:"primaryKey"`
+	Did            string `gorm:"index"`
+	SessionVersion int64  `gorm:"not null;default:0"`
+	CreatedAt      time.Time
+	ExpiresAt      time.Time `gorm:"index:,sort:asc"`
 }
 
 type Record struct {

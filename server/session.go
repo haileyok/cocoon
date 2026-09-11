@@ -58,20 +58,22 @@ func (s *Server) createSessionWithDB(ctx context.Context, database *db.DB, repo 
 	}
 
 	if err := database.Create(ctx, &models.Token{
-		Token:        accessString,
-		Did:          repo.Did,
-		RefreshToken: refreshString,
-		CreatedAt:    now,
-		ExpiresAt:    accexp,
+		Token:          accessString,
+		Did:            repo.Did,
+		SessionVersion: repo.SessionVersion,
+		RefreshToken:   refreshString,
+		CreatedAt:      now,
+		ExpiresAt:      accexp,
 	}, nil).Error; err != nil {
 		return nil, err
 	}
 
 	if err := database.Create(ctx, &models.RefreshToken{
-		Token:     refreshString,
-		Did:       repo.Did,
-		CreatedAt: now,
-		ExpiresAt: refexp,
+		Token:          refreshString,
+		Did:            repo.Did,
+		SessionVersion: repo.SessionVersion,
+		CreatedAt:      now,
+		ExpiresAt:      refexp,
 	}, nil).Error; err != nil {
 		return nil, err
 	}
