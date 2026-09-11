@@ -579,11 +579,23 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 			}
 
 			ll := lexutil.LexLink(*op.Value)
-			repoOps = append(repoOps, &atproto.SyncSubscribeRepos_RepoOp{
+			repoOp := &atproto.SyncSubscribeRepos_RepoOp{
 				Action: kind,
 				Path:   op.Path,
 				Cid:    &ll,
-			})
+			}
+
+			// Updates must advertise the superseded record CID: the lexicon
+			// marks `prev` as required for update and delete frames, and
+			// consumers (including the relay's op parser) reject an update
+			// without it. A create has no previous value, so the field stays
+			// unset.
+			if op.IsUpdate() {
+				prev := lexutil.LexLink(*op.Prev)
+				repoOp.Prev = &prev
+			}
+
+			repoOps = append(repoOps, repoOp)
 
 			blk, err := dbs.Get(ctx, *op.Value)
 			if err != nil {
