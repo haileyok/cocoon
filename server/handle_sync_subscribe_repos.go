@@ -222,49 +222,23 @@ func (s *Server) handleSyncSubscribeRepos(e echo.Context) error {
 		}
 	}
 
-	// A cursor can name three different places, and the consumer has no way to
-	// tell them apart from the stream alone: inside the retained range, behind
-	// it, or ahead of it. Behind and ahead are both silent failures — the
-	// consumer waits forever on events that will never come — so each is
-	// reported in-band before the stream starts.
+	// Report a cursor behind the retained window before playback silently skips
+	// the missing range. The reference PDS emits the same OutdatedCursor #info
+	// advisory based on its wall-clock backfill limit; asking the store for its
+	// actual retained floor avoids a second, drifting definition of that limit.
 	//
-	// This mirrors the reference PDS
-	// (packages/pds/src/api/com/atproto/sync/subscribeRepos.ts): a cursor past
-	// the newest seq is a FutureCursor error frame, and a cursor older than the
-	// retained window gets an #info frame naming OutdatedCursor — not an error
-	// frame, because the stream is still served from the earliest retained event
-	// rather than refused.
-	//
-	// The reference keys the outdated check off a wall-clock backfill limit. We
-	// ask the store directly for the range it retains: that is the same bound,
-	// without a second, drifting definition of it.
-	//
-	// One deliberate divergence: when the store holds nothing, we send no
-	// notice at all, where the reference reports any positive cursor as future.
-	// Cocoon's seq space is not the reference's — it is seeded from the wall
-	// clock and re-seeded whenever the table is empty (see NewDbPersister), so
-	// an empty store means "this host has not started sequencing", not "this
-	// cursor is nonsense". Reporting FutureCursor there would push every
-	// consumer to idle on a fresh deploy over a cursor that the very next event
-	// would have satisfied.
+	// Do not reject a cursor above the retained tip. Unlike the reference PDS,
+	// Cocoon's sequence space can move backwards when its event table is reset or
+	// restored. Indigo's relay responds to FutureCursor by marking the host idle;
+	// it does not reset the persisted cursor. Keeping the subscription live lets
+	// Cocoon broadcast new events below that stale cursor and recover ingestion.
+	// An empty store likewise carries no notice: it means this host has not
+	// started sequencing, not that the consumer's cursor is invalid.
 	if since != nil && s.evtpersister != nil {
 		if oldest, newest, ok, err := s.evtpersister.EventSeqRange(ctx); err != nil {
 			logger.Error("unable to read retained event range", "err", err)
-		} else if ok {
+		} else if ok && *since <= newest {
 			switch {
-			case *since > newest:
-				// Nothing above this seq can ever arrive, so the consumer must be
-				// told to reset rather than left waiting on a range that is empty
-				// forever.
-				logger.Warn("cursor is ahead of the newest retained event",
-					"cursor", *since, "newest", newest)
-				if err := writeErrorFrame(conn, "FutureCursor",
-					"Cursor in the future."); err != nil {
-					logger.Error("error writing future cursor frame", "err", err)
-					return err
-				}
-				metrics.RelaySends.WithLabelValues(ident, "FutureCursor").Inc()
-				return nil
 			case *since+1 < oldest:
 				// The consumer asked for events we have already pruned. The
 				// precise question is whether its *next* event still exists: it

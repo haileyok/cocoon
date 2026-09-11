@@ -32,6 +32,16 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// boundCommitBlocks applies the subscribeRepos byte-string limit. Oversized
+// commits retain their metadata but omit the CAR so consumers can fetch the
+// repository through the sync endpoints.
+func boundCommitBlocks(blocks []byte) ([]byte, bool) {
+	if len(blocks) > carstore.MaxSliceLength {
+		return []byte{}, true
+	}
+	return blocks, false
+}
+
 type cachedRepo struct {
 	mu   sync.Mutex
 	repo *atp.Repo
@@ -718,12 +728,14 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		}
 	}
 
+	blocks, tooBig := boundCommitBlocks(buf.Bytes())
+
 	// NOTE: using the request ctx seems a bit suss here, so using a background context. i'm not sure if this
 	// runs sync or not
 	rm.s.evtman.AddEvent(context.Background(), &events.XRPCStreamEvent{
 		RepoCommit: &atproto.SyncSubscribeRepos_Commit{
 			Repo:     urepo.Did,
-			Blocks:   buf.Bytes(),
+			Blocks:   blocks,
 			Blobs:    blobs,
 			Rev:      rev,
 			Since:    &urepo.Rev,
@@ -731,7 +743,7 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 			PrevData: &prevDataLink,
 			Time:     time.Now().Format(time.RFC3339Nano),
 			Ops:      repoOps,
-			TooBig:   false,
+			TooBig:   tooBig,
 		},
 	})
 
