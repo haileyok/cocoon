@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"sync"
 	"time"
@@ -154,6 +155,33 @@ func (p *DbPersister) Playback(ctx context.Context, since int64, cb func(*events
 			return nil
 		}
 	}
+}
+
+// EventSeqRange reports the oldest and newest seq this host still retains.
+//
+// The pair describes the only range that can be served: pruning removes whole
+// seqs from the bottom, so a cursor below the oldest retained seq names events
+// that no longer exist. ok is false when the store holds no events at all,
+// which is not the same as an empty range.
+func (p *DbPersister) EventSeqRange(ctx context.Context) (oldest, newest int64, ok bool, err error) {
+	var row struct {
+		Oldest sql.NullInt64
+		Newest sql.NullInt64
+	}
+
+	// MIN/MAX over an empty table yields NULL, hence the nullable scan.
+	if err := p.Db.WithContext(ctx).
+		Model(&models.EventRecord{}).
+		Select("MIN(seq) AS oldest, MAX(seq) AS newest").
+		Scan(&row).Error; err != nil {
+		return 0, 0, false, fmt.Errorf("querying retained event seq range: %w", err)
+	}
+
+	if !row.Oldest.Valid || !row.Newest.Valid {
+		return 0, 0, false, nil
+	}
+
+	return row.Oldest.Int64, row.Newest.Int64, true, nil
 }
 
 func (p *DbPersister) TakeDownRepo(ctx context.Context, uid indigomodels.Uid) error {

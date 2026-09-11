@@ -1,7 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"runtime"
@@ -67,14 +70,19 @@ func counterTotal(t *testing.T, name string) float64 {
 func newSubscribeTestServer(t *testing.T) *Server {
 	t.Helper()
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	evtman, persister := newTestEvtmanPersister(t)
+	s.evtman = evtman
+	// The handler consults the persister for the retained seq range, so tests
+	// must wire the same instance the event manager writes through.
+	s.evtpersister = persister
 	s.repoman = NewRepoMan(s)
 	return s
 }
 
-// serveSubscribeRepos stands up a real HTTP server hosting the handler and
-// returns a dialer for it.
-func serveSubscribeRepos(t *testing.T, s *Server) func(ua string) *websocket.Conn {
+// startSubscribeReposServer stands up a real HTTP server hosting the handler and
+// returns the websocket URL. Tests that need query parameters (a cursor) dial
+// the returned URL directly.
+func startSubscribeReposServer(t *testing.T, s *Server) string {
 	t.Helper()
 
 	e := echo.New()
@@ -88,7 +96,15 @@ func serveSubscribeRepos(t *testing.T, s *Server) func(ua string) *websocket.Con
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() { _ = srv.Close() })
 
-	url := "ws://" + ln.Addr().String() + "/xrpc/com.atproto.sync.subscribeRepos"
+	return "ws://" + ln.Addr().String() + "/xrpc/com.atproto.sync.subscribeRepos"
+}
+
+// serveSubscribeRepos stands up a real HTTP server hosting the handler and
+// returns a dialer for it.
+func serveSubscribeRepos(t *testing.T, s *Server) func(ua string) *websocket.Conn {
+	t.Helper()
+
+	url := startSubscribeReposServer(t, s)
 	return func(ua string) *websocket.Conn {
 		t.Helper()
 		hdr := http.Header{}
@@ -99,6 +115,71 @@ func serveSubscribeRepos(t *testing.T, s *Server) func(ua string) *websocket.Con
 		}
 		return c
 	}
+}
+
+// dialSubscribeRepos connects to the handler, optionally naming a cursor.
+func dialSubscribeRepos(t *testing.T, url string, cursor *int64) *websocket.Conn {
+	t.Helper()
+	if cursor != nil {
+		url = fmt.Sprintf("%s?cursor=%d", url, *cursor)
+	}
+	hdr := http.Header{}
+	hdr.Set("User-Agent", "relay/cursor-test")
+	c, _, err := websocket.DefaultDialer.Dial(url, hdr)
+	if err != nil {
+		t.Fatalf("dial %s: %v", url, err)
+	}
+	return c
+}
+
+// wsFrame is one decoded websocket frame: the CBOR event header plus the
+// undecoded body bytes.
+type wsFrame struct {
+	header events.EventHeader
+	body   []byte
+}
+
+// readWSFrame reads one frame and splits it into header and body.
+func readWSFrame(t *testing.T, c *websocket.Conn) wsFrame {
+	t.Helper()
+
+	if err := c.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	_, data, err := c.ReadMessage()
+	if err != nil {
+		t.Fatalf("read message: %v", err)
+	}
+
+	r := bytes.NewReader(data)
+	var header events.EventHeader
+	if err := header.UnmarshalCBOR(r); err != nil {
+		t.Fatalf("decode event header: %v", err)
+	}
+	body, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read frame body: %v", err)
+	}
+
+	return wsFrame{header: header, body: body}
+}
+
+func (f wsFrame) decodeError(t *testing.T) events.ErrorFrame {
+	t.Helper()
+	var ef events.ErrorFrame
+	if err := ef.UnmarshalCBOR(bytes.NewReader(f.body)); err != nil {
+		t.Fatalf("decode error frame: %v", err)
+	}
+	return ef
+}
+
+func (f wsFrame) decodeInfo(t *testing.T) comatproto.SyncSubscribeRepos_Info {
+	t.Helper()
+	var info comatproto.SyncSubscribeRepos_Info
+	if err := info.UnmarshalCBOR(bytes.NewReader(f.body)); err != nil {
+		t.Fatalf("decode info frame: %v", err)
+	}
+	return info
 }
 
 func emitAccountEvent(s *Server) {
@@ -454,6 +535,261 @@ func TestSubscribeReposDetectsSilentPeer(t *testing.T) {
 
 	if got := gaugeRelaysConnected(t); got != 0 {
 		t.Errorf("cocoon_relays_connected = %v, want 0 after a silent peer was reaped", got)
+	}
+}
+
+// seedEvents writes n events through the persister and returns their seqs.
+func seedEvents(t *testing.T, s *Server, n int) (oldest, newest int64) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		emitAccountEvent(s)
+	}
+	o, nn, ok, err := s.evtpersister.EventSeqRange(context.Background())
+	if err != nil {
+		t.Fatalf("event seq range: %v", err)
+	}
+	if !ok {
+		t.Fatal("no events retained after seeding")
+	}
+	return o, nn
+}
+
+// TestSubscribeReposSignalsOutdatedCursor asserts a cursor behind the retained
+// window is reported with an #info frame naming OutdatedCursor, before any
+// event is served.
+//
+// Without it, playback silently starts at the oldest retained event: the
+// consumer is never told that the events it asked for were pruned, so a gap in
+// its view of the repo is indistinguishable from "nothing happened". The
+// reference PDS emits exactly this frame for exactly this case.
+func TestSubscribeReposSignalsOutdatedCursor(t *testing.T) {
+	s := newSubscribeTestServer(t)
+	oldest, _ := seedEvents(t, s, 5)
+
+	url := startSubscribeReposServer(t, s)
+	stale := oldest - 100
+	c := dialSubscribeRepos(t, url, &stale)
+	defer c.Close()
+
+	f := readWSFrame(t, c)
+	if f.header.Op != events.EvtKindMessage || f.header.MsgType != "#info" {
+		t.Fatalf("frame = {op:%d t:%q}, want an #info message frame", f.header.Op, f.header.MsgType)
+	}
+	info := f.decodeInfo(t)
+	if info.Name != "OutdatedCursor" {
+		t.Errorf("#info name = %q, want OutdatedCursor", info.Name)
+	}
+	// The lexicon makes the message optional, but the reference sends one and a
+	// consumer logs it verbatim, so a silent notice would be a regression in the
+	// operator's ability to tell why their cursor was rejected.
+	if info.Message == nil || *info.Message == "" {
+		t.Error("#info frame carries no message")
+	}
+}
+
+// TestSubscribeReposDoesNotSignalOutdatedCursorWithinWindow asserts the notice
+// is not sent to a consumer whose next event is still retained. A false
+// OutdatedCursor tells a consumer it lost events when it did not.
+//
+// The boundary is the interesting part: a cursor of oldest-1 needs oldest,
+// which we still hold, so it is fully served and must stay quiet.
+func TestSubscribeReposDoesNotSignalOutdatedCursorWithinWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		offset   int64 // added to oldest to form the cursor
+		wantInfo bool
+	}{
+		{"exactly_at_oldest", 0, false},
+		{"one_below_oldest_still_served", -1, false},
+		{"two_below_oldest_first_gap", -2, true},
+		{"far_below_oldest", -50, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSubscribeTestServer(t)
+			oldest, _ := seedEvents(t, s, 5)
+
+			url := startSubscribeReposServer(t, s)
+			cursor := oldest + tc.offset
+			c := dialSubscribeRepos(t, url, &cursor)
+			defer c.Close()
+
+			// The stream is live regardless: the sentinel, when present, is the
+			// first frame. Give the handler a moment to write it if it will.
+			gotInfo := false
+			for i := 0; i < 5; i++ {
+				emitAccountEvent(s)
+				if err := c.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+					t.Fatalf("set deadline: %v", err)
+				}
+				_, data, err := c.ReadMessage()
+				if err != nil {
+					break
+				}
+				// Don't consume the stream further; a single frame is enough to
+				// tell whether a sentinel was emitted first.
+				r := bytes.NewReader(data)
+				var header events.EventHeader
+				if err := header.UnmarshalCBOR(r); err != nil {
+					t.Fatalf("decode header: %v", err)
+				}
+				if header.Op == events.EvtKindMessage && header.MsgType == "#info" {
+					gotInfo = true
+				}
+				break
+			}
+
+			if gotInfo != tc.wantInfo {
+				t.Errorf("cursor=%d (oldest=%d): OutdatedCursor sent = %v, want %v",
+					cursor, oldest, gotInfo, tc.wantInfo)
+			}
+		})
+	}
+}
+
+// TestSubscribeReposSignalsFutureCursor asserts a cursor ahead of every event we
+// have is refused with a FutureCursor error frame, and that the connection is
+// then closed rather than left open on a stream that can never produce an event
+// above that seq.
+//
+// This is the case that silently hangs a consumer: nothing above the cursor can
+// ever be sent, so without a refusal the consumer waits forever. The relay
+// treats FutureCursor as "drop the connection and reset this host to idle",
+// which is the recovery path. (cmd/relay/relay/slurper.go)
+func TestSubscribeReposSignalsFutureCursor(t *testing.T) {
+	s := newSubscribeTestServer(t)
+	_, newest := seedEvents(t, s, 3)
+
+	url := startSubscribeReposServer(t, s)
+	ahead := newest + 1_000_000
+	c := dialSubscribeRepos(t, url, &ahead)
+	defer c.Close()
+
+	f := readWSFrame(t, c)
+	if f.header.Op != events.EvtKindErrorFrame {
+		t.Fatalf("frame op = %d, want %d (error frame)", f.header.Op, events.EvtKindErrorFrame)
+	}
+	ef := f.decodeError(t)
+	if ef.Error != "FutureCursor" {
+		t.Errorf("error frame name = %q, want FutureCursor", ef.Error)
+	}
+
+	// The handler must not keep the stream open: there is nothing it could ever
+	// send. The close frame proves the teardown is deliberate.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if err := c.SetReadDeadline(deadline); err != nil {
+			t.Fatalf("set deadline: %v", err)
+		}
+		_, _, err := c.ReadMessage()
+		if err != nil {
+			if !websocket.IsCloseError(err, websocket.CloseGoingAway) &&
+				!websocket.IsCloseError(err, websocket.CloseNormalClosure) {
+				t.Fatalf("stream ended without a deliberate close: %v", err)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("future cursor: handler left the connection open")
+		}
+	}
+}
+
+// TestSubscribeReposCursorAtNewestIsServed asserts the ordinary caught-up case
+// stays silent. The relay sits here most of the time — its cursor equals the
+// newest seq — so warning on it would spam every healthy reconnect.
+func TestSubscribeReposCursorAtNewestIsServed(t *testing.T) {
+	s := newSubscribeTestServer(t)
+	_, newest := seedEvents(t, s, 4)
+
+	url := startSubscribeReposServer(t, s)
+	c := dialSubscribeRepos(t, url, &newest)
+	defer c.Close()
+
+	// Push a fresh event; the consumer must receive stream content, not a
+	// cursor notice.
+	emitAccountEvent(s)
+
+	f := readWSFrame(t, c)
+	if f.header.Op == events.EvtKindErrorFrame {
+		t.Fatalf("caught-up consumer was refused: %+v", f.decodeError(t))
+	}
+	if f.header.Op == events.EvtKindMessage && f.header.MsgType == "#info" {
+		if info := f.decodeInfo(t); info.Name == "OutdatedCursor" {
+			t.Fatal("caught-up consumer was sent OutdatedCursor; its next event was retained")
+		}
+	}
+}
+
+// TestSubscribeReposNoCursorIsSilent asserts a fresh consumer with no cursor
+// gets no notice: it is asking for "from now on", and it has lost nothing.
+func TestSubscribeReposNoCursorIsSilent(t *testing.T) {
+	s := newSubscribeTestServer(t)
+	seedEvents(t, s, 3)
+
+	url := startSubscribeReposServer(t, s)
+	c := dialSubscribeRepos(t, url, nil)
+	defer c.Close()
+
+	emitAccountEvent(s)
+
+	f := readWSFrame(t, c)
+	if f.header.Op == events.EvtKindErrorFrame {
+		t.Fatalf("cursorless consumer was refused: %+v", f.decodeError(t))
+	}
+	if f.header.Op == events.EvtKindMessage && f.header.MsgType == "#info" {
+		if info := f.decodeInfo(t); info.Name == "OutdatedCursor" {
+			t.Fatal("cursorless consumer was sent OutdatedCursor; it has no cursor to be behind")
+		}
+	}
+}
+
+// TestSubscribeReposEmptyStoreServesNoCursorNotice asserts a host with no
+// retained events does not claim the cursor is outdated. On a fresh store every
+// cursor is "ahead" of nothing, and reporting a failure the consumer cannot act
+// on would make an empty PDS look broken.
+func TestSubscribeReposEmptyStoreServesNoCursorNotice(t *testing.T) {
+	s := newSubscribeTestServer(t)
+
+	url := startSubscribeReposServer(t, s)
+	cursor := int64(1)
+	c := dialSubscribeRepos(t, url, &cursor)
+	defer c.Close()
+
+	emitAccountEvent(s)
+
+	f := readWSFrame(t, c)
+	if f.header.Op == events.EvtKindErrorFrame {
+		t.Fatalf("first-ever consumer was refused on an empty store: %+v", f.decodeError(t))
+	}
+}
+
+// TestEventSeqRangeReportsRetainedBounds covers the query directly: an empty
+// store reports ok=false, and a populated one reports the true floor and
+// ceiling so the handler's comparison is against real retained bounds.
+func TestEventSeqRangeReportsRetainedBounds(t *testing.T) {
+	s := newSubscribeTestServer(t)
+	ctx := context.Background()
+
+	if _, _, ok, err := s.evtpersister.EventSeqRange(ctx); err != nil {
+		t.Fatalf("empty store: %v", err)
+	} else if ok {
+		t.Fatal("empty store reported a retained range")
+	}
+
+	oldest, newest := seedEvents(t, s, 3)
+	if oldest >= newest {
+		t.Fatalf("range = [%d,%d], want oldest < newest", oldest, newest)
+	}
+
+	gotOldest, gotNewest, ok, err := s.evtpersister.EventSeqRange(ctx)
+	if err != nil {
+		t.Fatalf("populated store: %v", err)
+	}
+	if !ok {
+		t.Fatal("populated store reported no retained range")
+	}
+	if gotOldest != oldest || gotNewest != newest {
+		t.Errorf("range = [%d,%d], want [%d,%d]", gotOldest, gotNewest, oldest, newest)
 	}
 }
 

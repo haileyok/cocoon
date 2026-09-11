@@ -18,7 +18,10 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 )
 
-func newTestEvtman(t *testing.T) *events.EventManager {
+// newTestEvtmanPersister builds an event manager over a fresh events database
+// and returns the persister alongside it, for tests that need to inspect the
+// retained seq range the manager prunes.
+func newTestEvtmanPersister(t *testing.T) (*events.EventManager, *DbPersister) {
 	t.Helper()
 	gdb, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "events.db")), &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
@@ -30,7 +33,13 @@ func newTestEvtman(t *testing.T) *events.EventManager {
 	if err != nil {
 		t.Fatalf("new persister: %v", err)
 	}
-	return events.NewEventManager(p)
+	return events.NewEventManager(p), p
+}
+
+func newTestEvtman(t *testing.T) *events.EventManager {
+	t.Helper()
+	m, _ := newTestEvtmanPersister(t)
+	return m
 }
 
 // seedGenesisRepo commits an empty repo for did and records it as the head.
