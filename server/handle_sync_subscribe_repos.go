@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strconv"
 	"time"
 
@@ -27,6 +28,21 @@ var errSkipEvent = errors.New("event has no subscribeRepos frame type")
 // cancelling the context, so the handler would never reach its deferred
 // teardown. This is a var so tests can lower it.
 var wsWriteTimeout = 30 * time.Second
+
+// Keepalive settings.
+//
+// A subscribeRepos stream can be silent for a long time — an idle PDS emits
+// nothing at all — and while it is silent nothing on the wire holds the
+// connection open. Middleboxes drop idle websockets, and a consumer's liveness
+// check only resets when it hears a pong, so a quiet host looks dead to both.
+// The handler therefore pings on an interval, and treats a peer that has
+// stopped answering as gone.
+//
+// These are vars so tests can lower them.
+var (
+	wsPingInterval = 30 * time.Second
+	wsPongTimeout  = 90 * time.Second
+)
 
 // subscribeReposMsgType maps a stream event to its com.atproto.sync.subscribeRepos
 // message frame type and the object to serialize. The bool is false for events
@@ -116,11 +132,57 @@ func (s *Server) handleSyncSubscribeRepos(e echo.Context) error {
 	logger.Info("new connection established")
 
 	// Upgrade hijacks the connection, so net/http will never close it for us.
+	// Send a close frame first: a bare TCP close is indistinguishable from a
+	// crash on the peer's side — the relay logs it as "close 1006 (abnormal
+	// closure)" — which turns a routine teardown into an apparent outage.
 	defer func() {
+		if err := conn.WriteControl(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseGoingAway, ""),
+			time.Now().Add(wsWriteTimeout)); err != nil && !errors.Is(err, websocket.ErrCloseSent) {
+			logger.Warn("error sending websocket close frame", "err", err)
+		}
 		if err := conn.Close(); err != nil {
 			logger.Warn("error closing websocket", "err", err)
 		}
 	}()
+
+	// A subscribeRepos stream can be silent for minutes: an idle PDS emits
+	// nothing at all. Two things follow, and both are handled here.
+	//
+	// First, the handler must keep the connection observably alive. A websocket
+	// carrying no traffic in either direction gets dropped by middleboxes, and a
+	// consumer reads the silence as a dead host. The send loop pings on
+	// wsPingInterval below.
+	//
+	// Second, the handler must notice a peer that has stopped answering. The
+	// read deadline is refreshed by anything the peer sends — pong, ping or data
+	// — and our own pings guarantee a live peer answers within one interval, so
+	// silence for wsPongTimeout means the peer is gone even though TCP has not
+	// noticed. A half-open connection (no FIN) produces no read error of its own,
+	// so without this the handler would sit on a dead socket indefinitely.
+	if err := conn.SetReadDeadline(time.Now().Add(wsPongTimeout)); err != nil {
+		return err
+	}
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(wsPongTimeout))
+	})
+	// Mirrors the ping handler indigo's own relay uses downstream: keep
+	// answering pings, and treat transient write failures as survivable rather
+	// than tearing the stream down on a moment's contention.
+	conn.SetPingHandler(func(message string) error {
+		if err := conn.SetReadDeadline(time.Now().Add(wsPongTimeout)); err != nil {
+			return err
+		}
+		err := conn.WriteControl(websocket.PongMessage, []byte(message),
+			time.Now().Add(wsWriteTimeout))
+		if errors.Is(err, websocket.ErrCloseSent) {
+			return nil
+		}
+		if e, ok := err.(net.Error); ok && e.Temporary() {
+			return nil
+		}
+		return err
+	})
 
 	var since *int64
 	if cursorStr := e.QueryParam("cursor"); cursorStr != "" {
@@ -164,6 +226,9 @@ func (s *Server) handleSyncSubscribeRepos(e echo.Context) error {
 
 	header := events.EventHeader{Op: events.EvtKindMessage}
 
+	ping := time.NewTicker(wsPingInterval)
+	defer ping.Stop()
+
 forward:
 	for {
 		select {
@@ -173,6 +238,15 @@ forward:
 			// evtManCancel — whose defer runs below, in this goroutine — would
 			// never run and the subscription would never be retired.
 			break forward
+		case <-ping.C:
+			// Keep the stream observably alive; see the keepalive comment above.
+			// A failed ping is not itself fatal — the read deadline is what
+			// reaps a peer that has stopped answering, and a momentary write
+			// failure should not tear down an otherwise healthy stream.
+			if err := conn.WriteControl(websocket.PingMessage, nil,
+				time.Now().Add(wsWriteTimeout)); err != nil {
+				logger.Warn("error pinging relay", "err", err)
+			}
 		case evt, ok := <-evts:
 			if !ok {
 				// The event manager retired this subscription (e.g. a slow
