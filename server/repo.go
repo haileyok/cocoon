@@ -32,16 +32,6 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// boundCommitBlocks applies the subscribeRepos byte-string limit. Oversized
-// commits retain their metadata but omit the CAR so consumers can fetch the
-// repository through the sync endpoints.
-func boundCommitBlocks(blocks []byte) ([]byte, bool) {
-	if len(blocks) > carstore.MaxSliceLength {
-		return []byte{}, true
-	}
-	return blocks, false
-}
-
 type cachedRepo struct {
 	mu   sync.Mutex
 	repo *atp.Repo
@@ -385,7 +375,6 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 	var newroot cid.Cid
 	var rev string
 	var removedCids []cid.Cid
-	var eventMstNodes map[cid.Cid]struct{}
 
 	if err := rm.withRepo(ctx, urepo.Did, rootcid, func(r *atp.Repo) (cid.Cid, error) {
 		// Snapshot the pre-write tree so we can compute which blocks this
@@ -556,21 +545,6 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		}
 		removedCids = computeRemovedCids(prevTree.Root, r.MST.Root, []cid.Cid{rootcid}, newBlocks, newroot)
 
-		// Capture the post-commit MST root and every MST node CID reachable
-		// from it. The #commit event CAR must let a consumer walk from the
-		// commit block to the MST root even when no MST node was rewritten
-		// this commit (eg a no-op delete) or when rewritten nodes reference
-		// clean sibling subtrees (eg merges after a delete).
-		mstRoot, mstRootErr := r.MST.RootCID()
-		if mstRootErr != nil {
-			return cid.Undef, mstRootErr
-		}
-		// seed with the root so the CAR always contains it even when the
-		// in-memory root node predates this commit (no CID computed above)
-		eventMstNodes = map[cid.Cid]struct{}{*mstRoot: {}}
-		mstLeaves := map[cid.Cid]struct{}{}
-		collectTreeBlocks(r.MST.Root, eventMstNodes, mstLeaves)
-
 		return newroot, nil
 	}); err != nil {
 		return nil, err
@@ -655,40 +629,6 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		}
 	}
 
-	// Complete the event CAR so a consumer holding only this CAR can walk
-	// from the commit block to the MST root (and invert the ops, like the
-	// Bluesky relay does). The write log only contains blocks written during
-	// this commit; when nothing was dirty (eg a no-op delete) or when new
-	// nodes reference clean sibling subtrees (eg merges after a delete),
-	// reachable MST nodes would otherwise be missing. Add any reachable MST
-	// node not already emitted above, fetched from the blockstore.
-	if len(eventMstNodes) > 0 {
-		written := map[cid.Cid]struct{}{newroot: {}}
-		for _, blk := range bs.GetWriteLog() {
-			written[blk.Cid()] = struct{}{}
-		}
-		for _, op := range ops {
-			if op.Value != nil {
-				written[*op.Value] = struct{}{}
-			}
-			if op.Prev != nil {
-				written[*op.Prev] = struct{}{}
-			}
-		}
-		for c := range eventMstNodes {
-			if _, ok := written[c]; ok {
-				continue
-			}
-			blk, err := dbs.Get(ctx, c)
-			if err != nil {
-				return nil, fmt.Errorf("completing event car with mst node %s: %w", c, err)
-			}
-			if _, err := carstore.LdWrite(buf, blk.Cid().Bytes(), blk.RawData()); err != nil {
-				return nil, err
-			}
-		}
-	}
-
 	// blob blob blob blob blob :3
 	var blobs []lexutil.LexLink
 	for _, entry := range entries {
@@ -728,14 +668,12 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		}
 	}
 
-	blocks, tooBig := boundCommitBlocks(buf.Bytes())
-
 	// NOTE: using the request ctx seems a bit suss here, so using a background context. i'm not sure if this
 	// runs sync or not
 	rm.s.evtman.AddEvent(context.Background(), &events.XRPCStreamEvent{
 		RepoCommit: &atproto.SyncSubscribeRepos_Commit{
 			Repo:     urepo.Did,
-			Blocks:   blocks,
+			Blocks:   buf.Bytes(),
 			Blobs:    blobs,
 			Rev:      rev,
 			Since:    &urepo.Rev,
@@ -743,7 +681,7 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 			PrevData: &prevDataLink,
 			Time:     time.Now().Format(time.RFC3339Nano),
 			Ops:      repoOps,
-			TooBig:   tooBig,
+			TooBig:   false,
 		},
 	})
 
