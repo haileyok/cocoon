@@ -210,6 +210,119 @@ func TestSubscribeReposGaugeDoesNotAccumulateAcrossReconnects(t *testing.T) {
 	}
 }
 
+// wedgedPeer opens a websocket connection by hand, reads only the handshake
+// response, and then stops reading forever without setting a deadline on its
+// socket.
+//
+// This is the "stalled consumer" a reader error cannot detect: TCP stays
+// healthy and open (the peer's receive window simply closes), so the server's
+// read goroutine never errors, while the server's writes block once the socket
+// buffers fill. A polling client from a library is unsuitable here — it sets
+// read deadlines, and once it becomes unreachable its finalizer closes the
+// socket, which the server observes as an ordinary disconnect instead.
+//
+// The returned conn must be kept reachable (runtime.KeepAlive) for the duration
+// of the test, or the finalizer will close it.
+func wedgedPeer(t *testing.T, addr string) net.Conn {
+	t.Helper()
+
+	nc, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial tcp: %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/xrpc/com.atproto.sync.subscribeRepos", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	req.Header.Set("User-Agent", "relay/wedged-peer")
+
+	if err := req.Write(nc); err != nil {
+		t.Fatalf("write handshake: %v", err)
+	}
+
+	// Read just the handshake response, then never read again.
+	_ = nc.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 4096)
+	if _, err := nc.Read(buf); err != nil {
+		t.Fatalf("read handshake response: %v", err)
+	}
+	_ = nc.SetReadDeadline(time.Time{})
+
+	return nc
+}
+
+// TestSubscribeReposWriteDeadlineUnwindsOnWedgedPeer covers the failure a reader
+// error cannot detect: a relay that stays connected but stops reading. The
+// socket buffers fill, the synchronous frame write blocks, and no read error
+// fires — so only a write deadline can unpin the handler.
+//
+// Regression test for a handler that stayed blocked inside the write path
+// forever, never reaching its deferred evtManCancel/conn.Close.
+func TestSubscribeReposWriteDeadlineUnwindsOnWedgedPeer(t *testing.T) {
+	defer func(prev time.Duration) { wsWriteTimeout = prev }(wsWriteTimeout)
+	wsWriteTimeout = 1 * time.Second
+
+	s := newSubscribeTestServer(t)
+
+	e := echo.New()
+	e.GET("/xrpc/com.atproto.sync.subscribeRepos", s.handleSyncSubscribeRepos)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	srv := &http.Server{Handler: e}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	nc := wedgedPeer(t, ln.Addr().String())
+	defer func() {
+		runtime.KeepAlive(nc)
+		_ = nc.Close()
+	}()
+
+	// Wait for the server to register the subscriber. The peer is not reading,
+	// so we cannot wait on a received event.
+	deadline := time.Now().Add(10 * time.Second)
+	for handlerGoroutines() == 0 {
+		emitAccountEvent(s)
+		if time.Now().After(deadline) {
+			t.Fatal("handler never registered a subscriber")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Flood payloads large enough to fill the socket buffers and block the
+	// server's write. The handler must unpin itself via the write deadline.
+	big := strings.Repeat("x", 256*1024)
+	unpinBy := time.Now().Add(30 * time.Second)
+	for i := 0; i < 20000; i++ {
+		s.evtman.AddEvent(context.Background(), &events.XRPCStreamEvent{
+			RepoAccount: &comatproto.SyncSubscribeRepos_Account{
+				Active: true,
+				Did:    "did:plc:wedged",
+				Status: &big,
+				Time:   time.Now().Format(time.RFC3339),
+			},
+		})
+
+		if handlerGoroutines() == 0 {
+			break
+		}
+		if time.Now().After(unpinBy) {
+			t.Fatalf("handler still pinned by a non-reading peer: a blocked write must not outlive the write deadline")
+		}
+	}
+
+	if got := gaugeRelaysConnected(t); got != 0 {
+		t.Errorf("cocoon_relays_connected = %v, want 0 after the wedged peer forced a teardown", got)
+	}
+}
+
 // TestCommitUpdateOpCarriesPrev asserts #commit frames advertise the superseded
 // record CID for updates, as the lexicon requires, and that its absence no
 // longer causes the relay's verifier to skip prevData/MST inversion.

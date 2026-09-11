@@ -18,6 +18,16 @@ import (
 // frame. It is not fatal to the connection: the caller logs it and moves on.
 var errSkipEvent = errors.New("event has no subscribeRepos frame type")
 
+// wsWriteTimeout bounds how long a single frame write may block.
+//
+// The websocket write path is synchronous, and Upgrade clears the deadlines
+// net/http had set on the connection, so nothing bounds a write by default. A
+// relay that stays connected but stops reading fills the socket buffers and
+// blocks that write indefinitely — and a blocked write cannot be interrupted by
+// cancelling the context, so the handler would never reach its deferred
+// teardown. This is a var so tests can lower it.
+var wsWriteTimeout = 30 * time.Second
+
 // subscribeReposMsgType maps a stream event to its com.atproto.sync.subscribeRepos
 // message frame type and the object to serialize. The bool is false for events
 // that are not message frames (e.g. error frames, handled separately).
@@ -63,6 +73,12 @@ func writeEventFrame(conn *websocket.Conn, header *events.EventHeader, evt *even
 		header.Op = events.EvtKindMessage
 		header.MsgType = msgType
 		obj = o
+	}
+
+	// Bound the whole frame: NextWriter, the CBOR writes below and Close all
+	// flush through the same socket, and any of them can block on a stalled peer.
+	if err := conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
+		return "", fmt.Errorf("setting websocket write deadline: %w", err)
 	}
 
 	wc, err := conn.NextWriter(websocket.BinaryMessage)
