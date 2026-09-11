@@ -360,6 +360,7 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 	var newroot cid.Cid
 	var rev string
 	var removedCids []cid.Cid
+	var eventMstNodes map[cid.Cid]struct{}
 
 	if err := rm.withRepo(ctx, urepo.Did, rootcid, func(r *atp.Repo) (cid.Cid, error) {
 		// Snapshot the pre-write tree so we can compute which blocks this
@@ -530,6 +531,21 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		}
 		removedCids = computeRemovedCids(prevTree.Root, r.MST.Root, []cid.Cid{rootcid}, newBlocks, newroot)
 
+		// Capture the post-commit MST root and every MST node CID reachable
+		// from it. The #commit event CAR must let a consumer walk from the
+		// commit block to the MST root even when no MST node was rewritten
+		// this commit (eg a no-op delete) or when rewritten nodes reference
+		// clean sibling subtrees (eg merges after a delete).
+		mstRoot, mstRootErr := r.MST.RootCID()
+		if mstRootErr != nil {
+			return cid.Undef, mstRootErr
+		}
+		// seed with the root so the CAR always contains it even when the
+		// in-memory root node predates this commit (no CID computed above)
+		eventMstNodes = map[cid.Cid]struct{}{*mstRoot: {}}
+		mstLeaves := map[cid.Cid]struct{}{}
+		collectTreeBlocks(r.MST.Root, eventMstNodes, mstLeaves)
+
 		return newroot, nil
 	}); err != nil {
 		return nil, err
@@ -599,6 +615,40 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 	for _, blk := range bs.GetWriteLog() {
 		if _, err := carstore.LdWrite(buf, blk.Cid().Bytes(), blk.RawData()); err != nil {
 			return nil, err
+		}
+	}
+
+	// Complete the event CAR so a consumer holding only this CAR can walk
+	// from the commit block to the MST root (and invert the ops, like the
+	// Bluesky relay does). The write log only contains blocks written during
+	// this commit; when nothing was dirty (eg a no-op delete) or when new
+	// nodes reference clean sibling subtrees (eg merges after a delete),
+	// reachable MST nodes would otherwise be missing. Add any reachable MST
+	// node not already emitted above, fetched from the blockstore.
+	if len(eventMstNodes) > 0 {
+		written := map[cid.Cid]struct{}{newroot: {}}
+		for _, blk := range bs.GetWriteLog() {
+			written[blk.Cid()] = struct{}{}
+		}
+		for _, op := range ops {
+			if op.Value != nil {
+				written[*op.Value] = struct{}{}
+			}
+			if op.Prev != nil {
+				written[*op.Prev] = struct{}{}
+			}
+		}
+		for c := range eventMstNodes {
+			if _, ok := written[c]; ok {
+				continue
+			}
+			blk, err := dbs.Get(ctx, c)
+			if err != nil {
+				return nil, fmt.Errorf("completing event car with mst node %s: %w", c, err)
+			}
+			if _, err := carstore.LdWrite(buf, blk.Cid().Bytes(), blk.RawData()); err != nil {
+				return nil, err
+			}
 		}
 	}
 

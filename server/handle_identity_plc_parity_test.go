@@ -355,6 +355,45 @@ func TestSignPlcOpValidTokenSignsUserRotationKeys(t *testing.T) {
 	}
 }
 
+// Reference parity: single-use token. Two concurrent requests that both
+// loaded the repo before either consumed the token (the request-local repo
+// snapshot is loaded per-request by middleware) must not BOTH succeed: the
+// token claim must be atomic, not check-then-consume. Roast R-d8c94f.
+func TestSignPlcOpTokenSingleUseUnderRace(t *testing.T) {
+	s := newTestServer(t)
+	acct := s.createTestAccount(t, "alice.pds.test")
+	p := newPlcTestServer(t)
+	s.attachPlcClient(t, p)
+
+	s.setPlcOperationCode(t, acct.Did, "tok123")
+	p.log = identity.DidAuditLog{auditEntry(acct, "plc_operation")}
+	body, _ := json.Marshal(map[string]any{
+		"token":        "tok123",
+		"rotationKeys": []string{sampleUserKey, "did:key:zQ3shtCGgexistingRotation"},
+	})
+
+	// both contexts get the SAME pre-consumption repo snapshot, which is what
+	// two racing requests observe in production
+	c1, rec1 := newRequestContext(http.MethodPost, "/xrpc/com.atproto.identity.signPlcOperation", string(body), nil)
+	c1.Set("repo", mustRepoActor(t, s, acct.Did))
+	c2, rec2 := newRequestContext(http.MethodPost, "/xrpc/com.atproto.identity.signPlcOperation", string(body), nil)
+	c2.Set("repo", mustRepoActor(t, s, acct.Did))
+
+	if err := s.handleSignPlcOperation(c1); err != nil {
+		t.Fatalf("handler 1 error: %v", err)
+	}
+	if err := s.handleSignPlcOperation(c2); err != nil {
+		t.Fatalf("handler 2 error: %v", err)
+	}
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("first request should succeed, got %d", rec1.Code)
+	}
+	if rec2.Code == http.StatusOK {
+		t.Fatalf("second request with same token also succeeded: single-use violated (%d)", rec2.Code)
+	}
+}
+
 // Bad token: no signed op ('Token is invalid' in the reference).
 func TestSignPlcOpBadTokenRejected(t *testing.T) {
 	s := newTestServer(t)
