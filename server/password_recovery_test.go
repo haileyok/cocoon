@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -52,8 +53,9 @@ func requestRecoveryCode(t *testing.T, s *Server, account *testAccount) string {
 	if err != nil || repo.PasswordResetCode == nil {
 		t.Fatalf("missing reset code: %v", err)
 	}
-	if len(*repo.PasswordResetCode) < 26 {
-		t.Fatal("reset code is too short for unauthenticated recovery")
+	// Bluesky validates this format before submitting a reset.
+	if !regexp.MustCompile(`^[A-Z2-7]{5}-[A-Z2-7]{5}$`).MatchString(*repo.PasswordResetCode) {
+		t.Fatal("reset code does not match the Bluesky app's format")
 	}
 	return *repo.PasswordResetCode
 }
