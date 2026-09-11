@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	comatproto "github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/events"
 	"github.com/bluesky-social/indigo/lex/util"
 	"github.com/btcsuite/websocket"
@@ -64,9 +65,8 @@ func subscribeReposMsgType(evt *events.XRPCStreamEvent) (string, util.CBOR, bool
 	}
 }
 
-// writeEventFrame writes a single subscribeRepos frame — the CBOR event header
-// followed by the event body — to the relay connection, returning the message
-// type that was written (empty for error frames).
+// writeFrame writes one frame — the CBOR header followed by the body — to the
+// relay connection.
 //
 // btcsuite/websocket buffers each frame inside the connection and flushes it
 // only when the writer is closed. A writer abandoned without Close is flushed
@@ -74,6 +74,50 @@ func subscribeReposMsgType(evt *events.XRPCStreamEvent) (string, util.CBOR, bool
 // reach the relay and be read as a malformed event. Every error path here
 // returns before Close and leaves the buffer untouched; the caller tears the
 // connection down so nothing stale is ever written.
+func writeFrame(conn *websocket.Conn, header *events.EventHeader, obj util.CBOR) error {
+	// Bound the whole frame: NextWriter, the CBOR writes below and Close all
+	// flush through the same socket, and any of them can block on a stalled peer.
+	if err := conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
+		return fmt.Errorf("setting websocket write deadline: %w", err)
+	}
+
+	wc, err := conn.NextWriter(websocket.BinaryMessage)
+	if err != nil {
+		return fmt.Errorf("opening websocket writer: %w", err)
+	}
+
+	if err := header.MarshalCBOR(wc); err != nil {
+		return fmt.Errorf("writing event header: %w", err)
+	}
+	if err := obj.MarshalCBOR(wc); err != nil {
+		return fmt.Errorf("writing event body: %w", err)
+	}
+	if err := wc.Close(); err != nil {
+		return fmt.Errorf("flushing event frame: %w", err)
+	}
+
+	return nil
+}
+
+// writeErrorFrame writes an error frame (op -1) naming a lexicon error, which
+// is how a stream reports that it will not serve the request at all.
+func writeErrorFrame(conn *websocket.Conn, name, message string) error {
+	header := events.EventHeader{Op: events.EvtKindErrorFrame}
+	return writeFrame(conn, &header, &events.ErrorFrame{Error: name, Message: message})
+}
+
+// writeInfoFrame writes an #info message frame. The stream continues normally
+// afterwards — this is a notice, not a refusal — which is why it is a message
+// frame rather than an error frame.
+func writeInfoFrame(conn *websocket.Conn, name, message string) error {
+	header := events.EventHeader{Op: events.EvtKindMessage, MsgType: "#info"}
+	body := &comatproto.SyncSubscribeRepos_Info{Name: name}
+	if message != "" {
+		body.Message = &message
+	}
+	return writeFrame(conn, &header, body)
+}
+
 func writeEventFrame(conn *websocket.Conn, header *events.EventHeader, evt *events.XRPCStreamEvent) (string, error) {
 	var obj util.CBOR
 
@@ -91,25 +135,8 @@ func writeEventFrame(conn *websocket.Conn, header *events.EventHeader, evt *even
 		obj = o
 	}
 
-	// Bound the whole frame: NextWriter, the CBOR writes below and Close all
-	// flush through the same socket, and any of them can block on a stalled peer.
-	if err := conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
-		return "", fmt.Errorf("setting websocket write deadline: %w", err)
-	}
-
-	wc, err := conn.NextWriter(websocket.BinaryMessage)
-	if err != nil {
-		return "", fmt.Errorf("opening websocket writer: %w", err)
-	}
-
-	if err := header.MarshalCBOR(wc); err != nil {
-		return "", fmt.Errorf("writing event header: %w", err)
-	}
-	if err := obj.MarshalCBOR(wc); err != nil {
-		return "", fmt.Errorf("writing event body: %w", err)
-	}
-	if err := wc.Close(); err != nil {
-		return "", fmt.Errorf("flushing event frame: %w", err)
+	if err := writeFrame(conn, header, obj); err != nil {
+		return "", err
 	}
 
 	return header.MsgType, nil
@@ -192,6 +219,79 @@ func (s *Server) handleSyncSubscribeRepos(e echo.Context) error {
 		} else {
 			since = &cursor
 			logger.Info("subscribing with cursor", "cursor", cursor)
+		}
+	}
+
+	// A cursor can name three different places, and the consumer has no way to
+	// tell them apart from the stream alone: inside the retained range, behind
+	// it, or ahead of it. Behind and ahead are both silent failures — the
+	// consumer waits forever on events that will never come — so each is
+	// reported in-band before the stream starts.
+	//
+	// This mirrors the reference PDS
+	// (packages/pds/src/api/com/atproto/sync/subscribeRepos.ts): a cursor past
+	// the newest seq is a FutureCursor error frame, and a cursor older than the
+	// retained window gets an #info frame naming OutdatedCursor — not an error
+	// frame, because the stream is still served from the earliest retained event
+	// rather than refused.
+	//
+	// The reference keys the outdated check off a wall-clock backfill limit. We
+	// ask the store directly for the range it retains: that is the same bound,
+	// without a second, drifting definition of it.
+	//
+	// One deliberate divergence: when the store holds nothing, we send no
+	// notice at all, where the reference reports any positive cursor as future.
+	// Cocoon's seq space is not the reference's — it is seeded from the wall
+	// clock and re-seeded whenever the table is empty (see NewDbPersister), so
+	// an empty store means "this host has not started sequencing", not "this
+	// cursor is nonsense". Reporting FutureCursor there would push every
+	// consumer to idle on a fresh deploy over a cursor that the very next event
+	// would have satisfied.
+	if since != nil && s.evtpersister != nil {
+		if oldest, newest, ok, err := s.evtpersister.EventSeqRange(ctx); err != nil {
+			logger.Error("unable to read retained event range", "err", err)
+		} else if ok {
+			switch {
+			case *since > newest:
+				// Nothing above this seq can ever arrive, so the consumer must be
+				// told to reset rather than left waiting on a range that is empty
+				// forever.
+				logger.Warn("cursor is ahead of the newest retained event",
+					"cursor", *since, "newest", newest)
+				if err := writeErrorFrame(conn, "FutureCursor",
+					"Cursor in the future."); err != nil {
+					logger.Error("error writing future cursor frame", "err", err)
+					return err
+				}
+				metrics.RelaySends.WithLabelValues(ident, "FutureCursor").Inc()
+				return nil
+			case *since+1 < oldest:
+				// The consumer asked for events we have already pruned. The
+				// precise question is whether its *next* event still exists: it
+				// has seen everything up to `since`, so it needs `since+1`
+				// onward, and if `since+1` is below our floor then the events in
+				// [since+1, oldest) are gone. A cursor at exactly oldest-1 is
+				// therefore not behind at all — it needs `oldest`, which we still
+				// hold — and warning there would be a false alarm that grows
+				// likelier as retention trims the bottom of the range.
+				//
+				// (The reference PDS warns when the next needed event is older
+				// than a wall-clock backfill limit, which fires while the event
+				// is still present. Keying off the retained floor instead warns
+				// only once the event is genuinely unservable.)
+				//
+				// Playback will serve from the oldest retained event, silently
+				// skipping the gap; the info frame is how the consumer learns
+				// that happened.
+				logger.Warn("cursor is older than the oldest retained event",
+					"cursor", *since, "oldest", oldest)
+				if err := writeInfoFrame(conn, "OutdatedCursor",
+					"Requested cursor exceeded limit. Possibly missing events"); err != nil {
+					logger.Error("error writing outdated cursor frame", "err", err)
+					return err
+				}
+				metrics.RelaySends.WithLabelValues(ident, "OutdatedCursor").Inc()
+			}
 		}
 	}
 

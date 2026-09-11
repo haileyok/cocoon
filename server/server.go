@@ -82,6 +82,7 @@ type Server struct {
 	repoman       *RepoMan
 	oauthProvider *provider.Provider
 	evtman        *events.EventManager
+	evtpersister  *DbPersister
 	passport      *identity.Passport
 	scopeResolver scopes.PermissionSetResolver
 	fallbackProxy string
@@ -449,6 +450,7 @@ func New(args *Args) (*Server, error) {
 			FallbackProxy:     args.FallbackProxy,
 		},
 		evtman:        events.NewEventManager(evtPersister),
+		evtpersister:  evtPersister,
 		passport:      identity.NewPassport(h, identity.NewMemCache(10_000)),
 		scopeResolver: scopes.NewIndigoResolver(),
 
