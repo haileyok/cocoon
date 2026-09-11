@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -54,6 +55,8 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
+	unlock := s.lockRepoWrite(urepo.Repo.Did)
+	defer unlock()
 	conflict := errors.New("repository changed during import")
 	err = s.db.Transaction(ctx, func(tx *db.DB) error {
 		bs := sqlite_blockstore.New(urepo.Repo.Did, tx)
@@ -99,6 +102,17 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 
 // Validate against the CAR alone, not blocks left over from an earlier repo.
 func readRepoImport(ctx context.Context, body []byte, did string) (*atp.Repo, []blocks.Block, []models.Record, error) {
+	// go-car can return EOF for truncated or empty sections as well as clean EOF.
+	for remaining := body; len(remaining) > 0; {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, nil, err
+		}
+		size, n := binary.Uvarint(remaining)
+		if n <= 0 || size == 0 || size > uint64(len(remaining)-n) {
+			return nil, nil, nil, fmt.Errorf("invalid CAR section length")
+		}
+		remaining = remaining[n+int(size):]
+	}
 	cs, err := car.NewCarReader(bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, nil, err
@@ -150,10 +164,15 @@ func readRepoImport(ctx context.Context, body []byte, did string) (*atp.Repo, []
 	}
 	var records []models.Record
 	clock := syntax.NewTIDClock(0)
+	var previous string
 	err = r.MST.Walk(func(key []byte, c cid.Cid) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if string(key) <= previous {
+			return fmt.Errorf("repository keys are not strictly ordered")
+		}
+		previous = string(key)
 		nsid, rkey, ok := strings.Cut(string(key), "/")
 		if !ok {
 			return fmt.Errorf("invalid record path")

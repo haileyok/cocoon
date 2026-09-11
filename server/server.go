@@ -87,6 +87,8 @@ type Server struct {
 	scopeResolver scopes.PermissionSetResolver
 	fallbackProxy string
 
+	repoWriteLocks sync.Map // DID -> *sync.Mutex; shared by writes and imports.
+
 	// Optional client override for proxy and feed-record requests. Nil keeps
 	// each path's existing default client.
 	proxyHTTPClient *http.Client

@@ -335,8 +335,23 @@ func computeRemovedCids(prev *mst.Node, curr *mst.Node, prevCommitCids []cid.Cid
 	return out
 }
 
+// Serializes repository mutations within this server process.
+func (s *Server) lockRepoWrite(did string) func() {
+	value, _ := s.repoWriteLocks.LoadOrStore(did, &sync.Mutex{})
+	mu := value.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 // TODO make use of swap commit
 func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []Op, swapCommit *string) ([]ApplyWriteResult, error) {
+	unlock := rm.s.lockRepoWrite(urepo.Did)
+	defer unlock()
+	current, err := rm.s.getRepoActorByDid(ctx, urepo.Did)
+	if err != nil {
+		return nil, err
+	}
+	urepo = current.Repo
 	rootcid, err := cid.Cast(urepo.Root)
 	if err != nil {
 		return nil, err
