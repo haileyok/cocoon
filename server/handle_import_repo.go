@@ -3,15 +3,20 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
-	"slices"
 	"strings"
 
+	"github.com/bluesky-social/indigo/atproto/atdata"
+	atp "github.com/bluesky-social/indigo/atproto/repo"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/sqlite_blockstore"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	"github.com/ipld/go-car"
@@ -44,90 +49,155 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	bs := s.getBlockstore(urepo.Repo.Did)
-
-	cs, err := car.NewCarReader(bytes.NewReader(b))
+	r, importedBlocks, records, err := readRepoImport(ctx, b, urepo.Repo.Did)
 	if err != nil {
-		logger.Error("could not read car in import request", "error", err)
-		return helpers.ServerError(e, nil)
+		logger.Error("invalid repository import", "error", err)
+		return helpers.InputError(e, nil)
 	}
 
-	orderedBlocks := []blocks.Block{}
-	currBlock, err := cs.Next()
-	if err != nil {
-		logger.Error("could not get first block from car", "error", err)
-		return helpers.ServerError(e, nil)
-	}
-	currBlockCt := 1
-
-	for currBlock != nil {
-		logger.Info("someone is importing their repo", "block", currBlockCt)
-		orderedBlocks = append(orderedBlocks, currBlock)
-		next, _ := cs.Next()
-		currBlock = next
-		currBlockCt++
-	}
-
-	slices.Reverse(orderedBlocks)
-
-	if err := bs.PutMany(context.TODO(), orderedBlocks); err != nil {
-		logger.Error("could not insert blocks", "error", err)
-		return helpers.ServerError(e, nil)
-	}
-
-	r, err := openRepo(context.TODO(), bs, cs.Header.Roots[0], urepo.Repo.Did)
-	if err != nil {
-		logger.Error("could not open repo", "error", err)
-		return helpers.ServerError(e, nil)
-	}
-
-	tx := s.db.Begin(ctx)
-
-	clock := syntax.NewTIDClock(0)
-
-	if err := r.MST.Walk(func(key []byte, cid cid.Cid) error {
-		pts := strings.Split(string(key), "/")
-		nsid := pts[0]
-		rkey := pts[1]
-		cidStr := cid.String()
-		b, err := bs.Get(context.TODO(), cid)
-		if err != nil {
-			logger.Error("record bytes don't exist in blockstore", "error", err)
-			return helpers.ServerError(e, nil)
-		}
-
-		rec := models.Record{
-			Did:       urepo.Repo.Did,
-			CreatedAt: clock.Next().String(),
-			Nsid:      nsid,
-			Rkey:      rkey,
-			Cid:       cidStr,
-			Value:     b.RawData(),
-		}
-
-		if err := tx.Save(rec).Error; err != nil {
+	unlock := s.lockRepoWrite(urepo.Repo.Did)
+	defer unlock()
+	conflict := errors.New("repository changed during import")
+	err = s.db.Transaction(ctx, func(tx *db.DB) error {
+		bs := sqlite_blockstore.New(urepo.Repo.Did, tx)
+		if err := tx.Exec(ctx, "DELETE FROM records WHERE did = ?", nil, urepo.Repo.Did).Error; err != nil {
 			return err
 		}
-
+		if err := tx.Exec(ctx, "DELETE FROM blocks WHERE did = ?", nil, urepo.Repo.Did).Error; err != nil {
+			return err
+		}
+		for _, block := range importedBlocks {
+			if err := bs.Put(ctx, block); err != nil {
+				return err
+			}
+		}
+		if len(records) > 0 {
+			if err := tx.Client().WithContext(ctx).CreateInBatches(&records, 100).Error; err != nil {
+				return err
+			}
+		}
+		// Preserve Cocoon's policy of re-signing with the destination key.
+		root, rev, err := commitRepo(ctx, bs, r, urepo.Repo.SigningKey)
+		if err != nil {
+			return err
+		}
+		result := tx.Exec(ctx, "UPDATE repos SET root = ?, rev = ? WHERE did = ? AND rev = ?", nil, root.Bytes(), rev, urepo.Repo.Did, urepo.Rev)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return conflict
+		}
 		return nil
-	}); err != nil {
-		tx.Rollback()
-		logger.Error("record bytes don't exist in blockstore", "error", err)
-		return helpers.ServerError(e, nil)
+	})
+	if errors.Is(err, conflict) {
+		return e.JSON(http.StatusConflict, map[string]string{"error": "InvalidSwap", "message": conflict.Error()})
 	}
-
-	tx.Commit()
-
-	root, rev, err := commitRepo(context.TODO(), bs, r, urepo.Repo.SigningKey)
 	if err != nil {
-		logger.Error("error committing", "error", err)
+		logger.Error("could not commit repository import", "error", err)
 		return helpers.ServerError(e, nil)
 	}
+	return e.NoContent(http.StatusOK)
+}
 
-	if err := s.UpdateRepo(context.TODO(), urepo.Repo.Did, root, rev); err != nil {
-		logger.Error("error updating repo after commit", "error", err)
-		return helpers.ServerError(e, nil)
+// Validate against the CAR alone, not blocks left over from an earlier repo.
+func readRepoImport(ctx context.Context, body []byte, did string) (*atp.Repo, []blocks.Block, []models.Record, error) {
+	// go-car can return EOF for truncated or empty sections as well as clean EOF.
+	for remaining := body; len(remaining) > 0; {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, nil, err
+		}
+		size, n := binary.Uvarint(remaining)
+		if n <= 0 || size == 0 || size > uint64(len(remaining)-n) {
+			return nil, nil, nil, fmt.Errorf("invalid CAR section length")
+		}
+		remaining = remaining[n+int(size):]
 	}
-
-	return nil
+	cs, err := car.NewCarReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if len(cs.Header.Roots) != 1 {
+		return nil, nil, nil, fmt.Errorf("expected one CAR root")
+	}
+	bs := atp.NewTinyBlockstore()
+	var imported []blocks.Block
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, nil, err
+		}
+		block, err := cs.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if err := bs.Put(ctx, block); err != nil {
+			return nil, nil, nil, err
+		}
+		imported = append(imported, block)
+	}
+	root, err := bs.Get(ctx, cs.Header.Roots[0])
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var commit atp.Commit
+	if err := commit.UnmarshalCBOR(bytes.NewReader(root.RawData())); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := commit.VerifyStructure(); err != nil {
+		return nil, nil, nil, err
+	}
+	if commit.DID != did {
+		return nil, nil, nil, fmt.Errorf("commit DID does not match account")
+	}
+	r, err := openRepo(ctx, bs, cs.Header.Roots[0], did)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if r.MST.IsPartial() {
+		return nil, nil, nil, fmt.Errorf("incomplete repository tree")
+	}
+	if err := r.MST.Verify(); err != nil {
+		return nil, nil, nil, err
+	}
+	var records []models.Record
+	clock := syntax.NewTIDClock(0)
+	var previous string
+	err = r.MST.Walk(func(key []byte, c cid.Cid) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if string(key) <= previous {
+			return fmt.Errorf("repository keys are not strictly ordered")
+		}
+		previous = string(key)
+		nsid, rkey, ok := strings.Cut(string(key), "/")
+		if !ok {
+			return fmt.Errorf("invalid record path")
+		}
+		if _, err := syntax.ParseNSID(nsid); err != nil {
+			return err
+		}
+		if _, err := syntax.ParseRecordKey(rkey); err != nil {
+			return err
+		}
+		block, err := bs.Get(ctx, c)
+		if err != nil {
+			return err
+		}
+		if _, err := atdata.UnmarshalCBOR(block.RawData()); err != nil {
+			return err
+		}
+		records = append(records, models.Record{
+			Did: did, CreatedAt: clock.Next().String(), Nsid: nsid, Rkey: rkey,
+			Cid: c.String(), Value: block.RawData(),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return r, imported, records, nil
 }
