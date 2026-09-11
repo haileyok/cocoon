@@ -24,13 +24,16 @@ import (
 	"gorm.io/gorm"
 )
 
-func importFixture(t *testing.T, did string, paths []string) (cid.Cid, []blocks.Block, *atp.Repo) {
+func importFixture(t *testing.T, did string, paths []string, records ...MarshalableMap) (cid.Cid, []blocks.Block, *atp.Repo) {
 	t.Helper()
 	ctx := context.Background()
 	bs := blockstore.NewBlockstore(datastore.NewMapDatastore())
 	r := &atp.Repo{DID: syntax.DID(did), Clock: syntax.NewTIDClock(0), MST: mst.NewEmptyTree(), RecordStore: bs}
 	for i, path := range paths {
 		rec := MarshalableMap{"$type": "app.bsky.feed.post", "text": fmt.Sprintf("imported record %d", i)}
+		if len(records) > 0 {
+			rec = records[i]
+		}
 		c, err := putRecordBlock(ctx, bs, &rec)
 		if err != nil {
 			t.Fatal(err)
@@ -83,6 +86,8 @@ func importState(t *testing.T, s *Server, did string) any {
 		Repo    *models.RepoActor
 		Blocks  []models.Block
 		Records []models.Record
+		Blobs   []models.Blob
+		Parts   []models.BlobPart
 	}{}
 	var err error
 	state.Repo, err = s.getRepoActorByDid(context.Background(), did)
@@ -93,6 +98,12 @@ func importState(t *testing.T, s *Server, did string) any {
 		t.Fatal(err)
 	}
 	if err := s.db.Client().Where("did = ?", did).Order("nsid, rkey").Find(&state.Records).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Client().Where("did = ?", did).Order("id").Find(&state.Blobs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.Client().Where("blob_id IN (SELECT id FROM blobs WHERE did = ?)", did).Order("blob_id, idx").Find(&state.Parts).Error; err != nil {
 		t.Fatal(err)
 	}
 	return state
