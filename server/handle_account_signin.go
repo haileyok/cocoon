@@ -211,6 +211,7 @@ func (s *Server) handleAccountSigninPost(e echo.Context) error {
 	s.applyAccountSessionOptions(sess, int(AccountSessionMaxAge.Seconds()))
 
 	setActiveSessionDid(sess, repo.Repo.Did)
+	sess.Values["version:"+repo.Repo.Did] = repo.SessionVersion
 
 	if err := sess.Save(e.Request(), e.Response()); err != nil {
 		return err

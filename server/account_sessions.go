@@ -135,6 +135,12 @@ func (s *Server) getSessionAccountActors(ctx context.Context, sess *sessions.Ses
 			}
 			return nil, changed, err
 		}
+		version, _ := sess.Values["version:"+did].(int64)
+		// Cookies issued before session versioning belong to version zero.
+		if version != repo.SessionVersion {
+			changed = true
+			continue
+		}
 		validDids = append(validDids, did)
 		accounts = append(accounts, *repo)
 	}

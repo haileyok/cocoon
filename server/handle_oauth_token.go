@@ -94,6 +94,9 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			logger.Error("error finding authorization request", "error", err)
 			return helpers.ServerError(e, nil)
 		}
+		if authReq.Sub == nil || authReq.Code == nil {
+			return helpers.InvalidTokenError(e)
+		}
 
 		if req.RedirectURI == nil || *req.RedirectURI != authReq.Parameters.RedirectURI {
 			return helpers.InputError(e, to.StringPtr(`"redirect_uri" mismatch`))
@@ -118,6 +121,9 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		repo, err := s.getRepoActorByDid(ctx, *authReq.Sub)
 		if err != nil {
 			return helpers.InputError(e, to.StringPtr("unable to find actor"))
+		}
+		if authReq.SessionVersion != repo.SessionVersion {
+			return helpers.InvalidTokenError(e)
 		}
 
 		now := time.Now()
@@ -151,16 +157,17 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		if err := s.db.Create(ctx, &provider.OauthToken{
-			ClientId:     authReq.ClientId,
-			ClientAuth:   *clientAuth,
-			Parameters:   authReq.Parameters,
-			ExpiresAt:    eat,
-			DeviceId:     "",
-			Sub:          repo.Repo.Did,
-			Code:         *authReq.Code,
-			Token:        accessString,
-			RefreshToken: refreshToken,
-			Ip:           authReq.Ip,
+			ClientId:       authReq.ClientId,
+			ClientAuth:     *clientAuth,
+			Parameters:     authReq.Parameters,
+			ExpiresAt:      eat,
+			DeviceId:       "",
+			Sub:            repo.Repo.Did,
+			SessionVersion: authReq.SessionVersion,
+			Code:           *authReq.Code,
+			Token:          accessString,
+			RefreshToken:   refreshToken,
+			Ip:             authReq.Ip,
 		}, nil).Error; err != nil {
 			logger.Error("error creating token in db", "error", err)
 			return helpers.ServerError(e, nil)
@@ -193,6 +200,10 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		if err := s.db.Raw(ctx, "SELECT * FROM oauth_tokens WHERE refresh_token = ?", nil, req.RefreshToken).Scan(&oauthToken).Error; err != nil {
 			logger.Error("error finding oauth token by refresh token", "error", err, "refresh_token", req.RefreshToken)
 			return helpers.ServerError(e, nil)
+		}
+		repo, err := s.getRepoActorByDid(ctx, oauthToken.Sub)
+		if err != nil || oauthToken.SessionVersion != repo.SessionVersion {
+			return helpers.InvalidTokenError(e)
 		}
 
 		if client.Metadata.ClientID != oauthToken.ClientId {

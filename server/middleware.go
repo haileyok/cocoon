@@ -192,7 +192,7 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 				Found bool
 			}
 			var result Result
-			if err := s.db.Raw(ctx, "SELECT EXISTS(SELECT 1 FROM "+table+" WHERE token = ?) AS found", nil, tokenstr).Scan(&result).Error; err != nil {
+			if err := s.db.Raw(ctx, "SELECT EXISTS(SELECT 1 FROM "+table+" t JOIN repos r ON r.did = t.did WHERE t.token = ? AND t.session_version = r.session_version) AS found", nil, tokenstr).Scan(&result).Error; err != nil {
 				if err == gorm.ErrRecordNotFound {
 					return helpers.InvalidTokenError(e)
 				}
@@ -324,6 +324,9 @@ func (s *Server) handleOauthSessionMiddleware(next echo.HandlerFunc) echo.Handle
 		if err != nil {
 			logger.Error("could not find actor in db", "error", err)
 			return helpers.ServerError(e, nil)
+		}
+		if oauthToken.SessionVersion != repo.SessionVersion {
+			return helpers.InvalidTokenError(e)
 		}
 
 		e.Set("repo", repo)

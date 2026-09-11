@@ -57,28 +57,30 @@ func (opr ParRequest) Value() (driver.Value, error) {
 
 type OauthToken struct {
 	gorm.Model
-	ClientId     string     `gorm:"index"`
-	ClientAuth   ClientAuth `gorm:"type:json"`
-	Parameters   ParRequest `gorm:"type:json"`
-	ExpiresAt    time.Time  `gorm:"index"`
-	DeviceId     string
-	Sub          string `gorm:"index"`
-	Code         string `gorm:"index"`
-	Token        string `gorm:"uniqueIndex"`
-	RefreshToken string `gorm:"uniqueIndex"`
-	Ip           string
+	ClientId       string     `gorm:"index"`
+	ClientAuth     ClientAuth `gorm:"type:json"`
+	Parameters     ParRequest `gorm:"type:json"`
+	ExpiresAt      time.Time  `gorm:"index"`
+	DeviceId       string
+	Sub            string `gorm:"index"`
+	SessionVersion int64  `gorm:"not null;default:0"`
+	Code           string `gorm:"index"`
+	Token          string `gorm:"uniqueIndex"`
+	RefreshToken   string `gorm:"uniqueIndex"`
+	Ip             string
 }
 
 type OauthAuthorizationRequest struct {
 	gorm.Model
-	RequestId  string     `gorm:"primaryKey"`
-	ClientId   string     `gorm:"index"`
-	ClientAuth ClientAuth `gorm:"type:json"`
-	Parameters ParRequest `gorm:"type:json"`
-	ExpiresAt  time.Time  `gorm:"index"`
-	DeviceId   *string
-	Sub        *string
-	Code       *string
-	Accepted   *bool
-	Ip         string
+	RequestId      string     `gorm:"primaryKey"`
+	ClientId       string     `gorm:"index"`
+	ClientAuth     ClientAuth `gorm:"type:json"`
+	Parameters     ParRequest `gorm:"type:json"`
+	ExpiresAt      time.Time  `gorm:"index"`
+	DeviceId       *string
+	Sub            *string
+	SessionVersion int64 `gorm:"not null;default:0"`
+	Code           *string
+	Accepted       *bool
+	Ip             string
 }

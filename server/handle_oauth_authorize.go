@@ -227,7 +227,7 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 
 	code := oauth.GenerateCode()
 
-	if err := s.db.Exec(ctx, "UPDATE oauth_authorization_requests SET sub = ?, code = ?, accepted = ?, ip = ? WHERE request_id = ?", nil, repo.Repo.Did, code, true, e.RealIP(), reqId).Error; err != nil {
+	if err := s.db.Exec(ctx, "UPDATE oauth_authorization_requests SET sub = ?, session_version = ?, code = ?, accepted = ?, ip = ? WHERE request_id = ?", nil, repo.Repo.Did, repo.SessionVersion, code, true, e.RealIP(), reqId).Error; err != nil {
 		logger.Error("error updating authorization request", "error", err)
 		return helpers.ServerError(e, nil)
 	}
