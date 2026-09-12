@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto"
 	"encoding/base64"
@@ -232,6 +234,95 @@ func setProxyTestOAuth(t *testing.T, s *Server, r *http.Request, did, scope stri
 	}
 	r.Header.Set("Authorization", "DPoP "+access)
 	r.Header.Set("DPoP", proof)
+}
+
+func TestProxyTransport(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			const payload = `{"text":"streamed request"}`
+			var compressed bytes.Buffer
+			zip := gzip.NewWriter(&compressed)
+			if _, err := zip.Write([]byte(`{"ok":true}`)); err != nil {
+				t.Fatal(err)
+			}
+			if err := zip.Close(); err != nil {
+				t.Fatal(err)
+			}
+			type received struct {
+				body     string
+				length   int64
+				encoding string
+				err      error
+			}
+			seen := make(chan received, 1)
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				seen <- received{string(body), r.ContentLength, r.Header.Get("Accept-Encoding"), err}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Content-Encoding", "gzip")
+				w.Header().Set("Content-Length", fmt.Sprint(compressed.Len()))
+				_, _ = w.Write(compressed.Bytes())
+			}))
+			t.Cleanup(upstream.Close)
+			s := newTestServer(t)
+			s.proxyHTTPClient = upstream.Client()
+			account := s.createTestAccount(t, "transport.pds.test")
+			cache := identity.NewMemCache(10)
+			if err := cache.PutDoc("did:web:appview.test", &identity.DidDoc{
+				Id: "did:web:appview.test", Service: []identity.DidDocService{{Id: "#view", ServiceEndpoint: upstream.URL}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s.passport = identity.NewPassport(upstream.Client(), cache)
+			s.config.FallbackProxy = "did:web:appview.test#view"
+			s.echo = echo.New()
+			s.echo.Validator = newTestValidator()
+			s.addRoutes()
+			frontend := httptest.NewServer(s.echo)
+			t.Cleanup(frontend.Close)
+			repo, err := s.getRepoActorByDid(context.Background(), account.Did)
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := s.createSession(context.Background(), &repo.Repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body io.Reader
+			if method == http.MethodPost {
+				body = io.NopCloser(strings.NewReader(payload))
+			}
+			req, err := http.NewRequest(method, frontend.URL+"/xrpc/app.bsky.feed.getTimeline", body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+session.AccessToken)
+			req.Header.Set("Accept-Encoding", "gzip")
+			req.Header.Set("Content-Type", "application/json")
+			client := frontend.Client()
+			client.Timeout = 5 * time.Second
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			raw, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != 200 || resp.Uncompressed || resp.Header.Get("Content-Encoding") != "gzip" || resp.ContentLength != int64(compressed.Len()) || !bytes.Equal(raw, compressed.Bytes()) {
+				t.Fatalf("gzip response changed: status=%d headers=%v length=%d body=%x", resp.StatusCode, resp.Header, resp.ContentLength, raw)
+			}
+			got := <-seen
+			wantBody, wantLength := "", int64(0)
+			if method == http.MethodPost {
+				wantBody, wantLength = payload, -1
+			}
+			if got.err != nil || got.body != wantBody || got.length != wantLength || got.encoding != "gzip" {
+				t.Fatalf("upstream request changed: %+v", got)
+			}
+		})
+	}
 }
 
 func TestCopyProxyHeaders(t *testing.T) {
