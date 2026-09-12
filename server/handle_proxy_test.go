@@ -1,14 +1,18 @@
 package server
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -48,7 +52,10 @@ func TestProxyRPCPermissions(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
-			type forwarded struct{ method, path, query, body, auth string }
+			type forwarded struct {
+				method, path, query, body, auth string
+				headers                         http.Header
+			}
 			seen := make(chan forwarded, 1)
 			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
@@ -58,7 +65,16 @@ func TestProxyRPCPermissions(t *testing.T) {
 					return
 				}
 				body, _ := io.ReadAll(r.Body)
-				seen <- forwarded{r.Method, r.URL.Path, r.URL.RawQuery, string(body), r.Header.Get("Authorization")}
+				seen <- forwarded{r.Method, r.URL.Path, r.URL.RawQuery, string(body), r.Header.Get("Authorization"), r.Header.Clone()}
+				w.Header().Add("Set-Cookie", "session=upstream; Path=/")
+				w.Header().Add("Set-Cookie", "other=upstream; Path=/")
+				w.Header().Set("Access-Control-Allow-Origin", "https://upstream.test")
+				w.Header().Set("Connection", "Content-Language")
+				w.Header().Set("Content-Language", "en")
+				w.Header().Set("Atproto-Repo-Rev", "test-rev")
+				w.Header().Add("Atproto-Content-Labelers", "did:web:labeler-one.test")
+				w.Header().Add("Atproto-Content-Labelers", "did:web:labeler-two.test")
+				w.Header().Set("Retry-After", "30")
 				io.WriteString(w, `{"ok":true}`)
 			}))
 			t.Cleanup(upstream.Close)
@@ -91,7 +107,23 @@ func TestProxyRPCPermissions(t *testing.T) {
 			r := httptest.NewRequest(tc.method, target, strings.NewReader(body))
 			r.Header.Set("Content-Type", "application/json")
 			r.Header.Set("atproto-proxy", tc.header)
+			r.Header.Set("Cookie", "session=synthetic-pds-cookie")
+			r.Header.Set("Proxy-Authorization", "Basic private")
+			r.Header.Set("Forwarded", "for=192.0.2.1")
+			r.Header.Set("X-Forwarded-For", "192.0.2.1")
+			r.Header.Set("Origin", "https://pds.test")
+			r.Header.Set("Referer", "https://pds.test/account")
+			r.Header.Add("Connection", "X-Atproto-Hop")
+			r.Header.Add("Connection", "X-Atproto-Other-Hop")
+			r.Header.Set("X-Atproto-Hop", "private")
+			r.Header.Set("X-Atproto-Other-Hop", "private")
+			r.Header.Set("Accept-Language", "en-NZ")
+			r.Header.Set("X-Bsky-Topics", "test-topic")
+			r.Header.Set("X-Atproto-Example", "protocol-extension")
+			r.Header.Add("Atproto-Accept-Labelers", "did:web:labeler-one.test")
+			r.Header.Add("Atproto-Accept-Labelers", "did:web:labeler-two.test")
 			if tc.legacy {
+				r.Header.Set("Accept-Encoding", "gzip")
 				repo, err := s.getRepoActorByDid(context.Background(), account.Did)
 				if err != nil {
 					t.Fatal(err)
@@ -126,6 +158,35 @@ func TestProxyRPCPermissions(t *testing.T) {
 			got := <-seen
 			if got.method != tc.method || got.path != "/xrpc/"+tc.nsid || got.query != query || got.body != body || w.Body.String() != `{"ok":true}` {
 				t.Fatal("proxy changed the request or response payload")
+			}
+			for _, name := range []string{"Cookie", "Proxy-Authorization", "DPoP", "Atproto-Proxy", "Forwarded", "X-Forwarded-For", "Origin", "Referer", "Connection", "X-Atproto-Hop", "X-Atproto-Other-Hop"} {
+				if got.headers.Get(name) != "" {
+					t.Errorf("forwarded private request header %s", name)
+				}
+			}
+			for _, name := range []string{"Set-Cookie", "Access-Control-Allow-Origin", "Connection", "Content-Language"} {
+				if w.Header().Get(name) != "" {
+					t.Errorf("forwarded unsafe response header %s", name)
+				}
+			}
+			for _, name := range []string{"Content-Type", "Accept-Language", "X-Bsky-Topics", "X-Atproto-Example", "Atproto-Accept-Labelers"} {
+				if !reflect.DeepEqual(got.headers.Values(name), r.Header.Values(name)) {
+					t.Errorf("changed allowed request header %s: %v", name, got.headers.Values(name))
+				}
+			}
+			encoding := "identity"
+			if tc.legacy {
+				encoding = "gzip"
+			}
+			if got.headers.Get("Accept-Encoding") != encoding {
+				t.Errorf("upstream Accept-Encoding = %q, want %q", got.headers.Get("Accept-Encoding"), encoding)
+			}
+			if tc.method == "POST" && got.headers.Get("Content-Length") != fmt.Sprint(len(body)) {
+				t.Error("did not preserve POST content length")
+			}
+			if w.Header().Get("Content-Type") != "application/json" || w.Header().Get("Atproto-Repo-Rev") != "test-rev" || w.Header().Get("Retry-After") != "30" ||
+				!reflect.DeepEqual(w.Header().Values("Atproto-Content-Labelers"), []string{"did:web:labeler-one.test", "did:web:labeler-two.test"}) {
+				t.Error("changed allowed response headers or combined repeated values")
 			}
 			token, _, err := new(jwt.Parser).ParseUnverified(strings.TrimPrefix(got.auth, "Bearer "), jwt.MapClaims{})
 			if err != nil {
@@ -173,4 +234,137 @@ func setProxyTestOAuth(t *testing.T, s *Server, r *http.Request, did, scope stri
 	}
 	r.Header.Set("Authorization", "DPoP "+access)
 	r.Header.Set("DPoP", proof)
+}
+
+func TestProxyTransport(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			const payload = `{"text":"streamed request"}`
+			var compressed bytes.Buffer
+			zip := gzip.NewWriter(&compressed)
+			if _, err := zip.Write([]byte(`{"ok":true}`)); err != nil {
+				t.Fatal(err)
+			}
+			if err := zip.Close(); err != nil {
+				t.Fatal(err)
+			}
+			type received struct {
+				body     string
+				length   int64
+				encoding string
+				err      error
+			}
+			seen := make(chan received, 1)
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				seen <- received{string(body), r.ContentLength, r.Header.Get("Accept-Encoding"), err}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Content-Encoding", "gzip")
+				w.Header().Set("Content-Length", fmt.Sprint(compressed.Len()))
+				_, _ = w.Write(compressed.Bytes())
+			}))
+			t.Cleanup(upstream.Close)
+			s := newTestServer(t)
+			s.proxyHTTPClient = upstream.Client()
+			account := s.createTestAccount(t, "transport.pds.test")
+			cache := identity.NewMemCache(10)
+			if err := cache.PutDoc("did:web:appview.test", &identity.DidDoc{
+				Id: "did:web:appview.test", Service: []identity.DidDocService{{Id: "#view", ServiceEndpoint: upstream.URL}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			s.passport = identity.NewPassport(upstream.Client(), cache)
+			s.config.FallbackProxy = "did:web:appview.test#view"
+			s.echo = echo.New()
+			s.echo.Validator = newTestValidator()
+			s.addRoutes()
+			frontend := httptest.NewServer(s.echo)
+			t.Cleanup(frontend.Close)
+			repo, err := s.getRepoActorByDid(context.Background(), account.Did)
+			if err != nil {
+				t.Fatal(err)
+			}
+			session, err := s.createSession(context.Background(), &repo.Repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body io.Reader
+			if method == http.MethodPost {
+				body = io.NopCloser(strings.NewReader(payload))
+			}
+			req, err := http.NewRequest(method, frontend.URL+"/xrpc/app.bsky.feed.getTimeline", body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+session.AccessToken)
+			req.Header.Set("Accept-Encoding", "gzip")
+			req.Header.Set("Content-Type", "application/json")
+			client := frontend.Client()
+			client.Timeout = 5 * time.Second
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			raw, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != 200 || resp.Uncompressed || resp.Header.Get("Content-Encoding") != "gzip" || resp.ContentLength != int64(compressed.Len()) || !bytes.Equal(raw, compressed.Bytes()) {
+				t.Fatalf("gzip response changed: status=%d headers=%v length=%d body=%x", resp.StatusCode, resp.Header, resp.ContentLength, raw)
+			}
+			got := <-seen
+			wantBody, wantLength := "", int64(0)
+			if method == http.MethodPost {
+				wantBody, wantLength = payload, -1
+			}
+			if got.err != nil || got.body != wantBody || got.length != wantLength || got.encoding != "gzip" {
+				t.Fatalf("upstream request changed: %+v", got)
+			}
+		})
+	}
+}
+
+func TestCopyProxyHeaders(t *testing.T) {
+	for _, request := range []bool{true, false} {
+		t.Run(fmt.Sprintf("request=%t", request), func(t *testing.T) {
+			src := http.Header{
+				"content-type": {"application/json"}, "Content-Encoding": {"gzip"}, "Content-Length": {"123"},
+				"Content-Language": {"mi"}, "Atproto-Repo-Rev": {"rev"}, "Retry-After": {"15"},
+				"Atproto-Content-Labelers": {"one", "two"}, "Atproto-Accept-Labelers": {"three", "four"},
+				"Accept-Encoding": {"gzip"}, "Accept-Language": {"en-NZ"}, "X-Bsky-Topics": {"topic"},
+				"x-ATPROTO-Extension": {"extension"},
+				"cOnNeCtIoN":          {" x-AtProto-Hop, Retry-After ", "ATPROTO-ACCEPT-LABELERS"},
+				"X-Atproto-Hop":       {"private"}, "Cookie": {"secret"}, "Set-Cookie": {"upstream"},
+				"Authorization": {"private"}, "DPoP": {"proof"}, "Atproto-Proxy": {"routing"},
+				"Keep-Alive": {"timeout=5"}, "Proxy-Connection": {"keep-alive"}, "Proxy-Authenticate": {"Basic"},
+				"Proxy-Authorization": {"private"}, "Te": {"trailers"}, "Trailer": {"Set-Cookie"},
+				"Transfer-Encoding": {"chunked"}, "Upgrade": {"websocket"}, "X-Unknown": {"private"},
+				"Access-Control-Allow-Origin": {"https://upstream.test"},
+			}
+			dst := http.Header{"Set-Cookie": {"pds-owned"}, "Access-Control-Allow-Origin": {"https://client.test"}}
+			copyProxyHeaders(dst, src, request)
+			want := http.Header{
+				"Set-Cookie": {"pds-owned"}, "Access-Control-Allow-Origin": {"https://client.test"},
+				"Content-Type": {"application/json"}, "Content-Encoding": {"gzip"}, "Content-Length": {"123"},
+			}
+			if request {
+				want["Accept-Encoding"] = []string{"gzip"}
+				want["Accept-Language"] = []string{"en-NZ"}
+				want["X-Bsky-Topics"] = []string{"topic"}
+				want["X-Atproto-Extension"] = []string{"extension"}
+			} else {
+				want["Content-Language"] = []string{"mi"}
+				want["Atproto-Repo-Rev"] = []string{"rev"}
+				want["Atproto-Content-Labelers"] = []string{"one", "two"}
+			}
+			if !reflect.DeepEqual(dst, want) {
+				t.Fatalf("headers = %v, want %v", dst, want)
+			}
+			src["content-type"][0] = "changed"
+			if dst.Get("Content-Type") != "application/json" {
+				t.Fatal("copied headers alias the source")
+			}
+		})
+	}
 }
