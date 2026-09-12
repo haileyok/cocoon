@@ -5,6 +5,13 @@
 
 Cocoon is a PDS implementation in Go. It is highly experimental, and is not ready for any production use.
 
+## For agents
+
+If you are an autonomous agent setting up or operating a Cocoon PDS headlessly
+(deploy → invite → createAccount → tokens → OAuth → management, no browser
+required), follow [docs/agent-setup.md](docs/agent-setup.md). Human-facing
+setup continues below.
+
 ## Quick Start with Docker Compose
 
 ### Prerequisites

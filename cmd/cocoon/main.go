@@ -29,7 +29,17 @@ import (
 var Version = "dev"
 
 func main() {
-	app := &cli.App{
+	app := newApp(Version)
+
+	if err := app.Run(os.Args); err != nil {
+		fmt.Printf("Error: %v\n", err)
+	}
+}
+
+// newApp constructs the cocoon cli.App. It is package-level so tests can drive
+// the CLI in-process with a custom Writer.
+func newApp(version string) *cli.App {
+	return &cli.App{
 		Name:  "cocoon",
 		Usage: "An atproto PDS",
 		Flags: []cli.Flag{
@@ -176,11 +186,7 @@ func main() {
 			runGcRepos,
 		},
 		ErrWriter: os.Stdout,
-		Version:   Version,
-	}
-
-	if err := app.Run(os.Args); err != nil {
-		fmt.Printf("Error: %v\n", err)
+		Version:   version,
 	}
 }
 
@@ -344,6 +350,10 @@ var runCreateInviteCode = &cli.Command{
 			Usage: "number of times the invite code can be used",
 			Value: 1,
 		},
+		&cli.BoolFlag{
+			Name:  "json",
+			Usage: "output machine-parseable JSON instead of prose",
+		},
 	},
 	Action: func(cmd *cli.Context) error {
 		db, err := newDb(cmd)
@@ -369,7 +379,15 @@ var runCreateInviteCode = &cli.Command{
 			return err
 		}
 
-		fmt.Printf("New invite code created with %d uses: %s\n", uses, code)
+		if cmd.Bool("json") {
+			return json.NewEncoder(cmd.App.Writer).Encode(struct {
+				Code string `json:"code"`
+				Uses int    `json:"uses"`
+				For  string `json:"for"`
+			}{Code: code, Uses: uses, For: cmd.String("for")})
+		}
+
+		fmt.Fprintf(cmd.App.Writer, "New invite code created with %d uses: %s\n", uses, code)
 
 		return nil
 	},
@@ -382,6 +400,10 @@ var runResetPassword = &cli.Command{
 		&cli.StringFlag{
 			Name:  "did",
 			Usage: "did of the user who's password you want to reset",
+		},
+		&cli.BoolFlag{
+			Name:  "json",
+			Usage: "output machine-parseable JSON instead of prose",
 		},
 	},
 	Action: func(cmd *cli.Context) error {
@@ -406,7 +428,14 @@ var runResetPassword = &cli.Command{
 			return err
 		}
 
-		fmt.Printf("Password for %s has been reset to: %s", did.String(), newPass)
+		if cmd.Bool("json") {
+			return json.NewEncoder(cmd.App.Writer).Encode(struct {
+				Did      string `json:"did"`
+				Password string `json:"password"`
+			}{Did: did.String(), Password: newPass})
+		}
+
+		fmt.Fprintf(cmd.App.Writer, "Password for %s has been reset to: %s", did.String(), newPass)
 
 		return nil
 	},
@@ -429,6 +458,10 @@ var runRecommitRepos = &cli.Command{
 			Name:  "confirm",
 			Usage: "actually apply changes (otherwise dry-run)",
 		},
+		&cli.BoolFlag{
+			Name:  "json",
+			Usage: "output machine-parseable JSON instead of prose",
+		},
 	},
 	Action: func(cmd *cli.Context) error {
 		dids := cmd.StringSlice("dids")
@@ -447,13 +480,15 @@ var runRecommitRepos = &cli.Command{
 		}
 
 		dryRun := !cmd.Bool("confirm")
+		// Banners and the migration logger go to real stderr so stdout stays
+		// pure (JSON or prose) even when the app's ErrWriter is overridden.
 		if dryRun {
-			fmt.Println("DRY RUN — no changes will be made. Re-run with --confirm to apply.")
+			fmt.Fprintln(os.Stderr, "DRY RUN — no changes will be made. Re-run with --confirm to apply.")
 		} else {
-			fmt.Println("APPLYING changes. Ensure the PDS is STOPPED to avoid firehose sequence collisions.")
+			fmt.Fprintln(os.Stderr, "APPLYING changes. Ensure the PDS is STOPPED to avoid firehose sequence collisions.")
 		}
 
-		logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 		results, err := server.RunRecommitMigration(context.Background(), gdb, server.RecommitOptions{
 			Dids:              dids,
 			DryRun:            dryRun,
@@ -464,22 +499,60 @@ var runRecommitRepos = &cli.Command{
 			return err
 		}
 
+		if cmd.Bool("json") {
+			// Serialize errors as strings so the whole array is valid JSON.
+			type jsonResult struct {
+				Did         string `json:"did"`
+				OldRev      string `json:"oldRev"`
+				NewRev      string `json:"newRev"`
+				OldHead     string `json:"oldHead"`
+				NewHead     string `json:"newHead"`
+				Recommitted bool   `json:"recommitted"`
+				Err         string `json:"err,omitempty"`
+			}
+			out := make([]jsonResult, 0, len(results))
+			var failures int
+			for _, r := range results {
+				errStr := ""
+				if r.Err != nil {
+					errStr = r.Err.Error()
+					failures++
+				}
+				out = append(out, jsonResult{
+					Did:         r.Did,
+					OldRev:      r.OldRev,
+					NewRev:      r.NewRev,
+					OldHead:     r.OldHead,
+					NewHead:     r.NewHead,
+					Recommitted: r.Recommitted,
+					Err:         errStr,
+				})
+			}
+			if err := json.NewEncoder(cmd.App.Writer).Encode(out); err != nil {
+				return err
+			}
+			if failures > 0 {
+				return fmt.Errorf("%d repo(s) failed", failures)
+			}
+			return nil
+		}
+
 		var failures int
 		for _, r := range results {
 			if r.Err != nil {
 				failures++
-				fmt.Printf("  %s: ERROR: %v\n", r.Did, r.Err)
+				fmt.Fprintf(cmd.App.Writer, "  %s: ERROR: %v\n", r.Did, r.Err)
 				continue
 			}
 			switch {
 			case dryRun && r.Recommitted:
-				fmt.Printf("  %s: would recommit (rev %q -> new TID), then emit #sync/#identity/#account\n", r.Did, r.OldRev)
+				fmt.Fprintf(cmd.App.Writer, "  %s: would recommit (rev %q -> new TID), then emit #sync/#identity/#account\n", r.Did, r.OldRev)
 			case dryRun:
-				fmt.Printf("  %s: rev %q already valid; would emit #sync/#identity/#account only\n", r.Did, r.OldRev)
+				fmt.Fprintf(cmd.App.Writer, "  %s: rev %q already valid; would emit #sync/#identity/#account only\n", r.Did, r.OldRev)
 			case r.Recommitted:
-				fmt.Printf("  %s: recommitted rev %q -> %q, head %s -> %s; emitted #sync/#identity/#account\n", r.Did, r.OldRev, r.NewRev, r.OldHead, r.NewHead)
+				fmt.Fprintf(cmd.App.Writer, "  %s: recommitted rev %q -> %q, head %s -> %s; emitted #sync/#identity/#account\n", r.Did, r.OldRev, r.NewRev, r.OldHead, r.NewHead)
 			default:
-				fmt.Printf("  %s: rev %q already valid; emitted #sync/#identity/#account\n", r.Did, r.OldRev)
+				fmt.Fprintf(cmd.App.Writer, "  %s: rev %q already valid; emitted #sync/#identity/#account\n", r.Did, r.OldRev)
 			}
 		}
 		if failures > 0 {

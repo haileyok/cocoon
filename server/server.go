@@ -596,6 +596,9 @@ func (s *Server) addRoutes() {
 	// admin routes
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCode", s.handleCreateInviteCode, s.handleAdminMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCodes", s.handleCreateInviteCodes, s.handleAdminMiddleware)
+	s.echo.POST("/admin/oauth/authorize", s.handleAdminOauthAuthorize, s.handleAdminMiddleware)
+	s.echo.GET("/admin/accounts", s.handleAdminAccounts, s.handleAdminMiddleware)
+	s.echo.GET("/admin/account", s.handleAdminAccount, s.handleAdminMiddleware)
 
 	// are there any routes that we should be allowing without auth? i dont think so but idk
 	s.echo.GET("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
