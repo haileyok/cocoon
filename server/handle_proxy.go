@@ -82,7 +82,13 @@ func (s *Server) handleProxy(e echo.Context) error {
 		return err
 	}
 
-	req.Header = e.Request().Header.Clone()
+	copyProxyHeaders(req.Header, e.Request().Header, true)
+	if req.Header.Get("Accept-Encoding") == "" {
+		req.Header.Set("Accept-Encoding", "identity")
+	}
+	if body != nil {
+		req.ContentLength = e.Request().ContentLength
+	}
 
 	if isAuthed {
 		// this is a little dumb. i should probably figure out a better way to do this, and use
@@ -171,9 +177,41 @@ func (s *Server) handleProxy(e echo.Context) error {
 	}
 	defer resp.Body.Close()
 
-	for k, v := range resp.Header {
-		e.Response().Header().Set(k, strings.Join(v, ","))
-	}
+	copyProxyHeaders(e.Response().Header(), resp.Header, false)
 
 	return e.Stream(resp.StatusCode, e.Response().Header().Get("content-type"), resp.Body)
+}
+
+// Forward only representation and ATProto protocol headers across the proxy boundary.
+func copyProxyHeaders(dst, src http.Header, request bool) {
+	hopByHop := make(map[string]bool)
+	for name, values := range src {
+		if strings.EqualFold(name, "Connection") {
+			for _, value := range values {
+				for _, token := range strings.Split(value, ",") {
+					hopByHop[strings.ToLower(strings.TrimSpace(token))] = true
+				}
+			}
+		}
+	}
+	for name, values := range src {
+		name = strings.ToLower(name)
+		if hopByHop[name] {
+			continue
+		}
+		allowed := false
+		switch name {
+		case "content-type", "content-encoding", "content-length":
+			allowed = true
+		case "accept-encoding", "accept-language", "atproto-accept-labelers", "x-bsky-topics":
+			allowed = request
+		case "content-language", "atproto-repo-rev", "atproto-content-labelers", "retry-after":
+			allowed = !request
+		default:
+			allowed = request && strings.HasPrefix(name, "x-atproto-")
+		}
+		if allowed {
+			dst[http.CanonicalHeaderKey(name)] = append([]string(nil), values...)
+		}
+	}
 }
