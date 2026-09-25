@@ -26,10 +26,9 @@ func (s *Server) handleServerCheckAccountStatus(e echo.Context) error {
 	urepo := e.Get("repo").(*models.RepoActor)
 
 	resp := ComAtprotoServerCheckAccountStatusResponse{
-		Activated:     true, // TODO: should allow for deactivation etc.
-		ValidDid:      true, // TODO: should probably verify?
-		RepoRev:       urepo.Rev,
-		ImportedBlobs: 0, // TODO: ???
+		Activated: urepo.Repo.Active(),
+		ValidDid:  true, // TODO: should probably verify?
+		RepoRev:   urepo.Rev,
 	}
 
 	rootcid, err := cid.Cast(urepo.Root)
@@ -50,19 +49,26 @@ func (s *Server) handleServerCheckAccountStatus(e echo.Context) error {
 	}
 	resp.RepoBlocks = blockCtResp.Ct
 
-	var recCtResp CountResp
-	if err := s.db.Raw(ctx, "SELECT COUNT(*) AS ct FROM records WHERE did = ?", nil, urepo.Repo.Did).Scan(&recCtResp).Error; err != nil {
-		logger.Error("error getting record count", "error", err)
+	var records []models.Record
+	if err := s.db.Raw(ctx, "SELECT value FROM records WHERE did = ?", nil, urepo.Repo.Did).Scan(&records).Error; err != nil {
+		logger.Error("error getting records", "error", err)
 		return helpers.ServerError(e, nil)
 	}
-	resp.IndexedRecords = recCtResp.Ct
+	refs, err := countBlobRefs(records)
+	if err != nil {
+		logger.Error("error counting blob references", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+	resp.IndexedRecords = int64(len(records))
+	resp.ExpectedBlobs = int64(len(refs))
 
 	var blobCtResp CountResp
-	if err := s.db.Raw(ctx, "SELECT COUNT(*) AS ct FROM blobs WHERE did = ?", nil, urepo.Repo.Did).Scan(&blobCtResp).Error; err != nil {
-		logger.Error("error getting record count", "error", err)
+	// Uploads publish their CID only once complete; retries may create duplicate rows.
+	if err := s.db.Raw(ctx, "SELECT COUNT(DISTINCT cid) AS ct FROM blobs WHERE did = ? AND LENGTH(cid) > 0", nil, urepo.Repo.Did).Scan(&blobCtResp).Error; err != nil {
+		logger.Error("error getting blob count", "error", err)
 		return helpers.ServerError(e, nil)
 	}
-	resp.ExpectedBlobs = blobCtResp.Ct
+	resp.ImportedBlobs = blobCtResp.Ct
 
 	return e.JSON(200, resp)
 }
