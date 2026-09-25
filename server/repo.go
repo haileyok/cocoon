@@ -629,43 +629,9 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		}
 	}
 
-	// blob blob blob blob blob :3
-	var blobs []lexutil.LexLink
-	for _, entry := range entries {
-		var cids []cid.Cid
-		// whenever there is cid present, we know it's a create (dumb)
-		if entry.Cid != "" {
-			if err := rm.s.db.Create(ctx, &entry, []clause.Expression{clause.OnConflict{
-				Columns:   []clause.Column{{Name: "did"}, {Name: "nsid"}, {Name: "rkey"}},
-				UpdateAll: true,
-			}}).Error; err != nil {
-				return nil, err
-			}
-
-			// increment the given blob refs, yay
-			cids, err = rm.incrementBlobRefs(ctx, urepo, entry.Value)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			// as i noted above this is dumb. but we delete whenever the cid is nil. it works solely becaue the pkey
-			// is did + collection + rkey. i still really want to separate that out, or use a different type to make
-			// this less confusing/easy to read. alas, its 2 am and yea no
-			if err := rm.s.db.Delete(ctx, &entry, nil).Error; err != nil {
-				return nil, err
-			}
-
-			// TODO:
-			cids, err = rm.decrementBlobRefs(ctx, urepo, entry.Value)
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		// add all the relevant blobs to the blobs list of blobs. blob ^.^
-		for _, c := range cids {
-			blobs = append(blobs, lexutil.LexLink(c))
-		}
+	blobs, err := rm.indexRecords(ctx, urepo.Did, entries)
+	if err != nil {
+		return nil, err
 	}
 
 	// NOTE: using the request ctx seems a bit suss here, so using a background context. i'm not sure if this
@@ -816,59 +782,10 @@ func collectPathNodeCIDs(n *mst.Node, key []byte) []cid.Cid {
 	return cids
 }
 
-func (rm *RepoMan) incrementBlobRefs(ctx context.Context, urepo models.Repo, cbor []byte) ([]cid.Cid, error) {
-	cids, err := getBlobCidsFromCbor(cbor)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, c := range cids {
-		if err := rm.db.Exec(ctx, "UPDATE blobs SET ref_count = ref_count + 1 WHERE did = ? AND cid = ?", nil, urepo.Did, c.Bytes()).Error; err != nil {
-			return nil, err
-		}
-	}
-
-	return cids, nil
-}
-
-func (rm *RepoMan) decrementBlobRefs(ctx context.Context, urepo models.Repo, cbor []byte) ([]cid.Cid, error) {
-	cids, err := getBlobCidsFromCbor(cbor)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, c := range cids {
-		var res struct {
-			ID    uint
-			Count int
-		}
-		if err := rm.db.Raw(ctx, "UPDATE blobs SET ref_count = ref_count - 1 WHERE did = ? AND cid = ? RETURNING id, ref_count", nil, urepo.Did, c.Bytes()).Scan(&res).Error; err != nil {
-			return nil, err
-		}
-
-		// TODO: this does _not_ handle deletions of blobs that are on s3 storage!!!! we need to get the blob, see what
-		// storage it is in, and clean up s3!!!!
-		if res.Count == 0 {
-			if err := rm.db.Exec(ctx, "DELETE FROM blobs WHERE id = ?", nil, res.ID).Error; err != nil {
-				return nil, err
-			}
-			if err := rm.db.Exec(ctx, "DELETE FROM blob_parts WHERE blob_id = ?", nil, res.ID).Error; err != nil {
-				return nil, err
-			}
-		}
-	}
-
-	return cids, nil
-}
-
-// to be honest, we could just store both the cbor and non-cbor in []entries above to avoid an additional
-// unmarshal here. this will work for now though
+// Each record contributes at most one reference to a given blob.
 func getBlobCidsFromCbor(cbor []byte) ([]cid.Cid, error) {
 	var cids []cid.Cid
 
-	// A deleted record whose prior value isn't on hand (e.g. a create+delete of
-	// the same rkey in one batch, where the create isn't yet persisted) has no
-	// known blob references to account for.
 	if len(cbor) == 0 {
 		return nil, nil
 	}
@@ -878,34 +795,114 @@ func getBlobCidsFromCbor(cbor []byte) ([]cid.Cid, error) {
 		return nil, fmt.Errorf("error unmarshaling cbor: %w", err)
 	}
 
-	var deepiter func(any) error
-	deepiter = func(item any) error {
-		switch val := item.(type) {
-		case map[string]any:
-			if val["$type"] == "blob" {
-				if ref, ok := val["ref"].(string); ok {
-					c, err := cid.Parse(ref)
-					if err != nil {
-						return err
-					}
-					cids = append(cids, c)
-				}
-				for _, v := range val {
-					return deepiter(v)
-				}
-			}
-		case []any:
-			for _, v := range val {
-				deepiter(v)
-			}
+	seen := make(map[cid.Cid]bool)
+	for _, blob := range atdata.ExtractBlobs(decoded) {
+		c := cid.Cid(blob.Ref)
+		if !seen[c] {
+			cids = append(cids, c)
+			seen[c] = true
 		}
-
-		return nil
-	}
-
-	if err := deepiter(decoded); err != nil {
-		return nil, err
 	}
 
 	return cids, nil
+}
+
+func countBlobRefs(records []models.Record) (map[cid.Cid]int, error) {
+	refs := make(map[cid.Cid]int)
+	for _, record := range records {
+		cids, err := getBlobCidsFromCbor(record.Value)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range cids {
+			refs[c]++
+		}
+	}
+	return refs, nil
+}
+
+func (rm *RepoMan) indexRecords(ctx context.Context, did string, entries []models.Record) ([]lexutil.LexLink, error) {
+	var blobs []lexutil.LexLink
+	err := rm.db.Transaction(ctx, func(tx *db.DB) error {
+		if tx.Client().Dialector.Name() == "sqlite" {
+			// Reserve write intent before reading a WAL snapshot; no rows change.
+			if err := tx.Exec(ctx, "UPDATE records SET rkey = rkey WHERE 1 = 0", nil).Error; err != nil {
+				return err
+			}
+		}
+		deltas := make(map[cid.Cid]int)
+		for _, entry := range entries {
+			var old models.Record
+			if err := tx.Raw(ctx, "SELECT value FROM records WHERE did = ? AND nsid = ? AND rkey = ?", nil, did, entry.Nsid, entry.Rkey).Scan(&old).Error; err != nil {
+				return err
+			}
+			previous, err := getBlobCidsFromCbor(old.Value)
+			if err != nil {
+				return err
+			}
+			for _, c := range previous {
+				deltas[c]--
+			}
+			if entry.Cid == "" {
+				if err := tx.Delete(ctx, &entry, nil).Error; err != nil {
+					return err
+				}
+				for _, c := range previous {
+					blobs = append(blobs, lexutil.LexLink(c))
+				}
+				continue
+			}
+			if err := tx.Create(ctx, &entry, []clause.Expression{clause.OnConflict{
+				Columns: []clause.Column{{Name: "did"}, {Name: "nsid"}, {Name: "rkey"}}, UpdateAll: true,
+			}}).Error; err != nil {
+				return err
+			}
+			current, err := getBlobCidsFromCbor(entry.Value)
+			if err != nil {
+				return err
+			}
+			for _, c := range current {
+				deltas[c]++
+				blobs = append(blobs, lexutil.LexLink(c))
+			}
+		}
+		// Apply the batch's net change before removing any unused payloads.
+		var verifiedRefs map[cid.Cid]int
+		for c, delta := range deltas {
+			if err := tx.Exec(ctx, "UPDATE blobs SET ref_count = ref_count + ? WHERE did = ? AND cid = ?", nil, delta, did, c.Bytes()).Error; err != nil {
+				return err
+			}
+			var unused int64
+			if err := tx.Raw(ctx, "SELECT COUNT(*) FROM blobs WHERE did = ? AND cid = ? AND ref_count <= 0", nil, did, c.Bytes()).Scan(&unused).Error; err != nil {
+				return err
+			}
+			if unused == 0 {
+				continue
+			}
+			// Older versions left inaccurate counts; verify before deleting data.
+			if verifiedRefs == nil {
+				var records []models.Record
+				if err := tx.Client().WithContext(ctx).Select("value").Where("did = ?", did).Find(&records).Error; err != nil {
+					return err
+				}
+				var err error
+				verifiedRefs, err = countBlobRefs(records)
+				if err != nil {
+					return err
+				}
+			}
+			if err := tx.Exec(ctx, "UPDATE blobs SET ref_count = ? WHERE did = ? AND cid = ?", nil, verifiedRefs[c], did, c.Bytes()).Error; err != nil {
+				return err
+			}
+			if err := tx.Exec(ctx, "DELETE FROM blob_parts WHERE blob_id IN (SELECT id FROM blobs WHERE did = ? AND cid = ? AND ref_count = 0)", nil, did, c.Bytes()).Error; err != nil {
+				return err
+			}
+			// S3 object cleanup remains separate from database reference accounting.
+			if err := tx.Exec(ctx, "DELETE FROM blobs WHERE did = ? AND cid = ? AND ref_count = 0", nil, did, c.Bytes()).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return blobs, err
 }

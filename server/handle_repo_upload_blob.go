@@ -134,8 +134,19 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 		}
 	}
 
-	if err := s.db.Exec(ctx, "UPDATE blobs SET cid = ? WHERE id = ?", nil, c.Bytes(), blob.ID).Error; err != nil {
-		// there should probably be somme handling here if this fails...
+	unlock := s.lockRepoWrite(urepo.Repo.Did)
+	defer unlock()
+	var records []models.Record
+	if err := s.db.Client().WithContext(ctx).Select("value").Where("did = ?", urepo.Repo.Did).Find(&records).Error; err != nil {
+		logger.Error("error reading blob references", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+	refs, err := countBlobRefs(records)
+	if err != nil {
+		logger.Error("error decoding blob references", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+	if err := s.db.Exec(ctx, "UPDATE blobs SET cid = ?, ref_count = ? WHERE id = ?", nil, c.Bytes(), refs[c], blob.ID).Error; err != nil {
 		logger.Error("error updating blob", "error", err)
 		return helpers.ServerError(e, nil)
 	}

@@ -54,6 +54,10 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		logger.Error("invalid repository import", "error", err)
 		return helpers.InputError(e, nil)
 	}
+	refs, err := countBlobRefs(records)
+	if err != nil {
+		return helpers.InputError(e, nil)
+	}
 
 	unlock := s.lockRepoWrite(urepo.Repo.Did)
 	defer unlock()
@@ -73,6 +77,14 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 		}
 		if len(records) > 0 {
 			if err := tx.Client().WithContext(ctx).CreateInBatches(&records, 100).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Exec(ctx, "UPDATE blobs SET ref_count = 0 WHERE did = ?", nil, urepo.Repo.Did).Error; err != nil {
+			return err
+		}
+		for c, count := range refs {
+			if err := tx.Exec(ctx, "UPDATE blobs SET ref_count = ? WHERE did = ? AND cid = ?", nil, count, urepo.Repo.Did, c.Bytes()).Error; err != nil {
 				return err
 			}
 		}
