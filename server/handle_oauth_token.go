@@ -20,6 +20,7 @@ import (
 	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/haileyok/cocoon/oauth/scopes"
 	"github.com/labstack/echo/v4"
+	"gorm.io/gorm"
 )
 
 type OauthTokenRequest struct {
@@ -95,7 +96,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.ServerError(e, nil)
 		}
 		if authReq.Sub == nil || authReq.Code == nil {
-			return helpers.InvalidTokenError(e)
+			return helpers.InvalidGrantError(e, "Invalid authorization code")
 		}
 
 		if req.RedirectURI == nil || *req.RedirectURI != authReq.Parameters.RedirectURI {
@@ -123,7 +124,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr("unable to find actor"))
 		}
 		if authReq.SessionVersion != repo.SessionVersion {
-			return helpers.InvalidTokenError(e)
+			return helpers.InvalidGrantError(e, "Session revoked")
 		}
 
 		now := time.Now()
@@ -201,9 +202,23 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			logger.Error("error finding oauth token by refresh token", "error", err, "refresh_token", req.RefreshToken)
 			return helpers.ServerError(e, nil)
 		}
+		// Scan leaves oauthToken zero-valued when no row matches: the refresh
+		// token was never issued, or has already been rotated or revoked.
+		if oauthToken.RefreshToken == "" {
+			return helpers.InvalidGrantError(e, "Invalid refresh token")
+		}
 		repo, err := s.getRepoActorByDid(ctx, oauthToken.Sub)
-		if err != nil || oauthToken.SessionVersion != repo.SessionVersion {
-			return helpers.InvalidTokenError(e)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return helpers.InvalidGrantError(e, "Account not found")
+			}
+			// A transient lookup failure must not be reported as invalid_grant:
+			// clients treat that as terminal and discard the session.
+			logger.Error("error finding actor for refresh token", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+		if oauthToken.SessionVersion != repo.SessionVersion {
+			return helpers.InvalidGrantError(e, "Session revoked")
 		}
 
 		if client.Metadata.ClientID != oauthToken.ClientId {
@@ -221,11 +236,11 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		ageRes := oauth.GetSessionAgeFromToken(oauthToken)
 
 		if ageRes.SessionExpired {
-			return helpers.InputError(e, to.StringPtr("Session expired"))
+			return helpers.InvalidGrantError(e, "Session expired")
 		}
 
 		if ageRes.RefreshExpired {
-			return helpers.InputError(e, to.StringPtr("Refresh token expired"))
+			return helpers.InvalidGrantError(e, "Refresh token expired")
 		}
 
 		if client.Metadata.DpopBoundAccessTokens && oauthToken.Parameters.DpopJkt == nil {
