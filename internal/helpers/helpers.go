@@ -52,6 +52,18 @@ func InvalidTokenError(e echo.Context) error {
 	return InputError(e, to.StringPtr("InvalidToken"))
 }
 
+// InvalidGrantError responds with the RFC 6749 §5.2 invalid_grant error from
+// the OAuth token endpoint: the authorization code or refresh token is
+// invalid, expired, revoked, or otherwise unusable. OAuth clients treat this
+// code as terminal and send the user back through authorization, so only use
+// it for definitive rejections — never for transient server failures.
+func InvalidGrantError(e echo.Context, description string) error {
+	return e.JSON(400, map[string]string{
+		"error":             "invalid_grant",
+		"error_description": description,
+	})
+}
+
 // InsufficientScopeError responds 403 per RFC 6750 §3.1 when the session's
 // granted scopes do not cover the requested operation. requiredScope is the
 // scope that would have permitted it (e.g. "repo:app.bsky.feed.post?action=create").
