@@ -135,7 +135,7 @@ type Args struct {
 	FallbackProxy     string
 
 	// PlcURL is the PLC directory used for creating, updating, and resolving
-	// did:plc identities. Empty defaults to https://plc.directory.
+	// did:plc identities. Empty defaults to identity.DefaultPlcURL.
 	PlcURL string
 }
 

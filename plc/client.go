@@ -34,7 +34,7 @@ type ClientArgs struct {
 
 func NewClient(args *ClientArgs) (*Client, error) {
 	if args.Service == "" {
-		args.Service = "https://plc.directory"
+		args.Service = identity.DefaultPlcURL
 	}
 
 	if args.H == nil {

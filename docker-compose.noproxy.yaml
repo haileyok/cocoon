@@ -82,7 +82,7 @@ services:
 
       # Optional: Fallback proxy
       COCOON_FALLBACK_PROXY: ${COCOON_FALLBACK_PROXY:-}
-      COCOON_PLC_URL: ${COCOON_PLC_URL:-https://plc.directory}
+      COCOON_PLC_URL: ${COCOON_PLC_URL:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/xrpc/_health"]

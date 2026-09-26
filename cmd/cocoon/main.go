@@ -15,6 +15,7 @@ import (
 	"github.com/bluesky-social/go-util/pkg/telemetry"
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/syntax"
+	"github.com/haileyok/cocoon/identity"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/server"
 	_ "github.com/joho/godotenv/autoload"
@@ -167,7 +168,7 @@ func main() {
 				Name:    "plc-url",
 				Usage:   "PLC directory used to create, update, and resolve did:plc identities (e.g. a local PLC directory for testing)",
 				EnvVars: []string{"COCOON_PLC_URL"},
-				Value:   "https://plc.directory",
+				Value:   identity.DefaultPlcURL,
 			},
 			telemetry.CLIFlagDebug,
 			telemetry.CLIFlagMetricsListenAddress,
