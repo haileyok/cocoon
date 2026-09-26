@@ -108,6 +108,7 @@ func TestCreateAccountStaging(t *testing.T) {
 				if len(types) != 0 {
 					t.Errorf("migration creation emitted events: %v", types)
 				}
+				attachStatusDID(t, s, &testAccount{Did: did, SigningKey: urepo.SigningKey}, did, "valid")
 				c, rec := newRequestContext(http.MethodPost, "/xrpc/com.atproto.server.activateAccount", "{}", map[string]string{"authorization": "Bearer " + response.AccessJwt})
 				handler := s.handleLegacySessionMiddleware(s.handleOauthSessionMiddleware(s.handleServerActivateAccount))
 				if err := handler(c); err != nil || rec.Code != 200 {
