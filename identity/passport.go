@@ -17,20 +17,40 @@ type BackingCache interface {
 }
 
 type Passport struct {
-	h  *http.Client
-	bc BackingCache
-	mu sync.RWMutex
+	h      *http.Client
+	bc     BackingCache
+	plcURL string
+	mu     sync.RWMutex
 }
 
-func NewPassport(h *http.Client, bc BackingCache) *Passport {
+// PassportOption configures optional Passport behavior.
+type PassportOption func(*Passport)
+
+// WithPlcURL sets the PLC directory used to resolve did:plc documents.
+// An empty value keeps DefaultPlcURL.
+func WithPlcURL(plcURL string) PassportOption {
+	return func(p *Passport) {
+		if plcURL != "" {
+			p.plcURL = plcURL
+		}
+	}
+}
+
+func NewPassport(h *http.Client, bc BackingCache, opts ...PassportOption) *Passport {
 	if h == nil {
 		h = http.DefaultClient
 	}
 
-	return &Passport{
-		h:  h,
-		bc: bc,
+	p := &Passport{
+		h:      h,
+		bc:     bc,
+		plcURL: DefaultPlcURL,
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+
+	return p
 }
 
 func (p *Passport) FetchDoc(ctx context.Context, did string) (*DidDoc, error) {
@@ -46,7 +66,7 @@ func (p *Passport) FetchDoc(ctx context.Context, did string) (*DidDoc, error) {
 		}
 	}
 
-	doc, err := FetchDidDoc(ctx, p.h, did)
+	doc, err := FetchDidDoc(ctx, p.h, p.plcURL, did)
 	if err != nil {
 		return nil, err
 	}
