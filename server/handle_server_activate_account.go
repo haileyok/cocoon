@@ -31,6 +31,10 @@ func (s *Server) handleServerActivateAccount(e echo.Context) error {
 
 	urepo := e.Get("repo").(*models.RepoActor)
 
+	if !s.validAccountDID(ctx, urepo) {
+		return helpers.InputError(e, to.StringPtr("DID configuration could not be verified for this server"))
+	}
+
 	if err := s.db.Exec(ctx, "UPDATE repos SET deactivated = ? WHERE did = ?", nil, false, urepo.Repo.Did).Error; err != nil {
 		logger.Error("error updating account status to deactivated", "error", err)
 		return helpers.ServerError(e, nil)

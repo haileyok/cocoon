@@ -152,6 +152,7 @@ func TestActivateAccountEmitsRepoSync(t *testing.T) {
 	s := newTestServer(t)
 	s.evtman = newTestEvtman(t)
 	acct := s.createTestAccount(t, "bob.pds.test")
+	attachStatusDID(t, s, acct, acct.Did, "valid")
 	_, rev := s.seedGenesisRepo(t, acct.Did, acct.SigningKey)
 
 	ctx := context.Background()
