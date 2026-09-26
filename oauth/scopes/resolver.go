@@ -46,6 +46,21 @@ func NewIndigoResolver() *IndigoResolver {
 	return NewIndigoResolverWithDirectory(identity.DefaultDirectory())
 }
 
+// NewIndigoResolverWithPLCURL builds a resolver backed by indigo's default
+// identity directory configuration, but resolving did:plc identities against
+// plcURL. An empty plcURL uses indigo's default PLC directory.
+func NewIndigoResolverWithPLCURL(plcURL string) *IndigoResolver {
+	dir := identity.DefaultDirectory()
+	if plcURL != "" {
+		if cache, ok := dir.(*identity.CacheDirectory); ok {
+			if base, ok := cache.Inner.(*identity.BaseDirectory); ok {
+				base.PLCURL = plcURL
+			}
+		}
+	}
+	return NewIndigoResolverWithDirectory(dir)
+}
+
 // NewIndigoResolverWithDirectory builds a resolver using the supplied directory.
 func NewIndigoResolverWithDirectory(dir directory) *IndigoResolver {
 	return &IndigoResolver{

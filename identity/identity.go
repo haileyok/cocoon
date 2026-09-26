@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
@@ -89,9 +90,48 @@ func ResolveHandle(ctx context.Context, cli *http.Client, handle string) (string
 	return "", fmt.Errorf("handle could not be resolved")
 }
 
-func DidToDocUrl(did string) (string, error) {
+// DefaultPlcURL is the public PLC directory used when no override is configured.
+const DefaultPlcURL = "https://plc.directory"
+
+// NormalizePlcURL validates a PLC directory base URL and returns it without a
+// trailing slash. An empty value yields DefaultPlcURL. Plain http is accepted
+// so a local PLC directory can be used for testing.
+func NormalizePlcURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return DefaultPlcURL, nil
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid plc url %q: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("invalid plc url %q: scheme must be http or https", raw)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("invalid plc url %q: missing host", raw)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("invalid plc url %q: must not include a query or fragment", raw)
+	}
+
+	return strings.TrimRight(raw, "/"), nil
+}
+
+// plcBase returns plcURL without a trailing slash, or DefaultPlcURL if empty.
+func plcBase(plcURL string) string {
+	if plcURL == "" {
+		return DefaultPlcURL
+	}
+	return strings.TrimRight(plcURL, "/")
+}
+
+// DidToDocUrl returns the URL of the DID document for did. did:plc documents
+// are fetched from plcURL (DefaultPlcURL when empty).
+func DidToDocUrl(plcURL, did string) (string, error) {
 	if strings.HasPrefix(did, "did:plc:") {
-		return fmt.Sprintf("https://plc.directory/%s", did), nil
+		return fmt.Sprintf("%s/%s", plcBase(plcURL), did), nil
 	} else if after, ok := strings.CutPrefix(did, "did:web:"); ok {
 		return fmt.Sprintf("https://%s/.well-known/did.json", after), nil
 	} else {
@@ -99,12 +139,12 @@ func DidToDocUrl(did string) (string, error) {
 	}
 }
 
-func FetchDidDoc(ctx context.Context, cli *http.Client, did string) (*DidDoc, error) {
+func FetchDidDoc(ctx context.Context, cli *http.Client, plcURL, did string) (*DidDoc, error) {
 	if cli == nil {
 		cli = util.RobustHTTPClient()
 	}
 
-	ustr, err := DidToDocUrl(did)
+	ustr, err := DidToDocUrl(plcURL, did)
 	if err != nil {
 		return nil, err
 	}
@@ -133,13 +173,12 @@ func FetchDidDoc(ctx context.Context, cli *http.Client, did string) (*DidDoc, er
 	return &diddoc, nil
 }
 
-func FetchDidData(ctx context.Context, cli *http.Client, did string) (*DidData, error) {
+func FetchDidData(ctx context.Context, cli *http.Client, plcURL, did string) (*DidData, error) {
 	if cli == nil {
 		cli = util.RobustHTTPClient()
 	}
 
-	var ustr string
-	ustr = fmt.Sprintf("https://plc.directory/%s/data", did)
+	ustr := fmt.Sprintf("%s/%s/data", plcBase(plcURL), did)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", ustr, nil)
 	if err != nil {
@@ -165,20 +204,19 @@ func FetchDidData(ctx context.Context, cli *http.Client, did string) (*DidData, 
 	return &diddata, nil
 }
 
-func FetchDidAuditLog(ctx context.Context, cli *http.Client, did string) (DidAuditLog, error) {
+func FetchDidAuditLog(ctx context.Context, cli *http.Client, plcURL, did string) (DidAuditLog, error) {
 	if cli == nil {
 		cli = util.RobustHTTPClient()
 	}
 
-	var ustr string
-	ustr = fmt.Sprintf("https://plc.directory/%s/log/audit", did)
+	ustr := fmt.Sprintf("%s/%s/log/audit", plcBase(plcURL), did)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", ustr, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cli.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -197,12 +235,12 @@ func FetchDidAuditLog(ctx context.Context, cli *http.Client, did string) (DidAud
 	return didlog, nil
 }
 
-func ResolveService(ctx context.Context, cli *http.Client, did string) (string, error) {
+func ResolveService(ctx context.Context, cli *http.Client, plcURL, did string) (string, error) {
 	if cli == nil {
 		cli = util.RobustHTTPClient()
 	}
 
-	diddoc, err := FetchDidDoc(ctx, cli, did)
+	diddoc, err := FetchDidDoc(ctx, cli, plcURL, did)
 	if err != nil {
 		return "", err
 	}

@@ -170,6 +170,16 @@ COCOON_S3_CDN_URL="https://cdn.example.com"
 
 > **Tip**: For Cloudflare R2, you can use the public bucket URL as the CDN URL. For AWS S3, you can use CloudFront or the S3 bucket URL directly if public access is enabled.
 
+#### PLC Directory
+
+Cocoon uses the public PLC directory (`https://plc.directory`) to create, update, and resolve `did:plc` identities. You can point it at a different directory, such as a local PLC instance for integration testing, so that test accounts are never registered with the real directory:
+
+```bash
+COCOON_PLC_URL="http://localhost:2582"
+```
+
+> **Warning**: Accounts created against a non-default PLC directory only exist in that directory and will not be resolvable by the wider network. Leave this unset for production deployments.
+
 #### Alpine based image
 
 The default image is based on Debian. You can use the Alpine-based image if you prefer.

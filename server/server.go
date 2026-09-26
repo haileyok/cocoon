@@ -133,6 +133,10 @@ type Args struct {
 
 	BlockstoreVariant BlockstoreVariant
 	FallbackProxy     string
+
+	// PlcURL is the PLC directory used for creating, updating, and resolving
+	// did:plc identities. Empty defaults to identity.DefaultPlcURL.
+	PlcURL string
 }
 
 type config struct {
@@ -293,6 +297,14 @@ func New(args *Args) (*Server, error) {
 		panic("SESSION SECRET WAS NOT SET. THIS IS REQUIRED. ")
 	}
 
+	plcURL, err := identity.NormalizePlcURL(args.PlcURL)
+	if err != nil {
+		return nil, err
+	}
+	if plcURL != identity.DefaultPlcURL {
+		logger.Warn("using non-default plc directory", "plc_url", plcURL)
+	}
+
 	e := echo.New()
 
 	e.Pre(middleware.RemoveTrailingSlash())
@@ -350,7 +362,6 @@ func New(args *Args) (*Server, error) {
 	}
 
 	var gdb *gorm.DB
-	var err error
 	switch dbType {
 	case "postgres":
 		if args.DatabaseURL == "" {
@@ -382,7 +393,7 @@ func New(args *Args) (*Server, error) {
 
 	plcClient, err := plc.NewClient(&plc.ClientArgs{
 		H:           h,
-		Service:     "https://plc.directory",
+		Service:     plcURL,
 		PdsHostname: args.Hostname,
 		RotationKey: rkbytes,
 	})
@@ -453,8 +464,8 @@ func New(args *Args) (*Server, error) {
 		},
 		evtman:        events.NewEventManager(evtPersister),
 		evtpersister:  evtPersister,
-		passport:      identity.NewPassport(h, identity.NewMemCache(10_000)),
-		scopeResolver: scopes.NewIndigoResolver(),
+		passport:      identity.NewPassport(h, identity.NewMemCache(10_000), identity.WithPlcURL(plcURL)),
+		scopeResolver: scopes.NewIndigoResolverWithPLCURL(plcURL),
 
 		dbName:   args.DbName,
 		dbType:   dbType,
