@@ -84,6 +84,11 @@ func browserSignin(t *testing.T, s *Server, account *testAccount, password strin
 }
 
 func TestPasswordRecoveryRevokesSessions(t *testing.T) {
+	t.Run("email", func(t *testing.T) { testPasswordRecoveryRevokesSessions(t, false) })
+	t.Run("administrative", func(t *testing.T) { testPasswordRecoveryRevokesSessions(t, true) })
+}
+
+func testPasswordRecoveryRevokesSessions(t *testing.T, administrative bool) {
 	s, account := recoveryServer(t)
 	ctx := context.Background()
 	repo, err := s.getRepoActorByDid(ctx, account.Did)
@@ -113,9 +118,20 @@ func TestPasswordRecoveryRevokesSessions(t *testing.T) {
 	}
 
 	resetCode := requestRecoveryCode(t, s, account)
-	w := resetWithCode(s, resetCode)
-	if w.Code != 200 {
-		t.Fatalf("logged-out reset: %d %s", w.Code, w.Body.String())
+	var w *httptest.ResponseRecorder
+	if administrative {
+		hash, err := bcrypt.GenerateFromPassword([]byte("new-recovery-password"), bcrypt.MinCost)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.db.ResetPassword(ctx, account.Did, string(hash), nil); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		w = resetWithCode(s, resetCode)
+		if w.Code != 200 {
+			t.Fatalf("logged-out reset: %d %s", w.Code, w.Body.String())
+		}
 	}
 	updated, err := s.getRepoActorByDid(ctx, account.Did)
 	if err != nil {

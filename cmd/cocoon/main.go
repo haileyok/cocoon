@@ -16,6 +16,7 @@ import (
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/haileyok/cocoon/identity"
+	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/server"
 	_ "github.com/joho/godotenv/autoload"
@@ -393,10 +394,15 @@ var runResetPassword = &cli.Command{
 		},
 	},
 	Action: func(cmd *cli.Context) error {
-		db, err := newDb(cmd)
+		database, err := newDb(cmd)
 		if err != nil {
 			return err
 		}
+		conn, err := database.DB()
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
 
 		didStr := cmd.String("did")
 		did, err := syntax.ParseDID(didStr)
@@ -410,11 +416,11 @@ var runResetPassword = &cli.Command{
 			return err
 		}
 
-		if err := db.Exec("UPDATE repos SET password = ? WHERE did = ?", hashed, did.String()).Error; err != nil {
+		if err := db.NewDB(database).ResetPassword(cmd.Context, did.String(), string(hashed), nil); err != nil {
 			return err
 		}
 
-		fmt.Printf("Password for %s has been reset to: %s", did.String(), newPass)
+		fmt.Fprintf(cmd.App.Writer, "Password for %s has been reset to: %s", did.String(), newPass)
 
 		return nil
 	},
