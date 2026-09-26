@@ -1,6 +1,11 @@
 package server
 
 import (
+	"context"
+	"slices"
+	"strings"
+
+	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/ipfs/go-cid"
@@ -27,7 +32,7 @@ func (s *Server) handleServerCheckAccountStatus(e echo.Context) error {
 
 	resp := ComAtprotoServerCheckAccountStatusResponse{
 		Activated: urepo.Repo.Active(),
-		ValidDid:  true, // TODO: should probably verify?
+		ValidDid:  s.validAccountDID(ctx, urepo),
 		RepoRev:   urepo.Rev,
 	}
 
@@ -71,4 +76,45 @@ func (s *Server) handleServerCheckAccountStatus(e echo.Context) error {
 	resp.ImportedBlobs = blobCtResp.Ct
 
 	return e.JSON(200, resp)
+}
+
+func (s *Server) validAccountDID(ctx context.Context, repo *models.RepoActor) bool {
+	key, err := atcrypto.ParsePrivateBytesK256(repo.SigningKey)
+	if err != nil {
+		return false
+	}
+	creds, err := s.plcClient.CreateDidCredentials(key, "", repo.Handle)
+	if err != nil {
+		return false
+	}
+	did := repo.Repo.Did
+	if strings.HasPrefix(did, "did:plc:") {
+		data, err := s.plcClient.GetData(ctx, did)
+		return err == nil && data.Did == did &&
+			data.Services["atproto_pds"] == creds.Services["atproto_pds"] &&
+			data.VerificationMethods["atproto"] == creds.VerificationMethods["atproto"] &&
+			slices.Contains(data.RotationKeys, creds.RotationKeys[0])
+	}
+	if !strings.HasPrefix(did, "did:web:") {
+		return false
+	}
+	// Migration checks must not use the pre-cutover document from cache.
+	doc, err := s.passport.FetchDoc(context.WithValue(ctx, "skip-cache", true), did)
+	if err != nil || doc.Id != did {
+		return false
+	}
+	var endpoint, signingKey string
+	for _, service := range doc.Service {
+		if (service.Id == "#atproto_pds" || service.Id == did+"#atproto_pds") && service.Type == "AtprotoPersonalDataServer" {
+			endpoint = service.ServiceEndpoint
+			break
+		}
+	}
+	for _, method := range doc.VerificationMethods {
+		if method.Id == "#atproto" || method.Id == did+"#atproto" {
+			signingKey = "did:key:" + method.PublicKeyMultibase
+			break
+		}
+	}
+	return endpoint == creds.Services["atproto_pds"].Endpoint && signingKey == creds.VerificationMethods["atproto"]
 }

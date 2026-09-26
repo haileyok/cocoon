@@ -54,6 +54,26 @@ func NewClient(args *ClientArgs) (*Client, error) {
 	}, nil
 }
 
+func (c *Client) GetData(ctx context.Context, did string) (*identity.DidData, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.service+"/"+url.PathEscape(did)+"/data", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.h.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetching PLC data: status %d", resp.StatusCode)
+	}
+	var data identity.DidData
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, err
+	}
+	return &data, nil
+}
+
 func (c *Client) CreateDID(sigkey *atcrypto.PrivateKeyK256, recovery string, handle string) (string, *Operation, error) {
 	creds, err := c.CreateDidCredentials(sigkey, recovery, handle)
 	if err != nil {
