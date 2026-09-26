@@ -196,6 +196,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		EmailVerificationCode: to.StringPtr(fmt.Sprintf("%s-%s", helpers.RandomVarchar(6), helpers.RandomVarchar(6))),
 		Password:              string(hashed),
 		SigningKey:            k.Bytes(),
+		Deactivated:           request.Did != nil,
 	}
 
 	if actor == nil {
@@ -226,17 +227,19 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	s.evtman.AddEvent(context.TODO(), &events.XRPCStreamEvent{
-		RepoIdentity: &atproto.SyncSubscribeRepos_Identity{
-			Did:    urepo.Did,
-			Handle: to.StringPtr(request.Handle),
-			Seq:    time.Now().UnixMicro(), // TODO: no
-			Time:   time.Now().Format(util.ISO8601),
-		},
-	})
+	if urepo.Active() {
+		s.evtman.AddEvent(context.TODO(), &events.XRPCStreamEvent{
+			RepoIdentity: &atproto.SyncSubscribeRepos_Identity{
+				Did:    urepo.Did,
+				Handle: to.StringPtr(request.Handle),
+				Seq:    time.Now().UnixMicro(), // TODO: no
+				Time:   time.Now().Format(util.ISO8601),
+			},
+		})
 
-	if err := s.emitRepoSync(context.TODO(), urepo.Did, rev, root); err != nil {
-		logger.Error("error emitting repo sync event", "error", err)
+		if err := s.emitRepoSync(context.TODO(), urepo.Did, rev, root); err != nil {
+			logger.Error("error emitting repo sync event", "error", err)
+		}
 	}
 
 	sess, err := s.createSession(ctx, &urepo)

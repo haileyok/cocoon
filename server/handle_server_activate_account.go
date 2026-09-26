@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/events"
 	"github.com/bluesky-social/indigo/util"
@@ -41,6 +42,14 @@ func (s *Server) handleServerActivateAccount(e echo.Context) error {
 			Did:    urepo.Repo.Did,
 			Status: nil,
 			Seq:    time.Now().UnixMicro(), // TODO: bad puppy
+			Time:   time.Now().Format(util.ISO8601),
+		},
+	})
+
+	s.evtman.AddEvent(ctx, &events.XRPCStreamEvent{
+		RepoIdentity: &atproto.SyncSubscribeRepos_Identity{
+			Did:    urepo.Repo.Did,
+			Handle: to.StringPtr(urepo.Handle),
 			Time:   time.Now().Format(util.ISO8601),
 		},
 	})
