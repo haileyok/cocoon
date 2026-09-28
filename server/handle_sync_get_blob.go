@@ -41,11 +41,8 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
-	status := urepo.Status()
-	if status != nil {
-		if *status == "deactivated" {
-			return helpers.InputError(e, to.StringPtr("RepoDeactivated"))
-		}
+	if !urepo.Active() && e.Get("inactiveRepoRead") != urepo.Repo.Did {
+		return helpers.InputError(e, to.StringPtr("RepoDeactivated"))
 	}
 
 	var blob models.Blob
