@@ -40,6 +40,51 @@ type Repo struct {
 	TwoFactorCode                  *string
 	TwoFactorCodeExpiresAt         *time.Time
 	TwoFactorType                  TwoFactorType `gorm:"default:none"`
+	// Failed second-factor attempts since the last success, and the time
+	// until which further attempts are refused once too many have failed.
+	TwoFactorFailedAttempts int `gorm:"not null;default:0"`
+	TwoFactorLockedUntil    *time.Time
+}
+
+type TwoFactorCredentialType string
+
+var (
+	TwoFactorCredentialTOTP      = TwoFactorCredentialType("totp")
+	TwoFactorCredentialYubicoOTP = TwoFactorCredentialType("yubico_otp")
+)
+
+// TwoFactorCredential is an authenticator app (TOTP) or a YubiKey slot
+// programmed for Yubico OTP. When an account has any of these, they replace
+// emailed sign-in codes entirely.
+type TwoFactorCredential struct {
+	ID        uint   `gorm:"primaryKey"`
+	Did       string `gorm:"index;not null"`
+	Type      TwoFactorCredentialType
+	Name      string
+	CreatedAt time.Time
+	// TOTP shared secret, or the YubiKey slot's AES-128 key.
+	Secret []byte
+	// Yubico OTP only: the modhex public identity typed before each OTP, and
+	// the 6-byte private identity found inside the encrypted block.
+	PublicID  string `gorm:"index"`
+	PrivateID []byte
+	// Replay protection. TOTP stores the last accepted time step; Yubico OTP
+	// stores the last accepted (session counter, session use) pair.
+	LastStep    int64 `gorm:"not null;default:0"`
+	LastCounter int   `gorm:"not null;default:0"`
+	LastUse     int   `gorm:"not null;default:0"`
+	LastUsedAt  *time.Time
+}
+
+// TwoFactorBackupCode is a single-use recovery code, stored as a SHA-256
+// hash. Backup codes are only accepted when the account has at least one
+// TwoFactorCredential.
+type TwoFactorBackupCode struct {
+	ID        uint   `gorm:"primaryKey"`
+	Did       string `gorm:"index;not null"`
+	CodeHash  []byte
+	CreatedAt time.Time
+	UsedAt    *time.Time
 }
 
 func (r *Repo) SignFor(ctx context.Context, did string, msg []byte) ([]byte, error) {

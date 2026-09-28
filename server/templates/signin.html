@@ -31,7 +31,13 @@
         />
         {{ if .flashes.tokenrequired  }}
         <br />
-        <input name="token" id="token" placeholder="Enter your 2FA token" />
+        <input
+          name="token"
+          id="token"
+          placeholder="2FA code, YubiKey, or backup code"
+          autocomplete="one-time-code"
+          autofocus
+        />
         {{ end }}
         <input name="query_params" type="hidden" value="{{ .QueryParams }}" />
         <button class="primary" type="submit" value="Login">Login</button>

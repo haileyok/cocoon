@@ -557,6 +557,14 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/account/signin", s.handleAccountSigninGet)
 	s.echo.POST("/account/signin", s.handleAccountSigninPost)
 	s.echo.GET("/account/signout", s.handleAccountSignout)
+	s.echo.GET("/account/2fa", s.handleAccountTwoFactor)
+	s.echo.GET("/account/2fa/totp", s.handleAccountTwoFactorTOTPGet)
+	s.echo.POST("/account/2fa/totp", s.handleAccountTwoFactorTOTPPost)
+	s.echo.GET("/account/2fa/yubikey", s.handleAccountTwoFactorYubiKeyGet)
+	s.echo.POST("/account/2fa/yubikey", s.handleAccountTwoFactorYubiKeyPost)
+	s.echo.POST("/account/2fa/email-code", s.handleAccountTwoFactorEmailCode)
+	s.echo.POST("/account/2fa/remove", s.handleAccountTwoFactorRemove)
+	s.echo.POST("/account/2fa/backup-codes", s.handleAccountTwoFactorBackupCodes)
 
 	// oauth account
 	s.echo.GET("/oauth/jwks", s.handleOauthJwks)
@@ -631,6 +639,8 @@ func (s *Server) Serve(ctx context.Context) error {
 		&models.Blob{},
 		&models.BlobPart{},
 		&models.ReservedKey{},
+		&models.TwoFactorCredential{},
+		&models.TwoFactorBackupCode{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
 	)

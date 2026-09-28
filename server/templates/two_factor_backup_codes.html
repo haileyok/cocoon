@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="stylesheet" href="/static/pico.css" />
+    <link rel="stylesheet" href="/static/style.css" />
+    <title>Backup codes</title>
+  </head>
+  <body class="margin-top-md">
+    <main class="container base-container authorize-container margin-top-xl">
+      <h2>Save your backup codes</h2>
+      <div class="alert alert-success margin-bottom-xs">
+        <p>{{ .Message }}</p>
+      </div>
+      <p>
+        If you lose your authenticator or YubiKey, each of these codes lets you
+        sign in once. They won't be shown again, and emailed codes can't be
+        used instead, so store them somewhere safe.
+      </p>
+      <pre><code>{{ range .Codes }}{{ . }}
+{{ end }}</code></pre>
+      <p><a href="/account/2fa">I've saved them</a></p>
+    </main>
+  </body>
+</html>

@@ -2,11 +2,9 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/gorilla/sessions"
@@ -156,7 +154,7 @@ func (s *Server) handleAccountSigninPost(e echo.Context) error {
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(repo.Password), []byte(req.Password)); err != nil {
-		if err != bcrypt.ErrMismatchedHashAndPassword {
+		if err == bcrypt.ErrMismatchedHashAndPassword {
 			sess.AddFlash("Handle or password is incorrect", "error")
 		} else {
 			sess.AddFlash("Something went wrong!", "error")
@@ -165,47 +163,27 @@ func (s *Server) handleAccountSigninPost(e echo.Context) error {
 		return e.Redirect(303, "/account/signin"+queryParams)
 	}
 
-	// if repo requires 2FA token and one hasn't been provided, return error prompting for one
-	if repo.TwoFactorType != models.TwoFactorTypeNone && req.AuthFactorToken == "" {
-		err = s.createAndSendTwoFactorCode(ctx, repo)
-		if err != nil {
-			sess.AddFlash("Something went wrong!", "error")
-			sess.Save(e.Request(), e.Response())
-			return e.Redirect(303, "/account/signin"+queryParams)
-		}
-
-		sess.AddFlash("requires 2FA token", "tokenrequired")
+	res, err := s.checkSecondFactor(ctx, &repo, req.AuthFactorToken)
+	if err != nil {
+		logger.Error("checking second factor", "error", err)
+		sess.AddFlash("Something went wrong!", "error")
 		sess.Save(e.Request(), e.Response())
 		return e.Redirect(303, "/account/signin"+queryParams)
 	}
-
-	// if 2FAis required, now check that the one provided is valid
-	if repo.TwoFactorType != models.TwoFactorTypeNone {
-		if repo.TwoFactorCode == nil || repo.TwoFactorCodeExpiresAt == nil {
-			err = s.createAndSendTwoFactorCode(ctx, repo)
-			if err != nil {
-				sess.AddFlash("Something went wrong!", "error")
-				sess.Save(e.Request(), e.Response())
-				return e.Redirect(303, "/account/signin"+queryParams)
-			}
-
+	if res != secondFactorOK {
+		switch res {
+		case secondFactorInvalid:
+			sess.AddFlash("That code is incorrect.", "error")
+		case secondFactorExpired:
+			sess.AddFlash("That code has expired. Sign in again to get a new one.", "error")
+		case secondFactorLocked:
+			sess.AddFlash("Too many incorrect codes. Try again in a few minutes.", "error")
+		}
+		if res != secondFactorExpired {
 			sess.AddFlash("requires 2FA token", "tokenrequired")
-			sess.Save(e.Request(), e.Response())
-			return e.Redirect(303, "/account/signin"+queryParams)
 		}
-
-		if subtle.ConstantTimeCompare([]byte(*repo.TwoFactorCode), []byte(req.AuthFactorToken)) != 1 {
-			return helpers.InvalidTokenError(e)
-		}
-
-		if time.Now().UTC().After(*repo.TwoFactorCodeExpiresAt) {
-			return helpers.ExpiredTokenError(e)
-		}
-
-		if err := s.clearTwoFactorCode(ctx, repo.Repo.Did); err != nil {
-			logger.Error("error clearing 2FA code", "error", err)
-			return helpers.ServerError(e, nil)
-		}
+		sess.Save(e.Request(), e.Response())
+		return e.Redirect(303, "/account/signin"+queryParams)
 	}
 
 	s.applyAccountSessionOptions(sess, int(AccountSessionMaxAge.Seconds()))

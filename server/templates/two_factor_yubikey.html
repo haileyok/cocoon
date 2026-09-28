@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="stylesheet" href="/static/pico.css" />
+    <link rel="stylesheet" href="/static/style.css" />
+    <title>Add a YubiKey</title>
+  </head>
+  <body class="margin-top-md">
+    <main class="container base-container authorize-container margin-top-xl">
+      <p><a href="/account/2fa">&larr; Back</a></p>
+      <h2>Add a YubiKey</h2>
+      {{ if .Error }}
+      <div class="alert alert-danger margin-bottom-xs">
+        <p>{{ .Error }}</p>
+      </div>
+      {{ end }}
+      {{ if .flashes.errors }}
+      <div class="alert alert-danger margin-bottom-xs">
+        <p>{{ index .flashes.errors 0 }}</p>
+      </div>
+      {{ end }}
+      {{ if .flashes.successes }}
+      <div class="alert alert-success margin-bottom-xs">
+        <p>{{ index .flashes.successes 0 }}</p>
+      </div>
+      {{ end }}
+      {{ if .EmailOnly }}
+      <p>
+        Your account currently uses emailed sign-in codes. Adding this replaces
+        them, so first confirm you can read your email.
+      </p>
+      <form action="/account/2fa/email-code" method="post">
+        <input type="hidden" name="next" value="/account/2fa/yubikey" />
+        <button type="submit">Email me a code</button>
+      </form>
+      {{ end }}
+      <p>
+        This server checks YubiKey codes itself, so your key needs a slot
+        programmed with a secret key only you and this server know. With
+        <a href="https://docs.yubico.com/software/yubikey/tools/ykman/">YubiKey Manager</a>
+        installed, run:
+      </p>
+      <pre><code>ykman otp yubiotp --serial-public-id --generate-private-id --generate-key 2</code></pre>
+      <p>
+        This programs slot 2 (used with a long touch) and leaves slot 1 as it
+        is. Copy the printed secret key below. Don't use <code>--upload</code>.
+      </p>
+      <form action="/account/2fa/yubikey" method="post">
+        <input name="name" placeholder="Name (e.g. Blue YubiKey)" maxlength="64" />
+        <input name="aes_key" placeholder="Secret key (32 hex characters)" autocomplete="off" />
+        <input name="otp" placeholder="Touch your YubiKey (long touch for slot 2)" autocomplete="off" />
+        <input name="password" type="password" placeholder="Password" autocomplete="current-password" />
+        {{ if .EmailOnly }}
+        <input name="current_code" placeholder="Code from the email" autocomplete="off" />
+        {{ else if .HasCredentials }}
+        <input name="current_code" placeholder="Code from a current method, or a backup code" autocomplete="off" />
+        {{ end }}
+        <button class="primary" type="submit">Add YubiKey</button>
+      </form>
+    </main>
+  </body>
+</html>

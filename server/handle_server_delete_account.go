@@ -119,6 +119,16 @@ func (s *Server) handleServerDeleteAccount(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
+	if err := tx.Exec("DELETE FROM two_factor_credentials WHERE did = ?", req.Did).Error; err != nil {
+		logger.Error("error deleting two factor credentials", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+
+	if err := tx.Exec("DELETE FROM two_factor_backup_codes WHERE did = ?", req.Did).Error; err != nil {
+		logger.Error("error deleting two factor backup codes", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+
 	if err := tx.Exec("DELETE FROM actors WHERE did = ?", req.Did).Error; err != nil {
 		logger.Error("error deleting actor", "error", err)
 		return helpers.ServerError(e, nil)
