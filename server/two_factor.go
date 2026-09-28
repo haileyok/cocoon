@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/internal/totp"
+	"github.com/haileyok/cocoon/internal/yubicloud"
 	"github.com/haileyok/cocoon/internal/yubiotp"
 	"github.com/haileyok/cocoon/models"
 	"github.com/labstack/echo/v4"
@@ -192,11 +194,32 @@ func isTOTPShaped(token string) bool {
 	return true
 }
 
+// newYubiCloudFromConfig returns a YubiCloud client when both settings are
+// given, nil when neither is, and an error for a partial or malformed
+// configuration so a typo doesn't silently turn the feature off.
+func newYubiCloudFromConfig(clientID, apiKey string) (*yubicloud.Client, error) {
+	if clientID == "" && apiKey == "" {
+		return nil, nil
+	}
+	if clientID == "" || apiKey == "" {
+		return nil, errors.New("both a Yubico client ID and API key are needed to check YubiKeys with YubiCloud")
+	}
+	return yubicloud.New(clientID, apiKey)
+}
+
+// errYubiCloudUnavailable means a YubiKey OTP couldn't be checked because
+// YubiCloud gave no trustworthy answer. It is not a wrong code.
+var errYubiCloudUnavailable = errors.New("couldn't check your YubiKey with Yubico right now; try again shortly or use another sign-in method")
+
 func (s *Server) claimYubicoOTP(ctx context.Context, c models.TwoFactorCredential, token string, now time.Time) (bool, error) {
 	// A key programmed with a public identity always types it first; skip
-	// keys whose identity doesn't match without spending an AES decrypt.
+	// keys whose identity doesn't match without decrypting, or without
+	// sending the OTP to Yubico.
 	if c.PublicID != "" && subtle.ConstantTimeCompare([]byte(yubiotp.PublicID(token)), []byte(c.PublicID)) != 1 {
 		return false, nil
+	}
+	if c.UsesYubiCloud() {
+		return s.claimYubiCloudOTP(ctx, c, token, now)
 	}
 	otp, err := yubiotp.Parse(token, c.Secret)
 	if err != nil {
@@ -218,6 +241,35 @@ func (s *Server) claimYubicoOTP(ctx context.Context, c models.TwoFactorCredentia
 		return false, res.Error
 	}
 	return res.RowsAffected == 1, nil
+}
+
+// claimYubiCloudOTP checks a factory YubiKey's OTP with Yubico, which
+// rejects any OTP it has already seen, so no local replay state is needed.
+func (s *Server) claimYubiCloudOTP(ctx context.Context, c models.TwoFactorCredential, token string, now time.Time) (bool, error) {
+	// YubiCloud accepts an OTP from any genuine YubiKey, so the key's public
+	// ID is what ties the OTP to this account. Never skip this check.
+	if c.PublicID == "" || subtle.ConstantTimeCompare([]byte(yubiotp.PublicID(token)), []byte(c.PublicID)) != 1 {
+		return false, nil
+	}
+	if s.yubiCloud == nil {
+		// The key was registered while a Yubico API key was configured. It
+		// can't be checked now, but that's the server's fault, not a wrong
+		// code, so it mustn't count toward a lockout.
+		s.logger.Warn("yubikey registered for YubiCloud but no Yubico API key is configured", "credential", c.ID)
+		return false, errYubiCloudUnavailable
+	}
+	ok, err := s.yubiCloud.Verify(ctx, token)
+	if err != nil {
+		s.logger.Error("checking yubikey otp with yubicloud", "error", err)
+		return false, errYubiCloudUnavailable
+	}
+	if !ok {
+		return false, nil
+	}
+	if err := s.db.Exec(ctx, "UPDATE two_factor_credentials SET last_used_at = ? WHERE id = ?", nil, now, c.ID).Error; err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func normalizeBackupCode(code string) string {

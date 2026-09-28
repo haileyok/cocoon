@@ -62,7 +62,9 @@ type TwoFactorCredential struct {
 	Type      TwoFactorCredentialType
 	Name      string
 	CreatedAt time.Time
-	// TOTP shared secret, or the YubiKey slot's AES-128 key.
+	// TOTP shared secret, or the YubiKey slot's AES-128 key. Empty for a
+	// YubiKey registered as it came from the factory, whose OTPs are checked
+	// with Yubico's YubiCloud service instead (see UsesYubiCloud).
 	Secret []byte
 	// Yubico OTP only: the modhex public identity typed before each OTP, and
 	// the 6-byte private identity found inside the encrypted block.
@@ -74,6 +76,12 @@ type TwoFactorCredential struct {
 	LastCounter int   `gorm:"not null;default:0"`
 	LastUse     int   `gorm:"not null;default:0"`
 	LastUsedAt  *time.Time
+}
+
+// UsesYubiCloud reports whether this YubiKey's OTPs are checked by YubiCloud
+// rather than decrypted locally with a stored AES key.
+func (c *TwoFactorCredential) UsesYubiCloud() bool {
+	return c.Type == TwoFactorCredentialYubicoOTP && len(c.Secret) == 0
 }
 
 // TwoFactorBackupCode is a single-use recovery code, stored as a SHA-256

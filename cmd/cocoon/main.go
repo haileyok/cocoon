@@ -171,6 +171,16 @@ func main() {
 				EnvVars: []string{"COCOON_PLC_URL"},
 				Value:   identity.DefaultPlcURL,
 			},
+			&cli.StringFlag{
+				Name:    "yubico-client-id",
+				Usage:   "Yubico API client ID, so YubiKeys can be added by tapping them (see https://upgrade.yubico.com/getapikey/)",
+				EnvVars: []string{"COCOON_YUBICO_CLIENT_ID"},
+			},
+			&cli.StringFlag{
+				Name:    "yubico-api-key",
+				Usage:   "Yubico API secret key (base64), used with --yubico-client-id",
+				EnvVars: []string{"COCOON_YUBICO_API_KEY"},
+			},
 			telemetry.CLIFlagDebug,
 			telemetry.CLIFlagMetricsListenAddress,
 		},
@@ -259,6 +269,8 @@ var runServe = &cli.Command{
 			BlockstoreVariant: server.MustReturnBlockstoreVariant(cmd.String("blockstore-variant")),
 			FallbackProxy:     cmd.String("fallback-proxy"),
 			PlcURL:            cmd.String("plc-url"),
+			YubicoClientID:    cmd.String("yubico-client-id"),
+			YubicoAPIKey:      cmd.String("yubico-api-key"),
 		})
 		if err != nil {
 			fmt.Printf("error creating cocoon: %v", err)

@@ -94,6 +94,9 @@ func (s *Server) authorizeTwoFactorChange(ctx context.Context, repo *models.Repo
 		}
 	} else {
 		ok, err = s.verifyStrongSecondFactor(ctx, repo.Repo.Did, creds, currentCode, now)
+		if errors.Is(err, errYubiCloudUnavailable) {
+			return "Couldn't check your YubiKey with Yubico right now. Try again shortly, or use another method's code.", nil
+		}
 		if err != nil {
 			return "", err
 		}
@@ -285,7 +288,20 @@ func (s *Server) handleAccountTwoFactorTOTPPost(e echo.Context) error {
 }
 
 func (s *Server) renderYubiKeySetup(e echo.Context, status int, repo *models.RepoActor, hasCredentials bool, errMsg string, flashes map[string]any) error {
-	return e.Render(status, "two_factor_yubikey.html", setupPageData(repo, hasCredentials, errMsg, flashes))
+	data := setupPageData(repo, hasCredentials, errMsg, flashes)
+	// With YubiCloud, a factory key is registered by tapping it. Without it,
+	// the user must program a slot with a secret this server can check.
+	data["YubiCloud"] = s.yubiCloud != nil
+	return e.Render(status, "two_factor_yubikey.html", data)
+}
+
+func hasYubiKeyWithPublicID(creds []models.TwoFactorCredential, publicID string) bool {
+	for _, c := range creds {
+		if c.Type == models.TwoFactorCredentialYubicoOTP && c.PublicID != "" && c.PublicID == publicID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleAccountTwoFactorYubiKeyGet(e echo.Context) error {
@@ -307,6 +323,10 @@ func (s *Server) handleAccountTwoFactorYubiKeyPost(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
+	if strings.TrimSpace(req.AesKey) == "" {
+		return s.addYubiCloudKey(e, sess, repo, creds, req)
+	}
+
 	key, err := hex.DecodeString(strings.ReplaceAll(strings.TrimSpace(req.AesKey), " ", ""))
 	if err != nil || len(key) != yubiotp.KeySize {
 		return s.renderYubiKeySetup(e, http.StatusBadRequest, repo, len(creds) > 0, "The secret key should be 32 hexadecimal characters.", nil)
@@ -314,6 +334,9 @@ func (s *Server) handleAccountTwoFactorYubiKeyPost(e echo.Context) error {
 	otp, err := yubiotp.Parse(req.OTP, key)
 	if err != nil {
 		return s.renderYubiKeySetup(e, http.StatusBadRequest, repo, len(creds) > 0, "That YubiKey code doesn't match the secret key. Check you touched the slot you programmed.", nil)
+	}
+	if hasYubiKeyWithPublicID(creds, otp.PublicID) {
+		return s.renderYubiKeySetup(e, http.StatusBadRequest, repo, len(creds) > 0, "That YubiKey is already added.", nil)
 	}
 
 	msg, err := s.authorizeTwoFactorChange(ctx, repo, creds, req.Password, req.CurrentCode)
@@ -337,6 +360,64 @@ func (s *Server) handleAccountTwoFactorYubiKeyPost(e echo.Context) error {
 		LastCounter: int(otp.Counter),
 		LastUse:     int(otp.SessionUse),
 		LastUsedAt:  &now,
+	})
+}
+
+// addYubiCloudKey registers a factory YubiKey from a single tap: YubiCloud
+// confirms the OTP is genuine, and the key's public ID is stored so later
+// OTPs can be matched to it.
+func (s *Server) addYubiCloudKey(e echo.Context, sess *sessions.Session, repo *models.RepoActor, creds []models.TwoFactorCredential, req twoFactorManageInput) error {
+	ctx := e.Request().Context()
+	hasCreds := len(creds) > 0
+	if s.yubiCloud == nil {
+		return s.renderYubiKeySetup(e, http.StatusBadRequest, repo, hasCreds, "This server can't check factory YubiKeys. Program a slot with your own secret key using the steps below.", nil)
+	}
+
+	token := strings.ToLower(strings.TrimSpace(req.OTP))
+	if !yubiotp.LooksLikeOTP(token) {
+		return s.renderYubiKeySetup(e, http.StatusBadRequest, repo, hasCreds, "That doesn't look like a YubiKey code. Click in the YubiKey box, then touch your key.", nil)
+	}
+	publicID := yubiotp.PublicID(token)
+	if publicID == "" {
+		return s.renderYubiKeySetup(e, http.StatusBadRequest, repo, hasCreds, "This YubiKey slot doesn't identify itself, so it can't be told apart from other keys. Use a slot with a public ID, such as the factory slot.", nil)
+	}
+	if hasYubiKeyWithPublicID(creds, publicID) {
+		return s.renderYubiKeySetup(e, http.StatusBadRequest, repo, hasCreds, "That YubiKey is already added.", nil)
+	}
+
+	// Order: the password first, since checking it uses nothing up; then the
+	// tap, since each tap is spent once Yubico sees it but is the cheapest
+	// thing to redo; then the current code, which may be a single-use backup
+	// code (authorizeTwoFactorChange repeats the password check, harmlessly).
+	if bcrypt.CompareHashAndPassword([]byte(repo.Password), []byte(req.Password)) != nil {
+		return s.renderYubiKeySetup(e, http.StatusBadRequest, repo, hasCreds, "Password is incorrect.", nil)
+	}
+	ok, err := s.yubiCloud.Verify(ctx, token)
+	if err != nil {
+		s.logger.Error("checking yubikey otp with yubicloud", "error", err)
+		return s.renderYubiKeySetup(e, http.StatusServiceUnavailable, repo, hasCreds, "Couldn't check your YubiKey with Yubico right now. Try again shortly.", nil)
+	}
+	if !ok {
+		return s.renderYubiKeySetup(e, http.StatusBadRequest, repo, hasCreds, "Yubico didn't accept that code. Touch your key again to get a fresh one.", nil)
+	}
+
+	msg, err := s.authorizeTwoFactorChange(ctx, repo, creds, req.Password, req.CurrentCode)
+	if err != nil {
+		s.logger.Error("authorizing two factor change", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+	if msg != "" {
+		return s.renderYubiKeySetup(e, http.StatusBadRequest, repo, hasCreds, msg, nil)
+	}
+
+	now := time.Now().UTC()
+	return s.finishAddingCredential(e, sess, repo, hasCreds, &models.TwoFactorCredential{
+		Did:        repo.Repo.Did,
+		Type:       models.TwoFactorCredentialYubicoOTP,
+		Name:       credentialName(req.Name, "YubiKey"),
+		CreatedAt:  now,
+		PublicID:   publicID,
+		LastUsedAt: &now,
 	})
 }
 

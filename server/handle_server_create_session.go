@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -102,6 +103,12 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 		token = *req.AuthFactorToken
 	}
 	res, err := s.checkSecondFactor(ctx, &repo, token)
+	if errors.Is(err, errYubiCloudUnavailable) {
+		return e.JSON(http.StatusServiceUnavailable, map[string]string{
+			"error":   "YubiKeyCheckUnavailable",
+			"message": "Couldn't check your YubiKey with Yubico right now. Try again shortly, or use another sign-in method.",
+		})
+	}
 	if err != nil {
 		logger.Error("checking second factor", "error", err)
 		return helpers.ServerError(e, nil)
