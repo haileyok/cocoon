@@ -1,47 +1,81 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light dark" />
-    <link rel="stylesheet" href="/static/pico.css" />
-    <link rel="stylesheet" href="/static/style.css" />
-    <title>PDS Authentication</title>
+    {{ template "meta" }}
+    <title>Sign in{{ if .AppName }} to continue to {{ .AppName }}{{ end }}</title>
   </head>
-  <body class="centered-body">
-    <main class="container base-container box-shadow-container login-container">
-      <h2>Sign into your account</h2>
-      <p>Enter your handle and password below.</p>
-      {{ if gt (len .Accounts) 0 }}
-      <p>You currently have {{ len .Accounts }} signed-in account(s).</p>
-      {{ end }}
-      {{ if .flashes.errors }}
-      <div class="alert alert-danger margin-bottom-xs">
-        <p>{{ index .flashes.errors 0 }}</p>
-      </div>
-      {{ end }}
-      <form action="/account/signin" method="post">
-        <input name="username" id="username" placeholder="Handle" />
-        <br />
-        <input
-          name="password"
-          id="password"
-          type="password"
-          placeholder="Password"
-        />
-        {{ if .flashes.tokenrequired  }}
-        <br />
-        <input
-          name="token"
-          id="token"
-          placeholder="2FA code, YubiKey, or backup code"
-          autocomplete="one-time-code"
-          autofocus
-        />
+  <body>
+    <header class="topbar">{{ template "brand" .Hostname }}</header>
+    <main class="page-narrow">
+      <section class="card auth-card">
+        <div class="auth-head">
+          {{ if .AppName }}
+          <span class="avatar avatar-lg avatar-app avatar-center" aria-hidden="true">{{ initial .AppName }}</span>
+          <h1>Sign in to continue</h1>
+          <p>to <b>{{ .AppName }}</b></p>
+          {{ else }}
+          <div class="brand-lg">{{ template "logo" }}</div>
+          <h1>Sign in</h1>
+          <p>Use your {{ if .Hostname }}{{ .Hostname }} {{ end }}handle or email.</p>
+          {{ end }}
+        </div>
+
+        {{ template "flashes" .flashes }}
+
+        {{ if and .QueryParams .Accounts }}
+        <div class="label">Continue as</div>
+        <ul class="perms" style="margin-bottom:1.25rem">
+          {{ range .Accounts }}
+          <li style="padding:0">
+            <form action="/account/switch" method="post" style="width:100%">
+              <input type="hidden" name="did" value="{{ .Repo.Did }}" />
+              <input type="hidden" name="next" value="/oauth/authorize" />
+              <input type="hidden" name="query_params" value="{{ $.QueryParams }}" />
+              <button class="menu-item" type="submit" style="padding:0.75rem 0.95rem">
+                <span class="avatar avatar-sm" aria-hidden="true">{{ initial .Handle }}</span>
+                <span class="truncate">{{ .Handle }}</span>
+                <span class="faint">&rarr;</span>
+              </button>
+            </form>
+          </li>
+          {{ end }}
+        </ul>
+        <div class="label">Or sign in to another account</div>
         {{ end }}
-        <input name="query_params" type="hidden" value="{{ .QueryParams }}" />
-        <button class="primary" type="submit" value="Login">Login</button>
-      </form>
+
+        <form action="/account/signin" method="post">
+          <div class="field">
+            <label for="username">Handle or email</label>
+            <input
+              name="username"
+              id="username"
+              value="{{ .Username }}"
+              placeholder="you.{{ if .Hostname }}{{ .Hostname }}{{ else }}example.com{{ end }}"
+              autocomplete="username"
+              autocapitalize="none"
+              spellcheck="false"
+              required
+              {{ if not .Username }}autofocus{{ end }}
+            />
+          </div>
+          <div class="field">
+            <label for="password">Password</label>
+            <input
+              name="password"
+              id="password"
+              type="password"
+              autocomplete="current-password"
+              required
+              {{ if .Username }}autofocus{{ end }}
+            />
+          </div>
+          <input name="query_params" type="hidden" value="{{ .QueryParams }}" />
+          <button class="primary block" type="submit" value="Login">Sign in</button>
+        </form>
+      </section>
+      {{ if and (not .QueryParams) .Accounts }}
+      <p class="auth-foot"><a href="/account">Back to your account</a></p>
+      {{ end }}
     </main>
   </body>
 </html>

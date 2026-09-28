@@ -226,8 +226,8 @@ func TestSigninPageTOTP(t *testing.T) {
 	base := url.Values{"username": {acct.Handle}, "password": {acct.Password}, "query_params": {"request_uri=abc"}}
 
 	w := signinPost(s, base)
-	if w.Code != 303 || w.Header().Get("Location") != "/account/signin?request_uri=abc" {
-		t.Fatalf("expected redirect back to signin, got %d %s", w.Code, w.Header().Get("Location"))
+	if w.Code != 303 || w.Header().Get("Location") != "/account/signin/verify" {
+		t.Fatalf("expected redirect to the code step, got %d %s", w.Code, w.Header().Get("Location"))
 	}
 
 	bad := url.Values{"token": {"000000"}}
@@ -235,8 +235,8 @@ func TestSigninPageTOTP(t *testing.T) {
 		bad[k] = v
 	}
 	w = signinPost(s, bad)
-	if w.Code != 303 || !strings.HasPrefix(w.Header().Get("Location"), "/account/signin") {
-		t.Fatalf("wrong code should redirect back to signin with a message, got %d %s", w.Code, w.Body.String())
+	if w.Code != 303 || w.Header().Get("Location") != "/account/signin/verify" {
+		t.Fatalf("wrong code should redirect to the code step with a message, got %d %s", w.Code, w.Header().Get("Location"))
 	}
 
 	good := url.Values{"token": {totp.Code(secret, time.Now())}}

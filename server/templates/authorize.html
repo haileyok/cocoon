@@ -1,62 +1,92 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light dark" />
-    <link rel="stylesheet" href="/static/pico.css" />
-    <link rel="stylesheet" href="/static/style.css" />
-    <title>Application Authorization</title>
+    {{ template "meta" }}
+    <title>Allow {{ .AppName }} to access your account?</title>
   </head>
-  <body class="centered-body">
-    <main
-      class="container base-container box-shadow-container authorizer-container"
-    >
-      <h2>Authorizing with {{ .AppName }}</h2>
-      <p>
-        You are signed in as <b>{{ .Handle }}</b>.
-        <a href="/account/signout?{{ .QueryParams }}">Sign out this account</a>
-      </p>
-      {{ if and (not .HasLoginHint) (gt (len .Accounts) 1) }}
-      <form action="/account/switch" method="post">
-        <input type="hidden" name="query_params" value="{{ .QueryParams }}" />
-        <input type="hidden" name="next" value="/oauth/authorize" />
-        <label for="did">Switch to another signed-in account</label>
-        <select name="did" id="did">
-          {{ range .Accounts }}
-          <option value="{{ .Repo.Did }}" {{ if eq .Repo.Did $.ActiveDid }}selected{{ end }}>
-            {{ .Handle }}
-          </option>
+  <body>
+    <header class="topbar">{{ template "brand" .Hostname }}</header>
+    <main class="page-narrow" style="max-width:500px">
+      <section class="card auth-card">
+        <div class="auth-head">
+          <div class="consent-apps" aria-hidden="true">
+            <span class="avatar avatar-lg avatar-app">{{ initial .AppName }}</span>
+            <span class="consent-link"></span>
+            <span class="avatar avatar-lg">{{ initial .Handle }}</span>
+          </div>
+          <h1>{{ .AppName }} wants to access your account</h1>
+          {{ if .AppHost }}
+          <p>
+            {{ if .AppURI }}<a href="{{ .AppURI }}" rel="noopener noreferrer" target="_blank">{{ .AppHost }}</a>{{ else }}{{ .AppHost }}{{ end }}
+          </p>
           {{ end }}
-        </select>
-        <button type="submit">Switch account</button>
-      </form>
-      {{ end }}
-      <p>
-        Need a different account? <a href="/account/signin?{{ .QueryParams }}">Sign in another account</a>.
-      </p>
-      <p><b>{{ .AppName }}</b> is asking for you to grant it these scopes:</p>
-      <ul>
-        {{ range .Scopes }}
-        <li><b>{{.}}</b></li>
-        {{ end }}
-      </ul>
-      <p>
-        If you press Accept, the application will be granted permissions for
-        these scopes with your account <b>{{ .Handle }}</b>. If you reject, you
-        will be sent back to the application.
-      </p>
-      <form action="/oauth/authorize" method="post">
-        <div class="button-row">
-          <input type="hidden" name="request_uri" value="{{ .RequestUri }}" />
-          <button class="secondary" name="accept_or_reject" value="reject">
-            Reject
-          </button>
-          <button class="primary" name="accept_or_reject" value="accept">
-            Accept
-          </button>
         </div>
-      </form>
+
+        <div class="account-chip">
+          <span class="avatar avatar-sm" aria-hidden="true">{{ initial .Handle }}</span>
+          <div class="row-main">
+            <div class="faint small">Signed in as</div>
+            <div class="row-title">{{ .Handle }}</div>
+          </div>
+          {{ if not .HasLoginHint }}
+          <details class="menu">
+            <summary style="padding:0.3rem 0.75rem">Switch</summary>
+            <div class="menu-panel">
+              {{ if gt (len .Accounts) 1 }}
+              <div class="menu-label">Use another account</div>
+              {{ range .Accounts }}
+              {{ if ne .Repo.Did $.ActiveDid }}
+              <form action="/account/switch" method="post">
+                <input type="hidden" name="query_params" value="{{ $.QueryParams }}" />
+                <input type="hidden" name="next" value="/oauth/authorize" />
+                <input type="hidden" name="did" value="{{ .Repo.Did }}" />
+                <button class="menu-item" type="submit">
+                  <span class="avatar avatar-sm" aria-hidden="true">{{ initial .Handle }}</span>
+                  <span class="truncate">{{ .Handle }}</span>
+                </button>
+              </form>
+              {{ end }}
+              {{ end }}
+              <div class="menu-sep"></div>
+              {{ end }}
+              <a class="menu-item" href="/account/signin?{{ .QueryParams }}">+ Sign in to another account</a>
+              <a class="menu-item" href="/account/signout?{{ .QueryParams }}">Sign out of {{ .Handle }}</a>
+            </div>
+          </details>
+          {{ end }}
+        </div>
+
+        <div class="label">This will allow {{ .AppName }} to:</div>
+        <ul class="perms">
+          {{ range .Permissions }}
+          <li class="{{ if .Sensitive }}perm-sensitive{{ end }}">
+            <span class="perm-icon" aria-hidden="true">{{ if .Sensitive }}!{{ else }}&#10003;{{ end }}</span>
+            <div>
+              <div class="perm-title">{{ .Title }}</div>
+              {{ if .Detail }}<div class="perm-detail">{{ .Detail }}</div>{{ end }}
+            </div>
+          </li>
+          {{ end }}
+        </ul>
+
+        <details class="disclosure">
+          <summary>Show requested scopes</summary>
+          <div class="scope-list">
+            {{ range .Scopes }}<code>{{ . }}</code>{{ end }}
+          </div>
+        </details>
+
+        <form action="/oauth/authorize" method="post">
+          <input type="hidden" name="request_uri" value="{{ .RequestUri }}" />
+          <div class="button-row split">
+            <button class="secondary" name="accept_or_reject" value="reject">Cancel</button>
+            <button class="primary" name="accept_or_reject" value="accept">Allow</button>
+          </div>
+        </form>
+        <p class="faint small" style="text-align:center;margin-top:1rem">
+          You can sign {{ .AppName }} out at any time from your account page.
+        </p>
+      </section>
     </main>
   </body>
 </html>

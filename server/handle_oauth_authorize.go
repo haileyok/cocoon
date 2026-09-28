@@ -52,6 +52,7 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 			if s.config.Version == "dev" && parRequest.ClientID == "" {
 				return e.Render(200, "authorize.html", map[string]any{
 					"Scopes":       []string{"atproto", "transition:generic"},
+					"Permissions":  describeScopes("atproto transition:generic"),
 					"AppName":      "DEV MODE AUTHORIZATION PAGE",
 					"Handle":       "paula.cocoon.social",
 					"RequestUri":   "",
@@ -157,21 +158,66 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 		return e.Redirect(303, "/account/signin?"+e.QueryParams().Encode())
 	}
 
-	scopes := strings.Split(req.Parameters.Scope, " ")
-	appName := client.Metadata.ClientName
+	appName := strings.TrimSpace(client.Metadata.ClientName)
+	if appName == "" {
+		appName = clientHost(client.Metadata.ClientID)
+	}
+
+	if req.Sub != nil || req.Code != nil {
+		return s.renderMessage(e, 400, "Already signed in", "This sign-in request has already been used. Go back to "+appName+" and start again.")
+	}
+	now := time.Now()
+	if now.After(req.ExpiresAt) {
+		return s.renderMessage(e, 400, "Sign-in request expired", "This sign-in request timed out. Go back to "+appName+" and start again.")
+	}
+	// The request stays valid while someone is working through sign-in and
+	// consent, however long a second factor takes.
+	if err := s.db.Exec(ctx, "UPDATE oauth_authorization_requests SET expires_at = ? WHERE request_id = ? AND sub IS NULL", nil, now.Add(constants.ParExpiresIn), reqId).Error; err != nil {
+		logger.Error("extending authorization request", "error", err)
+	}
 
 	data := map[string]any{
-		"Scopes":       scopes,
+		"Scopes":       strings.Fields(req.Parameters.Scope),
+		"Permissions":  describeScopes(req.Parameters.Scope),
 		"AppName":      appName,
+		"AppHost":      clientHost(client.Metadata.ClientID),
+		"AppURI":       safeClientURI(client.Metadata.ClientURI),
 		"RequestUri":   input.RequestUri,
 		"QueryParams":  e.QueryParams().Encode(),
 		"Handle":       repo.Actor.Handle,
 		"Accounts":     accounts,
 		"ActiveDid":    repo.Repo.Did,
 		"HasLoginHint": hasLoginHint,
+		"Hostname":     s.config.Hostname,
 	}
 
 	return e.Render(200, "authorize.html", data)
+}
+
+// authorizeRedirectURL builds the redirect back to the client, using the
+// response mode the client asked for.
+func (s *Server) authorizeRedirectURL(authReq *provider.OauthAuthorizationRequest, q url.Values) string {
+	q.Set("state", authReq.Parameters.State)
+	q.Set("iss", "https://"+s.config.Hostname)
+
+	hashOrQuestion := "?"
+	if authReq.Parameters.ResponseMode != nil {
+		switch *authReq.Parameters.ResponseMode {
+		case "fragment":
+			hashOrQuestion = "#"
+		case "query":
+		default:
+			if authReq.Parameters.ResponseType != "code" {
+				hashOrQuestion = "#"
+			}
+		}
+	} else if authReq.Parameters.ResponseType != "code" {
+		hashOrQuestion = "#"
+	}
+	if hashOrQuestion == "?" && strings.Contains(authReq.Parameters.RedirectURI, "?") {
+		hashOrQuestion = "&"
+	}
+	return authReq.Parameters.RedirectURI + hashOrQuestion + q.Encode()
 }
 
 type OauthAuthorizePostRequest struct {
@@ -182,14 +228,6 @@ type OauthAuthorizePostRequest struct {
 func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 	ctx := e.Request().Context()
 	logger := s.logger.With("name", "handleOauthAuthorizePost")
-
-	repo, _, err := s.getSessionRepoOrErr(e)
-	if err != nil {
-		if !errors.Is(err, ErrSessionUnauthenticated) {
-			return helpers.ServerError(e, to.StringPtr(err.Error()))
-		}
-		return e.Redirect(303, "/account/signin")
-	}
 
 	var req OauthAuthorizePostRequest
 	if err := e.Bind(&req); err != nil {
@@ -206,55 +244,51 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 	if err := s.db.Raw(ctx, "SELECT * FROM oauth_authorization_requests WHERE request_id = ?", nil, reqId).Scan(&authReq).Error; err != nil {
 		return helpers.ServerError(e, to.StringPtr(err.Error()))
 	}
+	if authReq.RequestId == "" {
+		return s.renderMessage(e, 400, "Sign-in request not found", "This sign-in request doesn't exist or has already been used. Go back to the app and start again.")
+	}
 
-	client, err := s.oauthProvider.ClientManager.GetClient(e.Request().Context(), authReq.ClientId)
+	repo, _, err := s.getSessionRepoOrErr(e)
 	if err != nil {
-		return helpers.ServerError(e, to.StringPtr(err.Error()))
-	}
-
-	// TODO: figure out how im supposed to actually redirect
-	if req.AcceptOrRejct == "reject" {
-		return e.Redirect(303, client.Metadata.ClientURI)
-	}
-
-	if time.Now().After(authReq.ExpiresAt) {
-		return helpers.InputError(e, to.StringPtr("the request has expired"))
+		if !errors.Is(err, ErrSessionUnauthenticated) {
+			return helpers.ServerError(e, to.StringPtr(err.Error()))
+		}
+		// Keep the OAuth request so signing in again returns to it.
+		q := url.Values{"client_id": {authReq.ClientId}, "request_uri": {req.RequestUri}}
+		return e.Redirect(303, "/account/signin?"+q.Encode())
 	}
 
 	if authReq.Sub != nil || authReq.Code != nil {
-		return helpers.InputError(e, to.StringPtr("this request was already authorized"))
+		return s.renderMessage(e, 400, "Already signed in", "This sign-in request has already been used. Go back to the app and start again.")
+	}
+
+	if req.AcceptOrRejct == "reject" {
+		if err := s.db.Exec(ctx, "DELETE FROM oauth_authorization_requests WHERE request_id = ?", nil, reqId).Error; err != nil {
+			logger.Error("error deleting rejected authorization request", "error", err)
+		}
+		q := url.Values{}
+		q.Set("error", "access_denied")
+		q.Set("error_description", "The user denied the request")
+		return e.Redirect(303, s.authorizeRedirectURL(&authReq, q))
+	}
+
+	if time.Now().After(authReq.ExpiresAt) {
+		return s.renderMessage(e, 400, "Sign-in request expired", "This sign-in request timed out. Go back to the app and start again.")
 	}
 
 	code := oauth.GenerateCode()
 
-	if err := s.db.Exec(ctx, "UPDATE oauth_authorization_requests SET sub = ?, session_version = ?, code = ?, accepted = ?, ip = ? WHERE request_id = ?", nil, repo.Repo.Did, repo.SessionVersion, code, true, e.RealIP(), reqId).Error; err != nil {
-		logger.Error("error updating authorization request", "error", err)
+	// Only the first accept wins, even if the form is submitted twice.
+	res := s.db.Exec(ctx, "UPDATE oauth_authorization_requests SET sub = ?, session_version = ?, code = ?, accepted = ?, ip = ? WHERE request_id = ? AND sub IS NULL AND code IS NULL", nil, repo.Repo.Did, repo.SessionVersion, code, true, e.RealIP(), reqId)
+	if res.Error != nil {
+		logger.Error("error updating authorization request", "error", res.Error)
 		return helpers.ServerError(e, nil)
+	}
+	if res.RowsAffected == 0 {
+		return s.renderMessage(e, 400, "Already signed in", "This sign-in request has already been used. Go back to the app and start again.")
 	}
 
 	q := url.Values{}
-	q.Set("state", authReq.Parameters.State)
-	q.Set("iss", "https://"+s.config.Hostname)
 	q.Set("code", code)
-
-	hashOrQuestion := "?"
-	if authReq.Parameters.ResponseMode != nil {
-		switch *authReq.Parameters.ResponseMode {
-		case "fragment":
-			hashOrQuestion = "#"
-		case "query":
-			// do nothing
-			break
-		default:
-			if authReq.Parameters.ResponseType != "code" {
-				hashOrQuestion = "#"
-			}
-		}
-	} else {
-		if authReq.Parameters.ResponseType != "code" {
-			hashOrQuestion = "#"
-		}
-	}
-
-	return e.Redirect(303, authReq.Parameters.RedirectURI+hashOrQuestion+q.Encode())
+	return e.Redirect(303, s.authorizeRedirectURL(&authReq, q))
 }

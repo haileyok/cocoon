@@ -91,6 +91,12 @@ func (cm *Manager) GetClient(ctx context.Context, clientId string) (*Client, err
 	}, nil
 }
 
+// GetMetadata returns a client's metadata without resolving its JWKS. Use it
+// when only display details (name, URI, logo) are needed.
+func (cm *Manager) GetMetadata(ctx context.Context, clientId string) (*Metadata, error) {
+	return cm.getClientMetadata(ctx, clientId)
+}
+
 func (cm *Manager) getClientMetadata(ctx context.Context, clientId string) (*Metadata, error) {
 	if isLocalhostClientID(clientId) {
 		return buildLocalhostVirtualMetadata(clientId)
@@ -161,6 +167,7 @@ func (cm *Manager) getClientJwks(ctx context.Context, clientId, jwksUri string) 
 		}
 
 		jwks = s
+		cm.jwksCache.Set(clientId, jwks, 5*time.Minute)
 	}
 
 	return jwks, nil

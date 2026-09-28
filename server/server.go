@@ -14,6 +14,7 @@ import (
 	"net/smtp"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/bluesky-social/indigo/util"
 	"github.com/bluesky-social/indigo/xrpc"
 	"github.com/domodwyer/mailyak/v3"
+	cache "github.com/go-pkgz/expirable-cache/v3"
 	"github.com/go-playground/validator"
 	"github.com/gorilla/sessions"
 	"github.com/haileyok/cocoon/identity"
@@ -100,6 +102,10 @@ type Server struct {
 
 	lastRequestCrawl time.Time
 	requestCrawlMu   sync.Mutex
+
+	// Display names of OAuth clients for the account page.
+	clientDisplays    cache.Cache[string, clientDisplay]
+	clientDisplayOnce sync.Once
 
 	dbName   string
 	dbType   string
@@ -206,29 +212,43 @@ type TemplateRenderer struct {
 	templates    *template.Template
 	isDev        bool
 	templatePath string
+	hostname     string
+}
+
+var templateFuncs = template.FuncMap{
+	// initial is the first letter of a name, for avatar placeholders.
+	"initial": func(s string) string {
+		s = strings.TrimLeft(s, "@ ")
+		for _, r := range s {
+			return strings.ToUpper(string(r))
+		}
+		return "?"
+	},
 }
 
 func (s *Server) loadTemplates() {
 	absPath, _ := filepath.Abs("server/templates/*.html")
 	if s.config.Version == "dev" {
-		tmpl := template.Must(template.ParseGlob(absPath))
+		tmpl := template.Must(template.New("").Funcs(templateFuncs).ParseGlob(absPath))
 		s.echo.Renderer = &TemplateRenderer{
 			templates:    tmpl,
 			isDev:        true,
 			templatePath: absPath,
+			hostname:     s.config.Hostname,
 		}
 	} else {
-		tmpl := template.Must(template.ParseFS(templateFS, "templates/*.html"))
+		tmpl := template.Must(template.New("").Funcs(templateFuncs).ParseFS(templateFS, "templates/*.html"))
 		s.echo.Renderer = &TemplateRenderer{
 			templates: tmpl,
 			isDev:     false,
+			hostname:  s.config.Hostname,
 		}
 	}
 }
 
 func (t *TemplateRenderer) Render(w io.Writer, name string, data any, c echo.Context) error {
 	if t.isDev {
-		tmpl, err := template.ParseGlob(t.templatePath)
+		tmpl, err := template.New("").Funcs(templateFuncs).ParseGlob(t.templatePath)
 		if err != nil {
 			return err
 		}
@@ -237,6 +257,9 @@ func (t *TemplateRenderer) Render(w io.Writer, name string, data any, c echo.Con
 
 	if viewContext, isMap := data.(map[string]any); isMap {
 		viewContext["reverse"] = c.Echo().Reverse
+		if _, ok := viewContext["Hostname"]; !ok {
+			viewContext["Hostname"] = t.hostname
+		}
 	}
 
 	return t.templates.ExecuteTemplate(w, name, data)
@@ -577,6 +600,8 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/account/switch", s.handleAccountSwitchPost)
 	s.echo.GET("/account/signin", s.handleAccountSigninGet)
 	s.echo.POST("/account/signin", s.handleAccountSigninPost)
+	s.echo.GET("/account/signin/verify", s.handleAccountSigninVerifyGet)
+	s.echo.POST("/account/signin/verify", s.handleAccountSigninVerifyPost)
 	s.echo.GET("/account/signout", s.handleAccountSignout)
 	s.echo.GET("/account/2fa", s.handleAccountTwoFactor)
 	s.echo.GET("/account/2fa/totp", s.handleAccountTwoFactorTOTPGet)
@@ -675,6 +700,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 
 	go s.backupRoutine()
+	go s.oauthTokenCleanupRoutine(ctx)
 
 	go func() {
 		if err := s.requestCrawl(ctx); err != nil {
