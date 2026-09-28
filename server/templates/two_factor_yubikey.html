@@ -1,90 +1,95 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light dark" />
-    <link rel="stylesheet" href="/static/pico.css" />
-    <link rel="stylesheet" href="/static/style.css" />
+    {{ template "meta" }}
     <title>Add a YubiKey</title>
   </head>
-  <body class="margin-top-md">
-    <main class="container base-container authorize-container margin-top-xl">
-      <p><a href="/account/2fa">&larr; Back</a></p>
-      <h2>Add a YubiKey</h2>
-      {{ if .Error }}
-      <div class="alert alert-danger margin-bottom-xs">
-        <p>{{ .Error }}</p>
-      </div>
-      {{ end }}
-      {{ if .flashes.errors }}
-      <div class="alert alert-danger margin-bottom-xs">
-        <p>{{ index .flashes.errors 0 }}</p>
-      </div>
-      {{ end }}
-      {{ if .flashes.successes }}
-      <div class="alert alert-success margin-bottom-xs">
-        <p>{{ index .flashes.successes 0 }}</p>
-      </div>
-      {{ end }}
-      {{ if .EmailOnly }}
-      <p>
-        Your account currently uses emailed sign-in codes. Adding this replaces
-        them, so first confirm you can read your email.
-      </p>
-      <form action="/account/2fa/email-code" method="post">
-        <input type="hidden" name="next" value="/account/2fa/yubikey" />
-        <button type="submit">Email me a code</button>
-      </form>
-      {{ end }}
-      {{ if .YubiCloud }}
-      <p>
-        Fill in the fields below, then click in the YubiKey box and touch your
-        key. It types a code and submits the form. Signing in works the same
-        way: touch your key in the box that asks for a code.
-      </p>
-      <form action="/account/2fa/yubikey" method="post">
-        <input name="name" placeholder="Name (e.g. Blue YubiKey)" maxlength="64" />
-        <input name="password" type="password" placeholder="Password" autocomplete="current-password" />
-        {{ if .EmailOnly }}
-        <input name="current_code" placeholder="Code from the email" autocomplete="off" />
-        {{ else if .HasCredentials }}
-        <input name="current_code" placeholder="Code from a current method, or a backup code" autocomplete="off" />
+  <body>
+    <header class="topbar">{{ template "brand" .Hostname }}</header>
+    <main class="page-narrow" style="max-width:560px">
+      <a class="back" href="/account/2fa">&larr; Back</a>
+      <section class="card">
+        <h1 style="font-size:1.35rem;margin-bottom:1rem">Add a YubiKey</h1>
+        {{ if .Error }}
+        <div class="alert alert-danger" role="alert"><p>{{ .Error }}</p></div>
         {{ end }}
-        <input name="otp" placeholder="Click here, then touch your YubiKey" autocomplete="off" />
-        <button class="primary" type="submit">Add YubiKey</button>
-      </form>
-      {{ else }}
-      <p>
-        This server isn't set up to check YubiKeys with Yubico, so your key
-        needs a slot programmed with a secret key only you and this server
-        know. With
-        <a href="https://docs.yubico.com/software/yubikey/tools/ykman/">YubiKey Manager</a>
-        installed, run:
-      </p>
-      <pre><code>ykman otp yubiotp --serial-public-id --generate-private-id --generate-key 2</code></pre>
-      <p>
-        This programs slot 2 (used with a long touch) and leaves slot 1 as it
-        is. Copy the printed secret key below. Don't use <code>--upload</code>.
-      </p>
-      <p>
-        <small>Server operators: set <code>COCOON_YUBICO_CLIENT_ID</code> and
-        <code>COCOON_YUBICO_API_KEY</code> to let people add a YubiKey just by
-        touching it.</small>
-      </p>
-      <form action="/account/2fa/yubikey" method="post">
-        <input name="name" placeholder="Name (e.g. Blue YubiKey)" maxlength="64" />
-        <input name="aes_key" placeholder="Secret key (32 hex characters)" autocomplete="off" />
-        <input name="password" type="password" placeholder="Password" autocomplete="current-password" />
+        {{ template "flashes" .flashes }}
+
         {{ if .EmailOnly }}
-        <input name="current_code" placeholder="Code from the email" autocomplete="off" />
-        {{ else if .HasCredentials }}
-        <input name="current_code" placeholder="Code from a current method, or a backup code" autocomplete="off" />
+        <div class="alert alert-info">
+          <div>
+            <p>
+              Your account currently uses emailed sign-in codes. Adding this
+              replaces them, so first confirm you can read your email.
+            </p>
+            <form action="/account/2fa/email-code" method="post" style="margin-top:0.6rem">
+              <input type="hidden" name="next" value="/account/2fa/yubikey" />
+              <button class="small" type="submit">Email me a code</button>
+            </form>
+          </div>
+        </div>
         {{ end }}
-        <input name="otp" placeholder="Click here, then touch your YubiKey (long touch for slot 2)" autocomplete="off" />
-        <button class="primary" type="submit">Add YubiKey</button>
-      </form>
-      {{ end }}
+
+        {{ if .YubiCloud }}
+        <p class="muted">
+          Fill in the fields below, then click in the YubiKey box and touch your
+          key. It types a code and submits the form. Signing in works the same
+          way: touch your key in the box that asks for a code.
+        </p>
+        <form action="/account/2fa/yubikey" method="post">
+          <label for="name">Name</label>
+          <input id="name" name="name" placeholder="Name (e.g. Blue YubiKey)" maxlength="64" />
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" placeholder="Password" autocomplete="current-password" />
+          {{ if .EmailOnly }}
+          <label for="current_code">Code from the email</label>
+          <input id="current_code" name="current_code" placeholder="Code from the email" autocomplete="off" />
+          {{ else if .HasCredentials }}
+          <label for="current_code">Current code</label>
+          <input id="current_code" name="current_code" placeholder="Code from a current method, or a backup code" autocomplete="off" />
+          {{ end }}
+          <label for="otp">YubiKey</label>
+          <input class="input-code" id="otp" name="otp" placeholder="Click here, then touch your YubiKey" autocomplete="off" />
+          <button class="primary block" type="submit">Add YubiKey</button>
+        </form>
+        {{ else }}
+        <p class="muted">
+          This server isn't set up to check YubiKeys with Yubico, so your key
+          needs a slot programmed with a secret key only you and this server
+          know. With
+          <a href="https://docs.yubico.com/software/yubikey/tools/ykman/">YubiKey Manager</a>
+          installed, run:
+        </p>
+        <pre><code>ykman otp yubiotp --serial-public-id --generate-private-id --generate-key 2</code></pre>
+        <p class="muted">
+          This programs slot 2 (used with a long touch) and leaves slot 1 as it
+          is. Copy the printed secret key below. Don't use <code>--upload</code>.
+        </p>
+        <p class="faint small">
+          Server operators: set <code>COCOON_YUBICO_CLIENT_ID</code> and
+          <code>COCOON_YUBICO_API_KEY</code> to let people add a YubiKey just by
+          touching it.
+        </p>
+        <form action="/account/2fa/yubikey" method="post">
+          <label for="name">Name</label>
+          <input id="name" name="name" placeholder="Name (e.g. Blue YubiKey)" maxlength="64" />
+          <label for="aes_key">Secret key</label>
+          <input id="aes_key" name="aes_key" placeholder="Secret key (32 hex characters)" autocomplete="off" />
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" placeholder="Password" autocomplete="current-password" />
+          {{ if .EmailOnly }}
+          <label for="current_code">Code from the email</label>
+          <input id="current_code" name="current_code" placeholder="Code from the email" autocomplete="off" />
+          {{ else if .HasCredentials }}
+          <label for="current_code">Current code</label>
+          <input id="current_code" name="current_code" placeholder="Code from a current method, or a backup code" autocomplete="off" />
+          {{ end }}
+          <label for="otp">YubiKey</label>
+          <input class="input-code" id="otp" name="otp" placeholder="Click here, then long-touch your YubiKey" autocomplete="off" />
+          <button class="primary block" type="submit">Add YubiKey</button>
+        </form>
+        {{ end }}
+      </section>
     </main>
   </body>
 </html>
