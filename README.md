@@ -180,6 +180,19 @@ COCOON_PLC_URL="http://localhost:2582"
 
 > **Warning**: Accounts created against a non-default PLC directory only exist in that directory and will not be resolvable by the wider network. Leave this unset for production deployments.
 
+#### YubiKeys
+
+Accounts can turn on two-factor sign-in with an authenticator app or a YubiKey from `/account/2fa`. To let people add a YubiKey just by touching it, get a free client ID and API key from [Yubico](https://upgrade.yubico.com/getapikey/) and set:
+
+```bash
+COCOON_YUBICO_CLIENT_ID="12345"
+COCOON_YUBICO_API_KEY="base64-secret-key-from-yubico"
+```
+
+YubiKey codes are then checked with Yubico's YubiCloud service at `api.yubico.com`. If it can't be reached, YubiKey sign-in fails until it's back; authenticator codes and backup codes still work.
+
+Without these settings, a YubiKey must first have a slot programmed with a secret key that the server stores (the setup page gives the `ykman` command).
+
 #### Alpine based image
 
 The default image is based on Debian. You can use the Alpine-based image if you prefer.

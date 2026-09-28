@@ -164,6 +164,12 @@ func (s *Server) handleAccountSigninPost(e echo.Context) error {
 	}
 
 	res, err := s.checkSecondFactor(ctx, &repo, req.AuthFactorToken)
+	if errors.Is(err, errYubiCloudUnavailable) {
+		sess.AddFlash("Couldn't check your YubiKey with Yubico right now. Try again shortly, or use another sign-in method.", "error")
+		sess.AddFlash("requires 2FA token", "tokenrequired")
+		sess.Save(e.Request(), e.Response())
+		return e.Redirect(303, "/account/signin"+queryParams)
+	}
 	if err != nil {
 		logger.Error("checking second factor", "error", err)
 		sess.AddFlash("Something went wrong!", "error")

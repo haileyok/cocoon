@@ -32,6 +32,7 @@ import (
 	"github.com/haileyok/cocoon/identity"
 	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/internal/helpers"
+	"github.com/haileyok/cocoon/internal/yubicloud"
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/oauth/client"
 	"github.com/haileyok/cocoon/oauth/constants"
@@ -87,6 +88,10 @@ type Server struct {
 	scopeResolver scopes.PermissionSetResolver
 	fallbackProxy string
 
+	// yubiCloud checks YubiKey OTPs with Yubico, so factory keys can be
+	// registered by tapping them. Nil when no Yubico API key is configured.
+	yubiCloud *yubicloud.Client
+
 	repoWriteLocks sync.Map // DID -> *sync.Mutex; shared by writes and imports.
 
 	// Optional client override for proxy and feed-record requests. Nil keeps
@@ -137,6 +142,13 @@ type Args struct {
 	// PlcURL is the PLC directory used for creating, updating, and resolving
 	// did:plc identities. Empty defaults to identity.DefaultPlcURL.
 	PlcURL string
+
+	// YubicoClientID and YubicoAPIKey (base64) let YubiKeys be checked with
+	// Yubico's YubiCloud service, so they can be added by tapping them. Get
+	// both from https://upgrade.yubico.com/getapikey/. Leave both empty to
+	// only accept YubiKeys programmed with a secret this server stores.
+	YubicoClientID string
+	YubicoAPIKey   string
 }
 
 type config struct {
@@ -505,6 +517,15 @@ func New(args *Args) (*Server, error) {
 
 		s.mail = mail
 		s.mailLk = &sync.Mutex{}
+	}
+
+	yc, err := newYubiCloudFromConfig(args.YubicoClientID, args.YubicoAPIKey)
+	if err != nil {
+		return nil, err
+	}
+	s.yubiCloud = yc
+	if yc == nil {
+		args.Logger.Info("no yubico api key configured; yubikeys must be programmed with a secret to be added")
 	}
 
 	return s, nil
