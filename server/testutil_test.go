@@ -64,6 +64,8 @@ func newTestServer(t *testing.T) *Server {
 		&models.Blob{},
 		&models.BlobPart{},
 		&models.ReservedKey{},
+		&models.TwoFactorCredential{},
+		&models.TwoFactorBackupCode{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
 	); err != nil {

@@ -33,6 +33,7 @@ require (
 	github.com/multiformats/go-multihash v0.2.3
 	github.com/prometheus/client_golang v1.23.2
 	github.com/samber/slog-echo v1.21.0
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/urfave/cli/v2 v2.27.7
 	github.com/whyrusleeping/cbor-gen v0.3.1
 	gitlab.com/yawning/secp256k1-voi v0.0.0-20230925100816-f2616030848b

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <link rel="stylesheet" href="/static/pico.css" />
+    <link rel="stylesheet" href="/static/style.css" />
+    <title>Two-factor authentication</title>
+  </head>
+  <body class="margin-top-md">
+    <main class="container base-container authorize-container margin-top-xl">
+      <p><a href="/account">&larr; Back to your account</a></p>
+      <h2>Two-factor authentication</h2>
+      {{ if .flashes.errors }}
+      <div class="alert alert-danger margin-bottom-xs">
+        <p>{{ index .flashes.errors 0 }}</p>
+      </div>
+      {{ end }}
+      {{ if .flashes.successes }}
+      <div class="alert alert-success margin-bottom-xs">
+        <p>{{ index .flashes.successes 0 }}</p>
+      </div>
+      {{ end }}
+
+      {{ if .HasCredentials }}
+      <p>
+        Signing in to {{ .Repo.Handle }} needs a code from one of the methods
+        below. In the Bluesky app, enter it in the box that asks for an emailed
+        code. No emailed code is sent.
+      </p>
+      {{ range .Credentials }}
+      <div class="base-container">
+        <h4>{{ .Name }}</h4>
+        <p>{{ .Type }} &middot; added {{ .CreatedAt }} &middot; last used {{ .LastUsedAt }}</p>
+        <details>
+          <summary>Remove</summary>
+          <form action="/account/2fa/remove" method="post">
+            <input type="hidden" name="id" value="{{ .ID }}" />
+            <input name="password" type="password" placeholder="Password" autocomplete="current-password" />
+            <input name="current_code" placeholder="Current code, YubiKey, or backup code" autocomplete="one-time-code" />
+            <button type="submit">Remove {{ .Name }}</button>
+          </form>
+        </details>
+      </div>
+      {{ end }}
+
+      <h3>Backup codes</h3>
+      <p>{{ .BackupCodesRemaining }} unused backup code(s) left. Each works once, in place of a code.</p>
+      <details>
+        <summary>Create new backup codes</summary>
+        <form action="/account/2fa/backup-codes" method="post">
+          <input name="password" type="password" placeholder="Password" autocomplete="current-password" />
+          <input name="current_code" placeholder="Current code, YubiKey, or backup code" autocomplete="one-time-code" />
+          <button type="submit">Replace backup codes</button>
+        </form>
+      </details>
+      {{ else if .EmailTwoFactor }}
+      <p>Signing in currently needs a code sent to your email. Adding an authenticator app or YubiKey replaces emailed codes.</p>
+      {{ else }}
+      <p>Two-factor authentication is off.</p>
+      {{ end }}
+
+      <h3>Add a sign-in method</h3>
+      <ul>
+        <li><a href="/account/2fa/totp">Authenticator app</a></li>
+        <li><a href="/account/2fa/yubikey">YubiKey (Yubico OTP)</a></li>
+      </ul>
+    </main>
+  </body>
+</html>

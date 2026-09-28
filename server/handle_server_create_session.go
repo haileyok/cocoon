@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"errors"
 	"fmt"
 	"strings"
@@ -95,41 +94,26 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 		return helpers.InputError(e, to.StringPtr("InvalidRequest"))
 	}
 
-	// if repo requires 2FA token and one hasn't been provided, return error prompting for one
-	if repo.TwoFactorType != models.TwoFactorTypeNone && (req.AuthFactorToken == nil || *req.AuthFactorToken == "") {
-		err = s.createAndSendTwoFactorCode(ctx, repo)
-		if err != nil {
-			logger.Error("sending 2FA code", "error", err)
-			return helpers.ServerError(e, nil)
-		}
-
-		return helpers.InputError(e, to.StringPtr("AuthFactorTokenRequired"))
+	// The Bluesky app shows its "check your email" code box for any
+	// AuthFactorTokenRequired, so authenticator codes, YubiKey OTPs, and
+	// backup codes all arrive through authFactorToken.
+	token := ""
+	if req.AuthFactorToken != nil {
+		token = *req.AuthFactorToken
+	}
+	res, err := s.checkSecondFactor(ctx, &repo, token)
+	if err != nil {
+		logger.Error("checking second factor", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+	if res != secondFactorOK {
+		return secondFactorXrpcError(e, res)
 	}
 
-	// if 2FA is required, now check that the one provided is valid
-	if repo.TwoFactorType != models.TwoFactorTypeNone {
-		if repo.TwoFactorCode == nil || repo.TwoFactorCodeExpiresAt == nil {
-			err = s.createAndSendTwoFactorCode(ctx, repo)
-			if err != nil {
-				logger.Error("sending 2FA code", "error", err)
-				return helpers.ServerError(e, nil)
-			}
-
-			return helpers.InputError(e, to.StringPtr("AuthFactorTokenRequired"))
-		}
-
-		if subtle.ConstantTimeCompare([]byte(*repo.TwoFactorCode), []byte(*req.AuthFactorToken)) != 1 {
-			return helpers.InvalidTokenError(e)
-		}
-
-		if time.Now().UTC().After(*repo.TwoFactorCodeExpiresAt) {
-			return helpers.ExpiredTokenError(e)
-		}
-
-		if err := s.clearTwoFactorCode(ctx, repo.Repo.Did); err != nil {
-			logger.Error("error clearing 2FA code", "error", err)
-			return helpers.ServerError(e, nil)
-		}
+	hasSecondFactor, err := s.hasSecondFactor(ctx, &repo.Repo)
+	if err != nil {
+		logger.Error("checking second factor", "error", err)
+		return helpers.ServerError(e, nil)
 	}
 
 	sess, err := s.createSession(ctx, &repo.Repo)
@@ -145,7 +129,7 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 		Did:             repo.Repo.Did,
 		Email:           repo.Email,
 		EmailConfirmed:  repo.EmailConfirmedAt != nil,
-		EmailAuthFactor: repo.TwoFactorType != models.TwoFactorTypeNone,
+		EmailAuthFactor: hasSecondFactor,
 		Active:          repo.Active(),
 		Status:          repo.Status(),
 	})
