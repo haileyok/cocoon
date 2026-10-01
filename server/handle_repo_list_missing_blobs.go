@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 
 	"github.com/bluesky-social/indigo/atproto/atdata"
@@ -56,6 +57,9 @@ func (s *Server) handleListMissingBlobs(e echo.Context) error {
 			allBlobRefs = append(allBlobRefs, blobRef{cid: cid.Cid(b.Ref), recordUri: recordUri})
 		}
 	}
+	sort.SliceStable(allBlobRefs, func(i, j int) bool {
+		return allBlobRefs[i].cid.String() < allBlobRefs[j].cid.String()
+	})
 
 	missingBlobs := make([]ComAtprotoRepoListMissingBlobsRecordBlob, 0)
 	seenCids := make(map[string]bool)
@@ -70,10 +74,12 @@ func (s *Server) handleListMissingBlobs(e echo.Context) error {
 		if cursor != "" && cidStr <= cursor {
 			continue
 		}
+		seenCids[cidStr] = true
 
 		var count int64
 		if err := s.db.Raw(ctx, "SELECT COUNT(*) FROM blobs WHERE did = ? AND cid = ?", nil, urepo.Repo.Did, ref.cid.Bytes()).Scan(&count).Error; err != nil {
-			continue
+			logger.Error("failed to check blob availability", "error", err)
+			return helpers.ServerError(e, nil)
 		}
 
 		if count == 0 {
@@ -81,7 +87,6 @@ func (s *Server) handleListMissingBlobs(e echo.Context) error {
 				Cid:       cidStr,
 				RecordUri: ref.recordUri,
 			})
-			seenCids[cidStr] = true
 
 			if len(missingBlobs) >= limit {
 				break
