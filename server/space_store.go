@@ -362,6 +362,10 @@ func (st *spaceStore) deleteSpace(uri string) error {
 	if err := st.db.Model(&models.Space{}).Where("did = ? AND uri = ?", st.did, uri).Update("deleted_at", nowISO()).Error; err != nil {
 		return err
 	}
+	var blobCids []string
+	if err := st.db.Raw("SELECT DISTINCT blob_cid FROM space_record_blobs WHERE did = ? AND record_uri IN (SELECT uri FROM space_records WHERE did = ? AND space = ?)", st.did, st.did, uri).Scan(&blobCids).Error; err != nil {
+		return err
+	}
 	if err := st.db.Exec("DELETE FROM space_record_blobs WHERE did = ? AND record_uri IN (SELECT uri FROM space_records WHERE did = ? AND space = ?)", st.did, st.did, uri).Error; err != nil {
 		return err
 	}
@@ -373,7 +377,7 @@ func (st *spaceStore) deleteSpace(uri string) error {
 			return err
 		}
 	}
-	return nil
+	return st.gcBlobs(blobCids)
 }
 
 // buildSignedCommit signs the repo's current state for one reader. Nil when
