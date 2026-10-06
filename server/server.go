@@ -98,6 +98,8 @@ type Server struct {
 
 	// spaceJobs tracks background Spaces work (notification fan-out).
 	spaceJobs sync.WaitGroup
+	// spaceWorker resends failed write notifications.
+	spaceWorker spaceWorker
 	// spaceFetchHTTP fetches client metadata and JWKS for client
 	// attestations. Nil uses the SSRF-guarded client.
 	spaceFetchHTTP *http.Client
@@ -709,6 +711,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 
 	go s.backupRoutine()
+	s.startSpaceWorkers()
 	go s.oauthTokenCleanupRoutine(ctx)
 
 	go func() {

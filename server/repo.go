@@ -894,6 +894,14 @@ func (rm *RepoMan) indexRecords(ctx context.Context, did string, entries []model
 			if err := tx.Exec(ctx, "UPDATE blobs SET ref_count = ? WHERE did = ? AND cid = ?", nil, verifiedRefs[c], did, c.Bytes()).Error; err != nil {
 				return err
 			}
+			// A blob a space record still names keeps its bytes.
+			var inSpaces int64
+			if err := tx.Raw(ctx, "SELECT COUNT(*) FROM space_record_blobs WHERE did = ? AND blob_cid = ?", nil, did, c.String()).Scan(&inSpaces).Error; err != nil {
+				return err
+			}
+			if inSpaces > 0 {
+				continue
+			}
 			if err := tx.Exec(ctx, "DELETE FROM blob_parts WHERE blob_id IN (SELECT id FROM blobs WHERE did = ? AND cid = ? AND ref_count = 0)", nil, did, c.Bytes()).Error; err != nil {
 				return err
 			}

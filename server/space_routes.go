@@ -34,4 +34,11 @@ func (s *Server) addSpaceRoutes() {
 	s.echo.POST("/xrpc/com.atproto.space.getSpaceCredential", s.handleSpaceGetSpaceCredential)
 	// service auth from the space authority, verified in the handler
 	s.echo.POST("/xrpc/com.atproto.space.notifyCredentialRevoked", s.handleSpaceNotifyCredentialRevoked)
+
+	// sync: write notifications, registrations and full-state recovery
+	s.echo.POST("/xrpc/com.atproto.space.notifyWrite", s.handleSpaceNotifyWrite)
+	s.echo.POST("/xrpc/com.atproto.space.registerNotify", s.handleSpaceRegisterNotify)
+	s.echo.POST("/xrpc/com.atproto.space.unregisterNotify", s.handleSpaceUnregisterNotify)
+	s.echo.GET("/xrpc/com.atproto.space.listRepos", s.handleSpaceListRepos)
+	s.echo.GET("/xrpc/com.atproto.space.getRepo", s.handleSpaceGetRepo, s.spaceReadMiddleware)
 }
