@@ -355,7 +355,8 @@ func VerifySpaceToken(typ TokenType, jwt string, opts VerifyTokenOpts) (*Token, 
 	}
 	didKey, err := opts.GetSigningKey(t.Payload.Iss, t.Header.Kid, false)
 	if err != nil {
-		return nil, tokErr("BadJwtSignature", "could not resolve the token signing key: %v", err)
+		// Resolver errors propagate as they are, as in the reference.
+		return nil, err
 	}
 	ok, err := matchesSignature(didKey, t)
 	if err != nil {
@@ -366,7 +367,8 @@ func VerifySpaceToken(typ TokenType, jwt string, opts VerifyTokenOpts) (*Token, 
 	}
 	fresh, err := opts.GetSigningKey(t.Payload.Iss, t.Header.Kid, true)
 	if err != nil {
-		return nil, tokErr("BadJwtSignature", "could not resolve the token signing key: %v", err)
+		// Resolver errors propagate as they are, as in the reference.
+		return nil, err
 	}
 	if fresh != didKey {
 		ok, err := matchesSignature(fresh, t)

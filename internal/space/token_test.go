@@ -330,3 +330,13 @@ func TestTokenVectors(t *testing.T) {
 		}
 	}
 }
+
+func TestTokenResolverErrorsPropagate(t *testing.T) {
+	key := newK256(t)
+	jwt, _ := CreateSpaceToken(TokenDelegation, CreateTokenOpts{Iss: tUser, Sub: tSpace, Aud: tSpaceHost}, key)
+	sentinel := errors.New("no such key")
+	_, err := VerifySpaceToken(TokenDelegation, jwt, VerifyTokenOpts{GetSigningKey: func(string, string, bool) (string, error) { return "", sentinel }})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("resolver error lost: %v", err)
+	}
+}
