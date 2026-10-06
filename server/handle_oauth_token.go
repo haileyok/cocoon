@@ -307,12 +307,12 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 // alongside the originals. If the resolver is nil or resolution fails, the
 // original scope string is returned unchanged.
 func (s *Server) expandScopes(ctx context.Context, rawScope string) string {
-	if s.scopeResolver == nil {
-		return rawScope
-	}
 	parsed, err := scopes.ParseList(rawScope)
 	if err != nil {
 		return rawScope
+	}
+	if s.scopeResolver == nil {
+		return strings.Join(scopes.ExpandSpaceCollections(ctx, s.spaceTypeResolver(), strings.Fields(rawScope)), " ")
 	}
 	var out []string
 	for _, sc := range parsed {
@@ -347,7 +347,16 @@ func (s *Server) expandScopes(ctx context.Context, rawScope string) string {
 			}
 		}
 	}
-	return strings.Join(out, " ")
+	return strings.Join(scopes.ExpandSpaceCollections(ctx, s.spaceTypeResolver(), out), " ")
+}
+
+// spaceTypeResolver resolves space type declarations for bare space: grants.
+func (s *Server) spaceTypeResolver() scopes.SpaceTypeResolver {
+	if s.spaceTypes != nil {
+		return s.spaceTypes
+	}
+	r, _ := s.scopeResolver.(scopes.SpaceTypeResolver)
+	return r
 }
 
 // verifyPKCE checks a PKCE code_verifier against the stored code_challenge for

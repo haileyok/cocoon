@@ -88,6 +88,8 @@ type Server struct {
 	evtpersister  *DbPersister
 	passport      *identity.Passport
 	scopeResolver scopes.PermissionSetResolver
+	// spaceTypes resolves space type declarations; nil uses scopeResolver.
+	spaceTypes    scopes.SpaceTypeResolver
 	fallbackProxy string
 
 	// yubiCloud checks YubiKey OTPs with Yubico, so factory keys can be
