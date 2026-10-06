@@ -193,7 +193,7 @@ func (p *spacePDS) newOAuthSession(a *actor, scope string) *dpopSession {
 	tok := "oauth-" + uuid.NewString()
 	row := provider.OauthToken{
 		ClientId:       "http://localhost",
-		Parameters:     provider.ParRequest{Scope: p.s.expandScopes(context.Background(), scope), DpopJkt: &jkt},
+		Parameters:     provider.ParRequest{Scope: p.s.expandScopes(context.Background(), scope, a.did), DpopJkt: &jkt},
 		ExpiresAt:      time.Now().Add(time.Hour),
 		Sub:            a.did,
 		SessionVersion: repo.Repo.SessionVersion,

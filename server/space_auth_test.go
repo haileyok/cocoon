@@ -760,7 +760,7 @@ func TestSpaceAuthOAuthScopes(t *testing.T) {
 		// the write below only succeeds if the session's grant covers alice's
 		// own authority.
 		pds1.s.spaceTypes = authSpaceTypes{}
-		expanded := pds1.s.expandScopes(context.Background(), "atproto space:"+testSpaceType)
+		expanded := pds1.s.expandScopes(context.Background(), "atproto space:"+testSpaceType, "")
 		for _, collection := range []string{"com.example.groupNote", "com.example.groupPost"} {
 			if !strings.Contains(expanded, "collection="+collection) {
 				t.Fatalf("expanded scope misses %s: %s", collection, expanded)
