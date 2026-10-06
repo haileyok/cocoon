@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -48,6 +49,11 @@ func didDocKey(doc *identity.DidDoc, keyID string) (string, bool) {
 func didDocService(doc *identity.DidDoc, id string) (string, bool) {
 	for _, svc := range doc.Service {
 		if svc.Id == "#"+id || svc.Id == doc.Id+"#"+id {
+			// As the reference's getServiceEndpoint, only a valid http(s) URL.
+			u, err := url.Parse(svc.ServiceEndpoint)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return "", false
+			}
 			return svc.ServiceEndpoint, true
 		}
 	}
@@ -354,8 +360,12 @@ func (s *Server) resolveServiceEndpoint(ctx context.Context, service string) (st
 		return "", false
 	}
 	if frag == "atproto_space_host" {
-		if ep, ok := didDocService(doc, "atproto_space_host"); ok {
-			return ep, true
+		// Fall back to the PDS only when no dedicated host is published; a
+		// published but invalid one resolves to nothing.
+		for _, svc := range doc.Service {
+			if svc.Id == "#atproto_space_host" || svc.Id == service {
+				return didDocService(doc, "atproto_space_host")
+			}
 		}
 		return didDocService(doc, "atproto_pds")
 	}
