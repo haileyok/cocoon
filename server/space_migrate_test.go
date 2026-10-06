@@ -89,6 +89,53 @@ func TestLegacySpaceTablesBreakPlainAutoMigrate(t *testing.T) {
 	}
 }
 
+// The live PDS first ran #176's plain AutoMigrate over the legacy tables,
+// which added uri to space_records before failing on did, so the table had
+// today's primary key column but not its other required ones.
+func TestMigrateSpaceTablesAfterFailedPlainMigration(t *testing.T) {
+	gdb := openLegacySpaceDB(t)
+	_ = gdb.AutoMigrate(models.SpaceModels()...) // what #176 did; the error was ignored
+	if !gdb.Migrator().HasColumn(&models.SpaceRecord{}, "uri") || gdb.Migrator().HasColumn(&models.SpaceRecord{}, "did") {
+		t.Fatal("setup: expected space_records with uri but without did")
+	}
+	if err := migrateSpaceTables(gdb, slog.Default()); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	for _, model := range models.SpaceModels() {
+		if !gdb.Migrator().HasTable(model) {
+			t.Fatalf("table for %T was not created", model)
+		}
+	}
+	rec := models.SpaceRecord{Uri: "at://x", Did: "did:plc:a", Space: "at://did:plc:a/space/t/s", Collection: "c", Rkey: "r", Cid: "bafy", Value: []byte{1}, RepoRev: "1", IndexedAt: "now"}
+	if err := gdb.Create(&rec).Error; err != nil {
+		t.Fatalf("space_records unusable: %v", err)
+	}
+	var got models.SpaceRecord
+	if err := gdb.Where("did = ? AND uri = ?", rec.Did, rec.Uri).First(&got).Error; err != nil {
+		t.Fatalf("query by did failed: %v", err)
+	}
+}
+
+// A current table that only lacks a column a newer model requires is left
+// for AutoMigrate, never moved aside: its rows are real data.
+func TestMigrateSpaceTablesKeepsCurrentTables(t *testing.T) {
+	gdb := openLegacySpaceDB(t)
+	if err := gdb.Migrator().DropTable(&legacySpaceRecord{}, &legacySpaceRepo{}, &legacySpaceWriter{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Exec("CREATE TABLE space_used_jtis (namespace text, jti text, PRIMARY KEY (namespace, jti))").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Exec("INSERT INTO space_used_jtis (namespace, jti) VALUES ('n', 'j')").Error; err != nil {
+		t.Fatal(err)
+	}
+	_ = migrateSpaceTables(gdb, slog.Default())
+	var n int64
+	if err := gdb.Table("space_used_jtis").Count(&n).Error; err != nil || n != 1 {
+		t.Fatalf("current table was moved or emptied: n=%d err=%v", n, err)
+	}
+}
+
 func TestMigrateSpaceTablesMovesLegacyTablesAside(t *testing.T) {
 	gdb := openLegacySpaceDB(t)
 	if err := migrateSpaceTables(gdb, slog.Default()); err != nil {
