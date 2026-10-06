@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/haileyok/cocoon/models"
@@ -35,8 +36,11 @@ func migrateSpaceTables(db *gorm.DB, logger *slog.Logger) error {
 	return errors.Join(errs...)
 }
 
-// moveIncompatibleTable renames model's table if it exists without all of the
-// model's primary key columns.
+// moveIncompatibleTable renames model's table if it is a different table
+// under the same name: it lacks a column the model requires (a primary key,
+// or NOT NULL without a default, which AutoMigrate can't add to a table with
+// rows) and has columns the model doesn't know. A table that only lacks a
+// newly required column is left alone, since its rows are real data.
 func moveIncompatibleTable(db *gorm.DB, model any, logger *slog.Logger) error {
 	m := db.Migrator()
 	if !m.HasTable(model) {
@@ -46,19 +50,38 @@ func moveIncompatibleTable(db *gorm.DB, model any, logger *slog.Logger) error {
 	if err := stmt.Parse(model); err != nil {
 		return err
 	}
-	var missing []string
-	for _, col := range stmt.Schema.PrimaryFieldDBNames {
-		if !m.HasColumn(model, col) {
-			missing = append(missing, col)
+	// Read the real column list; the SQLite driver's HasColumn only
+	// pattern-matches the table's CREATE statement.
+	cols, err := m.ColumnTypes(model)
+	if err != nil {
+		return err
+	}
+	have := make(map[string]bool, len(cols))
+	for _, c := range cols {
+		have[strings.ToLower(c.Name())] = true
+	}
+	var missing, unknown []string
+	for _, f := range stmt.Schema.Fields {
+		if f.DBName == "" {
+			continue
+		}
+		required := f.PrimaryKey || (f.NotNull && !f.HasDefaultValue)
+		if required && !have[strings.ToLower(f.DBName)] {
+			missing = append(missing, f.DBName)
 		}
 	}
-	if len(missing) == 0 {
+	for _, c := range cols {
+		if stmt.Schema.LookUpField(c.Name()) == nil {
+			unknown = append(unknown, c.Name())
+		}
+	}
+	if len(missing) == 0 || len(unknown) == 0 {
 		return nil
 	}
 
 	table := stmt.Schema.Table
 	legacy := fmt.Sprintf("%s_legacy_%d", table, time.Now().Unix())
-	logger.Warn("moving aside a space table from an older version", "table", table, "renamed_to", legacy, "missing_columns", missing)
+	logger.Warn("moving aside a space table from an older version", "table", table, "renamed_to", legacy, "missing_columns", missing, "unknown_columns", unknown)
 	if err := m.RenameTable(table, legacy); err != nil {
 		return err
 	}
