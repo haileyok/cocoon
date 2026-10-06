@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/google/uuid"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
@@ -19,7 +20,7 @@ import (
 )
 
 type ServerGetServiceAuthRequest struct {
-	Aud string `query:"aud" validate:"required,atproto-did"`
+	Aud string `query:"aud" validate:"required"`
 	// exp should be a float, as some clients will send a non-integer expiration
 	Exp float64 `query:"exp"`
 	Lxm string  `query:"lxm"`
@@ -34,7 +35,7 @@ func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := e.Validate(req); err != nil {
+	if err := e.Validate(req); err != nil || !validServiceAuthAudience(req.Aud) {
 		return helpers.InputError(e, nil)
 	}
 
@@ -129,4 +130,37 @@ func (s *Server) handleServerGetServiceAuth(e echo.Context) error {
 	return e.JSON(200, map[string]string{
 		"token": token,
 	})
+}
+
+// Service-auth audiences may name a service fragment, unlike account DIDs.
+// Keep the original string for exact OAuth grant matching and the signed claim.
+func validServiceAuthAudience(aud string) bool {
+	did, fragment, hasFragment := strings.Cut(aud, "#")
+	if _, err := syntax.ParseDID(did); err != nil {
+		return false
+	}
+	if !hasFragment {
+		return true
+	}
+	if fragment == "" {
+		return false
+	}
+	// RFC 3986 section 3.5: fragment = *(pchar / "/" / "?"). Indigo's
+	// ParseDID intentionally excludes fragments; it has no DID-reference parser.
+	// PathUnescape validates percent triplets without normalizing the audience.
+	if _, err := url.PathUnescape(fragment); err != nil {
+		return false
+	}
+	for i := 0; i < len(fragment); i++ {
+		c := fragment[i]
+		if c == '%' {
+			i += 2
+			continue
+		}
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || strings.ContainsRune("-._~!$&'()*+,;=:@/?", rune(c)) {
+			continue
+		}
+		return false
+	}
+	return true
 }
