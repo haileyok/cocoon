@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/haileyok/cocoon/oauth/scopes"
@@ -29,6 +30,10 @@ func describeScopes(scope string) []scopePermission {
 		ident   []string
 		include []string
 		other   []string
+		// space: grants
+		spaces      []string
+		spaceTypes  []string
+		spaceManage []string
 	)
 	add := func(p scopePermission) { out = append(out, p) }
 
@@ -69,6 +74,14 @@ func describeScopes(scope string) []scopePermission {
 			ident = append(ident, raw)
 		case scopes.ResourceInclude:
 			include = append(include, raw)
+		case scopes.ResourceSpace:
+			spaces = append(spaces, raw)
+			if !slices.Contains(spaceTypes, sc.Space.Type) {
+				spaceTypes = append(spaceTypes, sc.Space.Type)
+			}
+			if sc.Space.Manage != nil {
+				spaceManage = append(spaceManage, raw)
+			}
 		default:
 			other = append(other, raw)
 		}
@@ -83,6 +96,16 @@ func describeScopes(scope string) []scopePermission {
 			detail = "Create, change, or delete any record in your repository."
 		}
 		add(scopePermission{Title: "Change your data", Detail: detail, Sensitive: repoAll, Raw: repo})
+	}
+	if len(spaces) > 0 {
+		kinds := strings.Join(spaceTypes, ", ")
+		if slices.Contains(spaceTypes, "*") {
+			kinds = "any kind"
+		}
+		add(scopePermission{Title: "Your private spaces", Detail: "Read and write your data in private spaces (" + kinds + "), which only their members can see.", Raw: spaces})
+	}
+	if len(spaceManage) > 0 {
+		add(scopePermission{Title: "Manage your private spaces", Detail: "Create, change, or delete spaces you own and decide who belongs to them.", Sensitive: true, Raw: spaceManage})
 	}
 	if len(blob) > 0 {
 		add(scopePermission{Title: "Upload media", Detail: "Upload images, video, or other files to your account.", Raw: blob})
