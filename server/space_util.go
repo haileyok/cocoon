@@ -322,3 +322,14 @@ func trimDIDFragment(s string) string {
 	}
 	return s
 }
+
+// spaceClient is the client for space requests to endpoints DID documents
+// name. Unless overridden it refuses private and loopback addresses.
+func (s *Server) spaceClient() *http.Client {
+	s.spaceHTTPOnce.Do(func() {
+		if s.spaceHTTP == nil {
+			s.spaceHTTP = helpers.NewSafeFetchClient()
+		}
+	})
+	return s.spaceHTTP
+}

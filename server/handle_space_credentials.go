@@ -202,7 +202,7 @@ func (s *Server) checkManagingApp(ctx context.Context, ref space.Ref, app, userD
 	for k, v := range target.headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := s.http.Do(req)
+	resp, err := s.spaceClient().Do(req)
 	if err != nil {
 		s.logger.Warn("managing app check failed", "space", ref.String(), "managingApp", app, "err", err)
 		return false
@@ -483,7 +483,7 @@ func (s *Server) postXRPC(ctx context.Context, target *notifyTarget, lxm string,
 	for k, v := range target.headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := s.http.Do(req)
+	resp, err := s.spaceClient().Do(req)
 	if err != nil {
 		return 0, err
 	}

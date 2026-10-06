@@ -105,6 +105,11 @@ type Server struct {
 	// spaceFetchHTTP fetches client metadata and JWKS for client
 	// attestations. Nil uses the SSRF-guarded client.
 	spaceFetchHTTP *http.Client
+	// spaceHTTP sends space requests to endpoints DID documents name
+	// (managing apps, notification recipients, space hosts). Nil uses the
+	// SSRF-guarded client.
+	spaceHTTP     *http.Client
+	spaceHTTPOnce sync.Once
 
 	// Optional client override for proxy and feed-record requests. Nil keeps
 	// each path's existing default client.

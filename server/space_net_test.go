@@ -135,6 +135,8 @@ func (n *spaceNet) newPDS() *spacePDS {
 	s.config.Hostname = host
 	s.config.Did = "did:web:" + strings.ReplaceAll(host, ":", "%3A")
 	s.http = n.http
+	// The test network's parties listen on loopback.
+	s.spaceHTTP = n.http
 	s.passport = identity.NewPassport(n.http, noCache{}, identity.WithPlcURL(n.dir.srv.URL))
 	s.oauthProvider = provider.NewProvider(provider.Args{
 		Hostname:        host,

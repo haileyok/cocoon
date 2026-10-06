@@ -75,6 +75,14 @@ the reference.
   and it can't write or mint delegation tokens, as in the reference.
 - **One retry worker.** The reference elects a notification retry worker with
   a lease. Cocoon runs a single worker in process.
+- **Outbound requests.** Managing-app checks and notifications go to
+  endpoints that DID documents name. Cocoon sends them with its SSRF-guarded
+  client, which refuses private and loopback addresses. The reference uses a
+  plain fetch.
+- **One process per database.** Like Cocoon's public repo writes, space writes
+  and blob cleanup are serialized per account within one process. Running
+  several Cocoon instances on one Postgres database could let blob cleanup race
+  a space write that references the same blob.
 - **Unresolvable space type.** The reference refuses to issue a token when a
   bare `space:<type>` grant's declaration can't be resolved. Cocoon issues the
   grant unchanged, which permits no writes.
