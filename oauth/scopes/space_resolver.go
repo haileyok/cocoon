@@ -41,6 +41,7 @@ func (r *IndigoResolver) ResolveSpaceCollections(ctx context.Context, nsidStr st
 
 type spaceCacheEntry struct {
 	collections []string
+	permissions []*SpacePermission
 	err         error
 	expires     time.Time
 }

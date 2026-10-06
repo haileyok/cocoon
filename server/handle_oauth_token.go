@@ -133,7 +133,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 
 		refreshToken := oauth.GenerateRefreshToken()
 
-		expandedScope := s.expandScopes(ctx, authReq.Parameters.Scope)
+		expandedScope := s.expandScopes(ctx, authReq.Parameters.Scope, repo.Repo.Did)
 		authReq.Parameters.Scope = expandedScope
 
 		accessClaims := jwt.MapClaims{
@@ -254,7 +254,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		now := time.Now()
 		eat := now.Add(constants.TokenMaxAge)
 
-		expandedScope := s.expandScopes(ctx, oauthToken.Parameters.Scope)
+		expandedScope := s.expandScopes(ctx, oauthToken.Parameters.Scope, oauthToken.Sub)
 		oauthToken.Parameters.Scope = expandedScope
 
 		accessClaims := jwt.MapClaims{
@@ -305,14 +305,17 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 // expandScopes parses a raw scope string, resolves any include: scopes via
 // the permission-set resolver, and appends the expanded granular scopes
 // alongside the originals. If the resolver is nil or resolution fails, the
-// original scope string is returned unchanged.
-func (s *Server) expandScopes(ctx context.Context, rawScope string) string {
+// original scope string is returned unchanged. Space grants are then
+// finished for userDid, as the reference does at issuance: bare
+// space:<type> grants gain the type's declared collections, and a "self"
+// authority resolves to the user.
+func (s *Server) expandScopes(ctx context.Context, rawScope, userDid string) string {
 	parsed, err := scopes.ParseList(rawScope)
 	if err != nil {
 		return rawScope
 	}
 	if s.scopeResolver == nil {
-		return strings.Join(scopes.ExpandSpaceCollections(ctx, s.spaceTypeResolver(), strings.Fields(rawScope)), " ")
+		return s.finishSpaceScopes(ctx, strings.Fields(rawScope), userDid)
 	}
 	var out []string
 	for _, sc := range parsed {
@@ -346,8 +349,35 @@ func (s *Server) expandScopes(ctx context.Context, rawScope string) string {
 				}
 			}
 		}
+		// Space permissions, which indigo's permission-set schema doesn't
+		// model, resolve separately.
+		if sr, ok := s.scopeResolver.(scopes.SpacePermissionSetResolver); ok {
+			if perms, err := sr.ResolveSpacePermissions(ctx, sc.Nsid); err == nil {
+				for _, p := range perms {
+					out = append(out, p.String())
+				}
+			}
+		}
 	}
-	return strings.Join(scopes.ExpandSpaceCollections(ctx, s.spaceTypeResolver(), out), " ")
+	return s.finishSpaceScopes(ctx, out, userDid)
+}
+
+// finishSpaceScopes materializes declared collections into bare space:
+// grants, resolves "self" authorities to the user, and drops duplicates.
+func (s *Server) finishSpaceScopes(ctx context.Context, grants []string, userDid string) string {
+	grants = scopes.ExpandSpaceCollections(ctx, s.spaceTypeResolver(), grants)
+	seen := make(map[string]bool, len(grants))
+	out := make([]string, 0, len(grants))
+	for _, g := range grants {
+		if p := scopes.ParseSpacePermission(g); p != nil && p.IsSelfAuthority() && userDid != "" {
+			g = p.WithResolvedAuthority(userDid).String()
+		}
+		if !seen[g] {
+			seen[g] = true
+			out = append(out, g)
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // spaceTypeResolver resolves space type declarations for bare space: grants.
