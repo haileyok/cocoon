@@ -14,9 +14,9 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/haileyok/cocoon/internal/helpers"
-	"github.com/haileyok/cocoon/internal/space"
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/oauth/scopes"
+	"github.com/haileyok/cocoon/space"
 	"github.com/labstack/echo/v4"
 )
 

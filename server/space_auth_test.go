@@ -23,8 +23,8 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
-	"github.com/haileyok/cocoon/internal/space"
 	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/space"
 )
 
 // The network the reference suite builds in beforeAll: three PDSes, alice the

@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/haileyok/cocoon/internal/space"
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/oauth/scopes"
+	"github.com/haileyok/cocoon/space"
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )

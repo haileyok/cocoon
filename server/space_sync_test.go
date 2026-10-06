@@ -25,8 +25,8 @@ import (
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/haileyok/cocoon/identity"
-	"github.com/haileyok/cocoon/internal/space"
 	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/space"
 )
 
 // syncNet is a three-PDS network, as the reference's space_sync suite builds:

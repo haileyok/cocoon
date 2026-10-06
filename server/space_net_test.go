@@ -23,10 +23,10 @@ import (
 
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/haileyok/cocoon/identity"
-	"github.com/haileyok/cocoon/internal/space"
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/oauth/dpop"
 	"github.com/haileyok/cocoon/oauth/provider"
+	"github.com/haileyok/cocoon/space"
 	"github.com/labstack/echo/v4"
 )
 

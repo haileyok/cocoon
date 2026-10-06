@@ -94,7 +94,7 @@ the reference case it ports.
 
 | Reference suite | Go tests |
 |---|---|
-| `packages/space` unit tests (set hash, commits, tokens, HTTP signatures, repo CAR) | `internal/space/*_test.go`, plus reference-generated vectors and an export CAR in `internal/space/testdata` |
+| `packages/space` unit tests (set hash, commits, tokens, HTTP signatures, repo CAR) | `space/*_test.go`, plus reference-generated vectors and an export CAR in `space/testdata` |
 | `oauth-scopes` `space-permission.test.ts` | `oauth/scopes/space_test.go` |
 | `pds/tests/space/records.test.ts` | `server/space_records_test.go`, `server/space_blobs_test.go` |
 | `pds/tests/space/auth.test.ts` | `server/space_auth_test.go` |

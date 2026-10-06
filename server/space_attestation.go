@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/haileyok/cocoon/internal/helpers"
-	"github.com/haileyok/cocoon/internal/space"
+	"github.com/haileyok/cocoon/space"
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jws"

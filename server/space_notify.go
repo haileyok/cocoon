@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	"github.com/haileyok/cocoon/internal/space"
 	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/space"
 	"github.com/ipfs/go-cid"
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
