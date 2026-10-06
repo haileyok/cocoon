@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"slices"
 	"strings"
@@ -17,6 +18,14 @@ type scopePermission struct {
 	Detail    string
 	Sensitive bool
 	Raw       []string
+}
+
+// consentScopes returns the scopes to show on the consent page and their
+// descriptions. include: sets are expanded the same way the token endpoint
+// expands them, so the page shows what the user is actually granting.
+func (s *Server) consentScopes(ctx context.Context, scope, userDid string) ([]string, []scopePermission) {
+	expanded := s.expandScopes(ctx, scope, userDid)
+	return strings.Fields(expanded), describeScopes(expanded)
 }
 
 func describeScopes(scope string) []scopePermission {
@@ -88,7 +97,15 @@ func describeScopes(scope string) []scopePermission {
 	}
 
 	if len(include) > 0 {
-		add(scopePermission{Title: "A bundle of permissions", Detail: "Permissions defined by the app's publisher.", Raw: include})
+		names := make([]string, 0, len(include))
+		for _, raw := range include {
+			names = append(names, strings.TrimPrefix(raw, "include:"))
+		}
+		add(scopePermission{
+			Title:  "Permissions defined by the app's publisher",
+			Detail: "The app asked for these sets of permissions: " + strings.Join(names, ", ") + ". What Cocoon could look up from them is listed below.",
+			Raw:    include,
+		})
 	}
 	if len(repo) > 0 {
 		detail := "Create, change, or delete specific kinds of records in your repository."
