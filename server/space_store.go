@@ -3,8 +3,8 @@ package server
 import (
 	"errors"
 
-	"github.com/haileyok/cocoon/internal/space"
 	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/space"
 	"github.com/ipfs/go-cid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"

@@ -34,8 +34,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/haileyok/cocoon/internal/space"
 	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/space"
 )
 
 // notificationsNet is one test network: a writer and an outsider with a local
