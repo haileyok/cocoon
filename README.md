@@ -298,6 +298,18 @@ Just because something is implemented doesn't mean it is finished. Tons of these
 - [x] `com.atproto.sync.requestCrawl`
 - [x] `com.atproto.sync.subscribeRepos`
 
+### Spaces (permissioned data, alpha)
+
+Cocoon implements the ATProto Spaces alpha. See [docs/spaces.md](docs/spaces.md).
+
+- [x] `com.atproto.space.createRecord`, `putRecord`, `deleteRecord`, `applyWrites`
+- [x] `com.atproto.space.getRecord`, `listRecords`, `listRepoOps`, `getLatestCommit`, `getRepo`, `listSpaces`
+- [x] `com.atproto.space.getBlob`, `listBlobs`
+- [x] `com.atproto.space.getDelegationToken`, `getSpaceCredential`, `notifyCredentialRevoked`
+- [x] `com.atproto.space.notifyWrite`, `registerNotify`, `unregisterNotify`, `listRepos`
+- [x] `com.atproto.simplespace.createSpace`, `getSpace`, `updateSpace`, `deleteSpace`
+- [x] `com.atproto.simplespace.putMember`, `removeMember`, `listMembers`
+
 ### Other
 
 - [x] `com.atproto.label.queryLabels`
