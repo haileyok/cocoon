@@ -88,6 +88,8 @@ type Server struct {
 	evtpersister  *DbPersister
 	passport      *identity.Passport
 	scopeResolver scopes.PermissionSetResolver
+	// spaceTypes resolves space type declarations; nil uses scopeResolver.
+	spaceTypes    scopes.SpaceTypeResolver
 	fallbackProxy string
 
 	// yubiCloud checks YubiKey OTPs with Yubico, so factory keys can be
@@ -95,6 +97,19 @@ type Server struct {
 	yubiCloud *yubicloud.Client
 
 	repoWriteLocks sync.Map // DID -> *sync.Mutex; shared by writes and imports.
+
+	// spaceJobs tracks background Spaces work (notification fan-out).
+	spaceJobs sync.WaitGroup
+	// spaceWorker resends failed write notifications.
+	spaceWorker spaceWorker
+	// spaceFetchHTTP fetches client metadata and JWKS for client
+	// attestations. Nil uses the SSRF-guarded client.
+	spaceFetchHTTP *http.Client
+	// spaceHTTP sends space requests to endpoints DID documents name
+	// (managing apps, notification recipients, space hosts). Nil uses the
+	// SSRF-guarded client.
+	spaceHTTP     *http.Client
+	spaceHTTPOnce sync.Once
 
 	// Optional client override for proxy and feed-record requests. Nil keeps
 	// each path's existing default client.
@@ -662,6 +677,8 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCode", s.handleCreateInviteCode, s.handleAdminMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCodes", s.handleCreateInviteCodes, s.handleAdminMiddleware)
 
+	s.addSpaceRoutes()
+
 	// are there any routes that we should be allowing without auth? i dont think so but idk
 	s.echo.GET("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
@@ -690,6 +707,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
 	)
+	s.db.AutoMigrate(models.SpaceModels()...)
 
 	logger.Info("starting cocoon")
 
@@ -700,6 +718,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 
 	go s.backupRoutine()
+	s.startSpaceWorkers()
 	go s.oauthTokenCleanupRoutine(ctx)
 
 	go func() {

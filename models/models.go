@@ -37,9 +37,12 @@ type Repo struct {
 	Root                           []byte
 	Preferences                    []byte
 	Deactivated                    bool
-	TwoFactorCode                  *string
-	TwoFactorCodeExpiresAt         *time.Time
-	TwoFactorType                  TwoFactorType `gorm:"default:none"`
+	// TakedownRef marks an account taken down. Space data of a taken-down
+	// account is neither served nor written.
+	TakedownRef            *string
+	TwoFactorCode          *string
+	TwoFactorCodeExpiresAt *time.Time
+	TwoFactorType          TwoFactorType `gorm:"default:none"`
 	// Failed second-factor attempts since the last success, and the time
 	// until which further attempts are refused once too many have failed.
 	TwoFactorFailedAttempts int `gorm:"not null;default:0"`

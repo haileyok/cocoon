@@ -71,6 +71,9 @@ func newTestServer(t *testing.T) *Server {
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	if err := dbw.AutoMigrate(models.SpaceModels()...); err != nil {
+		t.Fatalf("migrate spaces: %v", err)
+	}
 
 	t.Cleanup(func() {
 		if sqlDB, err := gdb.DB(); err == nil {
