@@ -41,4 +41,8 @@ func (s *Server) addSpaceRoutes() {
 	s.echo.POST("/xrpc/com.atproto.space.unregisterNotify", s.handleSpaceUnregisterNotify)
 	s.echo.GET("/xrpc/com.atproto.space.listRepos", s.handleSpaceListRepos)
 	s.echo.GET("/xrpc/com.atproto.space.getRepo", s.handleSpaceGetRepo, s.spaceReadMiddleware)
+
+	// blobs
+	s.echo.GET("/xrpc/com.atproto.space.getBlob", s.handleSpaceGetBlob, s.spaceReadMiddleware)
+	s.echo.GET("/xrpc/com.atproto.space.listBlobs", s.handleSpaceListBlobs, s.spaceReadMiddleware)
 }

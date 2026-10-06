@@ -140,6 +140,8 @@ func (n *spaceNet) newPDS() *spacePDS {
 		Hostname:        host,
 		DpopManagerArgs: dpop.ManagerArgs{Hostname: host, NonceSecret: []byte("0123456789abcdef0123456789abcdef"), Logger: s.logger},
 	})
+	s.repoman = NewRepoMan(s)
+	s.evtman = newTestEvtman(t)
 	s.echo = echo.New()
 	s.echo.Validator = newTestValidator()
 	s.addRoutes()
@@ -190,6 +192,9 @@ func (p *spacePDS) createActor(name string) *actor {
 		t.Fatal(err)
 	}
 	p.net.dir.put(didDocFor(acct.Did, key, p.url))
+	if _, _, err := p.s.initializeGenesisRepo(context.Background(), acct.Did, acct.SigningKey); err != nil {
+		t.Fatal(err)
+	}
 	repo, err := p.s.getRepoActorByDid(context.Background(), acct.Did)
 	if err != nil {
 		t.Fatal(err)

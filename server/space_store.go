@@ -259,11 +259,22 @@ func (st *spaceStore) applyWrites(ref space.Ref, writes []spaceWrite) (*spaceCom
 		return nil, err
 	}
 	rev := nextTID(prevRev)
+	if err := st.assertBlobsUploaded(writes); err != nil {
+		return nil, err
+	}
 	var ops []models.SpaceRecordOplog
+	var dropped []string
 	for _, w := range writes {
 		prev, err := st.getRecordCid(w.Uri)
 		if err != nil {
 			return nil, err
+		}
+		if prev != nil {
+			old, err := st.recordBlobs(w.Uri)
+			if err != nil {
+				return nil, err
+			}
+			dropped = append(dropped, old...)
 		}
 		var cur *cid.Cid
 		switch w.Action {
@@ -317,6 +328,9 @@ func (st *spaceStore) applyWrites(ref space.Ref, writes []spaceWrite) (*spaceCom
 		return nil, err
 	}
 	if err := st.db.Create(&ops).Error; err != nil {
+		return nil, err
+	}
+	if err := st.gcBlobs(dropped); err != nil {
 		return nil, err
 	}
 	return &spaceCommit{Rev: rev, SetHash: state2}, nil
