@@ -97,7 +97,11 @@ func (s *Server) commitSpaceWrites(e echo.Context, did string, ref space.Ref, fn
 		return nil, nil, err
 	}
 	if commit != nil {
-		s.notifySpaceWrite(ref, did, commit)
+		// As in the reference, a notification that could neither be sent
+		// nor queued fails the request, though the write has landed.
+		if err := s.notifySpaceWrite(ref, did, commit); err != nil {
+			return nil, nil, err
+		}
 	}
 	return commit, writes, nil
 }

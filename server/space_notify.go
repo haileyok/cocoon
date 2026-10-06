@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"sync"
@@ -53,28 +54,31 @@ type notifyWriteBody struct {
 
 // notifySpaceWrite sends a write notification for a new commit, queueing a
 // retry if it fails retryably.
-func (s *Server) notifySpaceWrite(ref space.Ref, did string, commit *spaceCommit) {
+// It returns an error only when a retryable failure could not be queued.
+func (s *Server) notifySpaceWrite(ref space.Ref, did string, commit *spaceCommit) error {
 	h, err := space.LtHashFromState(commit.SetHash)
 	if err != nil {
-		return
+		return err
 	}
 	d := h.Digest()
 	body := notifyWriteBody{Space: ref.String(), Repo: did, RepoRev: commit.Rev, Hash: d[:]}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	s.notifyAndQueue(ctx, body)
+	return s.notifyAndQueue(ctx, body)
 }
 
-func (s *Server) notifyAndQueue(ctx context.Context, body notifyWriteBody) {
+// notifyAndQueue sends a notification, queueing it for retry if it fails
+// retryably. It returns an error only when the retry could not be queued.
+func (s *Server) notifyAndQueue(ctx context.Context, body notifyWriteBody) error {
 	err := s.deliverNotify(ctx, body)
 	if err == nil {
 		s.clearNotifyRetry(ctx, body.Repo, body.Space, body.RepoRev)
-		return
+		return nil
 	}
 	if !isRetryableNotify(err) {
 		s.clearNotifyRetry(ctx, body.Repo, body.Space, body.RepoRev)
 		s.logger.Warn("space notification will not be retried", "space", body.Space, "repo", body.Repo, "err", err)
-		return
+		return nil
 	}
 	row := models.SpaceNotificationRetry{
 		Repo: body.Repo, Space: body.Space, RepoRev: body.RepoRev, Hash: body.Hash,
@@ -86,8 +90,10 @@ func (s *Server) notifyAndQueue(ctx context.Context, body notifyWriteBody) {
 		Where:     clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "space_notification_retries.repo_rev < excluded.repo_rev"}}},
 	}).Create(&row).Error; err != nil {
 		s.logger.Error("could not queue space notification", "space", body.Space, "repo", body.Repo, "err", err)
+		return fmt.Errorf("could not queue space notification: %w", err)
 	}
 	s.logger.Warn("space notification queued for retry", "space", body.Space, "repo", body.Repo, "err", err)
+	return nil
 }
 
 func isRetryableNotify(err error) bool {
