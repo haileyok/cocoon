@@ -176,9 +176,10 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 		logger.Error("extending authorization request", "error", err)
 	}
 
+	consentScopes, permissions := s.consentScopes(ctx, req.Parameters.Scope, repo.Repo.Did)
 	data := map[string]any{
-		"Scopes":       strings.Fields(req.Parameters.Scope),
-		"Permissions":  describeScopes(req.Parameters.Scope),
+		"Scopes":       consentScopes,
+		"Permissions":  permissions,
 		"AppName":      appName,
 		"AppHost":      clientHost(client.Metadata.ClientID),
 		"AppURI":       safeClientURI(client.Metadata.ClientURI),
