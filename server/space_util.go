@@ -1,10 +1,12 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -62,6 +64,7 @@ func writeSpaceResult(e echo.Context, body any, err error) error {
 			}
 			return e.JSON(xe.Status, map[string]string{"error": xe.Name, "message": xe.Message})
 		}
+		slog.Error("space request failed", "path", e.Request().URL.Path, "err", err)
 		return helpers.ServerError(e, nil)
 	}
 	if body == nil {
@@ -310,6 +313,8 @@ func assertSpaceOwner(a *spaceAuth, ref space.Ref, m scopes.SpaceMatch) error {
 	}
 	return nil
 }
+
+func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }
 
 func trimDIDFragment(s string) string {
 	if i := strings.IndexByte(s, '#'); i >= 0 {

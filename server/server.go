@@ -96,6 +96,12 @@ type Server struct {
 
 	repoWriteLocks sync.Map // DID -> *sync.Mutex; shared by writes and imports.
 
+	// spaceJobs tracks background Spaces work (notification fan-out).
+	spaceJobs sync.WaitGroup
+	// spaceFetchHTTP fetches client metadata and JWKS for client
+	// attestations. Nil uses the SSRF-guarded client.
+	spaceFetchHTTP *http.Client
+
 	// Optional client override for proxy and feed-record requests. Nil keeps
 	// each path's existing default client.
 	proxyHTTPClient *http.Client

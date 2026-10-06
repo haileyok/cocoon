@@ -25,6 +25,8 @@ import (
 	"github.com/haileyok/cocoon/identity"
 	"github.com/haileyok/cocoon/internal/space"
 	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/oauth/dpop"
+	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/labstack/echo/v4"
 )
 
@@ -134,6 +136,10 @@ func (n *spaceNet) newPDS() *spacePDS {
 	s.config.Did = "did:web:" + strings.ReplaceAll(host, ":", "%3A")
 	s.http = n.http
 	s.passport = identity.NewPassport(n.http, noCache{}, identity.WithPlcURL(n.dir.srv.URL))
+	s.oauthProvider = provider.NewProvider(provider.Args{
+		Hostname:        host,
+		DpopManagerArgs: dpop.ManagerArgs{Hostname: host, NonceSecret: []byte("0123456789abcdef0123456789abcdef"), Logger: s.logger},
+	})
 	s.echo = echo.New()
 	s.echo.Validator = newTestValidator()
 	s.addRoutes()
@@ -152,6 +158,8 @@ type actor struct {
 	pds    *spacePDS
 	key    *atcrypto.PrivateKeyK256
 	access string
+	// oauth, when set, makes the actor's requests over a DPoP OAuth session.
+	oauth *dpopSession
 }
 
 func (a *actor) auth() map[string]string {
@@ -258,10 +266,16 @@ func (n *spaceNet) do(method, base, nsid string, params url.Values, body any, he
 }
 
 func (a *actor) get(nsid string, params map[string]string) xres {
+	if a.oauth != nil {
+		return a.doOAuth(http.MethodGet, nsid, params, nil)
+	}
 	return a.pds.get(nsid, params, a.auth())
 }
 
 func (a *actor) post(nsid string, body any) xres {
+	if a.oauth != nil {
+		return a.doOAuth(http.MethodPost, nsid, nil, body)
+	}
 	return a.pds.post(nsid, body, a.auth())
 }
 
@@ -414,13 +428,19 @@ func (w writeOpts) auth(a *actor) map[string]string {
 	return a.auth()
 }
 
-// spaceWrite creates one record in a's own repo in the space.
+// doWrite creates one record in a's own repo in the space.
 func doWrite(a *actor, spaceURI string, w writeOpts) xres {
-	return a.pds.post("com.atproto.space.createRecord", w.body(a, spaceURI, ""), w.auth(a))
+	if w.headers == nil {
+		return a.post("com.atproto.space.createRecord", w.body(a, spaceURI, ""))
+	}
+	return a.pds.post("com.atproto.space.createRecord", w.body(a, spaceURI, ""), w.headers)
 }
 
 func doPut(a *actor, spaceURI string, w writeOpts) xres {
-	return a.pds.post("com.atproto.space.putRecord", w.body(a, spaceURI, "self"), w.auth(a))
+	if w.headers == nil {
+		return a.post("com.atproto.space.putRecord", w.body(a, spaceURI, "self"))
+	}
+	return a.pds.post("com.atproto.space.putRecord", w.body(a, spaceURI, "self"), w.headers)
 }
 
 func doDel(a *actor, spaceURI, collection, rkey string) xres {

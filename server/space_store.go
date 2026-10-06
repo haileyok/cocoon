@@ -335,6 +335,33 @@ func (st *spaceStore) setRecordBlobs(recordURI string, blobs []cid.Cid) error {
 	return nil
 }
 
+// activeRecipients lists the services registered for a governed space whose
+// registration has not expired.
+func (st *spaceStore) activeRecipients(uri string) ([]models.SpaceCredentialRecipient, error) {
+	var rows []models.SpaceCredentialRecipient
+	return rows, st.db.Where("did = ? AND space = ? AND expires_at > ?", st.did, uri, nowISO()).Find(&rows).Error
+}
+
+// deleteSpace deletes a governed space along with this account's own repo in
+// it. The space row stays as a tombstone.
+func (st *spaceStore) deleteSpace(uri string) error {
+	if err := st.db.Model(&models.Space{}).Where("did = ? AND uri = ?", st.did, uri).Update("deleted_at", nowISO()).Error; err != nil {
+		return err
+	}
+	if err := st.db.Exec("DELETE FROM space_record_blobs WHERE did = ? AND record_uri IN (SELECT uri FROM space_records WHERE did = ? AND space = ?)", st.did, st.did, uri).Error; err != nil {
+		return err
+	}
+	if err := st.db.Where("did = ? AND uri = ?", st.did, uri).Delete(&models.SimplespaceConfig{}).Error; err != nil {
+		return err
+	}
+	for _, m := range []any{&models.SimplespaceMember{}, &models.SpaceWriter{}, &models.SpaceCredentialRecipient{}, &models.SpaceRecord{}, &models.SpaceRecordOplog{}, &models.SpaceRepo{}} {
+		if err := st.db.Where("did = ? AND space = ?", st.did, uri).Delete(m).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // buildSignedCommit signs the repo's current state for one reader. Nil when
 // the repo has never been written to.
 func buildSignedCommit(ref space.Ref, author string, state *models.SpaceRepo, key space.Signer) (*space.SignedCommit, error) {

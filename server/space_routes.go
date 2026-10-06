@@ -23,4 +23,15 @@ func (s *Server) addSpaceRoutes() {
 	s.echo.POST("/xrpc/com.atproto.simplespace.createSpace", s.handleSimplespaceCreateSpace, session...)
 	s.echo.POST("/xrpc/com.atproto.simplespace.putMember", s.handleSimplespacePutMember, session...)
 	s.echo.POST("/xrpc/com.atproto.simplespace.removeMember", s.handleSimplespaceRemoveMember, session...)
+	s.echo.POST("/xrpc/com.atproto.simplespace.updateSpace", s.handleSimplespaceUpdateSpace, session...)
+	s.echo.POST("/xrpc/com.atproto.simplespace.deleteSpace", s.handleSimplespaceDeleteSpace, session...)
+	s.echo.GET("/xrpc/com.atproto.simplespace.listMembers", s.handleSimplespaceListMembers, session...)
+	s.echo.GET("/xrpc/com.atproto.simplespace.getSpace", s.handleSimplespaceGetSpace, s.spaceReadMiddleware)
+
+	// credentials
+	s.echo.GET("/xrpc/com.atproto.space.getDelegationToken", s.handleSpaceGetDelegationToken, session...)
+	// authenticated by the delegation token and request signature in the handler
+	s.echo.POST("/xrpc/com.atproto.space.getSpaceCredential", s.handleSpaceGetSpaceCredential)
+	// service auth from the space authority, verified in the handler
+	s.echo.POST("/xrpc/com.atproto.space.notifyCredentialRevoked", s.handleSpaceNotifyCredentialRevoked)
 }
