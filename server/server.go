@@ -691,7 +691,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	logger.Info("migrating...")
 
-	s.db.AutoMigrate(
+	if err := s.db.AutoMigrate(
 		&models.Actor{},
 		&models.Repo{},
 		&models.InviteCode{},
@@ -706,8 +706,12 @@ func (s *Server) Serve(ctx context.Context) error {
 		&models.TwoFactorBackupCode{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
-	)
-	s.db.AutoMigrate(models.SpaceModels()...)
+	); err != nil {
+		logger.Error("migration failed", "err", err)
+	}
+	if err := migrateSpaceTables(s.db.Client(), logger); err != nil {
+		logger.Error("space table migration failed; spaces will not work", "err", err)
+	}
 
 	logger.Info("starting cocoon")
 
