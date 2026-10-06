@@ -58,6 +58,9 @@ type Scope struct {
 
 	// transition:<value>
 	Transition string
+
+	// space
+	Space *SpacePermission
 }
 
 // ParseList splits a space-delimited scope string and parses each token. It
@@ -84,6 +87,14 @@ func Parse(raw string) (*Scope, error) {
 
 	if raw == ResourceAtproto {
 		return &Scope{Raw: raw, Resource: ResourceAtproto}, nil
+	}
+
+	if isScopeFor(raw, ResourceSpace) {
+		p := ParseSpacePermission(raw)
+		if p == nil {
+			return nil, fmt.Errorf("invalid space scope %q", raw)
+		}
+		return &Scope{Raw: raw, Resource: ResourceSpace, Space: p}, nil
 	}
 
 	left := raw
