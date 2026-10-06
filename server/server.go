@@ -662,6 +662,8 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCode", s.handleCreateInviteCode, s.handleAdminMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCodes", s.handleCreateInviteCodes, s.handleAdminMiddleware)
 
+	s.addSpaceRoutes()
+
 	// are there any routes that we should be allowing without auth? i dont think so but idk
 	s.echo.GET("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
@@ -690,6 +692,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
 	)
+	s.db.AutoMigrate(models.SpaceModels()...)
 
 	logger.Info("starting cocoon")
 
