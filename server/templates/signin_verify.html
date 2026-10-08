@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    {{ template "meta" }}
+    <title>Enter your code</title>
+  </head>
+  <body>
+    <header class="topbar">{{ template "brand" .Hostname }}</header>
+    <main class="page-narrow">
+      <section class="card auth-card">
+        <div class="auth-head">
+          <span class="avatar avatar-lg avatar-center" aria-hidden="true">{{ initial .Handle }}</span>
+          <h1>Two-factor authentication</h1>
+          <p>
+            Signing in as <b>{{ .Handle }}</b>{{ if .AppName }} to continue to <b>{{ .AppName }}</b>{{ end }}.
+          </p>
+        </div>
+
+        {{ template "flashes" .flashes }}
+
+        <form action="/account/signin/verify" method="post">
+          <div class="field">
+            <label for="token">
+              {{ if .EmailCode }}Code from your email{{ else if and .HasTOTP .HasYubiKey }}Authenticator code or YubiKey{{ else if .HasYubiKey }}YubiKey{{ else }}Authenticator code{{ end }}
+            </label>
+            <input
+              class="input-code"
+              name="token"
+              id="token"
+              autocomplete="one-time-code"
+              autocapitalize="none"
+              spellcheck="false"
+              {{ if and .HasTOTP (not .HasYubiKey) }}inputmode="numeric"{{ end }}
+              placeholder="{{ if .EmailCode }}Code from email{{ else if .HasYubiKey }}Touch your key{{ else }}123456{{ end }}"
+              required
+              autofocus
+            />
+          </div>
+          <p class="hint">
+            {{ if .EmailCode }}
+            We sent a code to the email address on your account. It expires in ten minutes.
+            {{ else if .HasYubiKey }}
+            Click the box and touch your YubiKey{{ if .HasTOTP }}, or type a code from your authenticator app{{ end }}.
+            You can also use a backup code.
+            {{ else }}
+            Open your authenticator app and enter the 6-digit code. You can also use a backup code.
+            {{ end }}
+          </p>
+          <button class="primary block" type="submit">Verify</button>
+        </form>
+
+        {{ if .EmailCode }}
+        <form action="/account/signin/verify" method="post" style="text-align:center;margin-top:0.9rem">
+          <button class="link-button" type="submit">Email me a new code</button>
+        </form>
+        {{ end }}
+      </section>
+      <p class="auth-foot">Not you? <a href="{{ .RestartURL }}">Sign in with a different account</a></p>
+    </main>
+  </body>
+</html>

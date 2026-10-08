@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/haileyok/cocoon/models"
 	"github.com/labstack/echo/v4"
 )
 
@@ -81,28 +82,31 @@ func TestAuthorizePageEscapesUserHandle(t *testing.T) {
 // The account management page renders the client_name of every authorized
 // OAuth client (persisted XSS surface), plus token and IP data.
 func TestAccountPageEscapesClientName(t *testing.T) {
+	repo := &models.RepoActor{Repo: models.Repo{Did: "did:plc:abc"}, Actor: models.Actor{Did: "did:plc:abc", Handle: "alice.pds.test"}}
+	xss := `<script>alert(document.domain)</script>`
 	out := renderWithProductionRenderer(t, "account.html", map[string]any{
-		"Repo": map[string]any{
-			"Actor": map[string]any{"Handle": "alice.pds.test"},
-			"Repo":  map[string]any{"Did": "did:plc:abc"},
-		},
-		"Tokens": []map[string]string{
-			{
-				"ClientName":  `<script>alert(document.domain)</script>`,
-				"Age":         "1 minute",
-				"LastUpdated": "1 minute",
-				"ExpiresIn":   "1 hour",
-				"Token":       "secret-token",
-				"Ip":          "127.0.0.1",
-			},
-		},
-		"flashes":   map[string]any{"errors": []string{}, "successes": []string{}, "tokenrequired": []string{}},
-		"Accounts":  []any{},
-		"ActiveDid": "did:plc:abc",
+		"Repo": repo,
+		"Apps": []accountApp{{
+			ClientID: `https://evil.example/"><script>x</script>`,
+			Name:     xss,
+			Host:     "evil.example",
+			Initial:  "<",
+			URI:      safeClientURI("javascript:alert(1)"),
+			Sessions: []accountSession{{ID: 1, IP: xss, LastActiveAgo: "1 minute", SignedInAgo: "1 minute", ExpiresIn: "1 hour"}},
+		}},
+		"SessionCount":     1,
+		"TwoFactorMethods": int64(0),
+		"EmailTwoFactor":   false,
+		"flashes":          map[string]any{"errors": []any{}, "successes": []any{}},
+		"Accounts":         []models.RepoActor{*repo},
+		"ActiveDid":        "did:plc:abc",
 	})
 
 	if strings.Contains(out, "<script>") {
 		t.Fatalf("account page contains unescaped client_name markup:\n%s", out)
+	}
+	if strings.Contains(out, "javascript:") {
+		t.Fatalf("account page links to a javascript: URL:\n%s", out)
 	}
 }
 

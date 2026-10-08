@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    {{ template "meta" }}
+    <title>Two-factor authentication</title>
+  </head>
+  <body>
+    <header class="topbar">{{ template "brand" .Hostname }}</header>
+    <main class="page">
+      <a class="back" href="/account">&larr; Back to your account</a>
+      <div class="card-header" style="margin-bottom:1.25rem">
+        <div>
+          <h1>Two-factor authentication</h1>
+          <p class="muted">Require a second step when {{ .Repo.Handle }} signs in.</p>
+        </div>
+        {{ if .HasCredentials }}
+        <span class="badge badge-success"><span class="dot"></span>On</span>
+        {{ else if .EmailTwoFactor }}
+        <span class="badge badge-success"><span class="dot"></span>Email codes</span>
+        {{ else }}
+        <span class="badge badge-warning"><span class="dot"></span>Off</span>
+        {{ end }}
+      </div>
+
+      {{ template "flashes" .flashes }}
+
+      {{ if .HasCredentials }}
+      <div class="alert alert-info">
+        <p>
+          Signing in needs a code from one of the methods below. In the Bluesky
+          app, enter it in the box that asks for an emailed code. No email is sent.
+        </p>
+      </div>
+
+      <div class="section-title" style="margin-top:0.5rem"><h2>Your sign-in methods</h2></div>
+      <section class="card card-flush">
+        <ul class="list">
+          {{ range .Credentials }}
+          <li class="row" style="flex-wrap:wrap">
+            <span class="avatar avatar-app" aria-hidden="true">{{ if eq .Type "YubiKey" }}{{ template "icon-key" }}{{ else }}{{ template "icon-phone" }}{{ end }}</span>
+            <div class="row-main">
+              <div class="row-title">{{ .Name }}</div>
+              <div class="row-sub">{{ .Type }} · added {{ .CreatedAt }} · last used {{ .LastUsedAt }}</div>
+            </div>
+            <details class="inline" style="flex-basis:100%">
+              <summary class="button small danger">Remove</summary>
+              <form class="inline-form" action="/account/2fa/remove" method="post">
+                <input type="hidden" name="id" value="{{ .ID }}" />
+                <label>Password</label>
+                <input name="password" type="password" placeholder="Password" autocomplete="current-password" />
+                <label>Current code</label>
+                <input name="current_code" placeholder="Current code, YubiKey, or backup code" autocomplete="one-time-code" />
+                <div class="button-row"><button class="danger" type="submit">Remove {{ .Name }}</button></div>
+              </form>
+            </details>
+          </li>
+          {{ end }}
+        </ul>
+      </section>
+
+      <div class="section-title"><h2>Backup codes</h2></div>
+      <section class="card">
+        <div class="card-header" style="margin-bottom:0">
+          <div>
+            <h3>{{ .BackupCodesRemaining }} unused backup {{ if eq .BackupCodesRemaining 1 }}code{{ else }}codes{{ end }} left</h3>
+            <p class="muted small">Each works once, in place of a code, if you lose your authenticator or YubiKey.</p>
+          </div>
+          {{ if le .BackupCodesRemaining 3 }}<span class="badge badge-warning">Running low</span>{{ end }}
+        </div>
+        <details class="inline" style="margin-top:1rem">
+          <summary class="button small">Create new backup codes</summary>
+          <form class="inline-form" action="/account/2fa/backup-codes" method="post">
+            <p class="muted small">This replaces every existing backup code.</p>
+            <label>Password</label>
+            <input name="password" type="password" placeholder="Password" autocomplete="current-password" />
+            <label>Current code</label>
+            <input name="current_code" placeholder="Current code, YubiKey, or backup code" autocomplete="one-time-code" />
+            <div class="button-row"><button class="primary" type="submit">Replace backup codes</button></div>
+          </form>
+        </details>
+      </section>
+      {{ else if .EmailTwoFactor }}
+      <section class="card">
+        <p>Signing in currently needs a code sent to your email. Adding an authenticator app or YubiKey replaces emailed codes.</p>
+      </section>
+      {{ else }}
+      <section class="card">
+        <p>Two-factor authentication is off. Anyone with your password can sign in. Add a method below to turn it on.</p>
+      </section>
+      {{ end }}
+
+      <div class="section-title"><h2>Add a sign-in method</h2></div>
+      <div class="method-grid">
+        <a class="method" href="/account/2fa/totp">
+          <span class="avatar avatar-app" aria-hidden="true">{{ template "icon-phone" }}</span>
+          <div>
+            <div class="row-title">Authenticator app</div>
+            <div class="row-sub">1Password, Google Authenticator, Authy, and others</div>
+          </div>
+        </a>
+        <a class="method" href="/account/2fa/yubikey">
+          <span class="avatar avatar-app" aria-hidden="true">{{ template "icon-key" }}</span>
+          <div>
+            <div class="row-title">YubiKey (Yubico OTP)</div>
+            <div class="row-sub">Touch a hardware key to sign in</div>
+          </div>
+        </a>
+      </div>
+    </main>
+  </body>
+</html>

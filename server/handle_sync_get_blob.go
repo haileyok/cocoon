@@ -45,6 +45,14 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 		return helpers.InputError(e, to.StringPtr("RepoDeactivated"))
 	}
 
+	// A blob only space records reference is permissioned data.
+	if spaceOnly, err := s.isSpaceOnlyBlob(ctx, did, c); err != nil {
+		logger.Error("error checking blob references", "error", err)
+		return helpers.ServerError(e, nil)
+	} else if spaceOnly {
+		return e.JSON(400, map[string]string{"error": "BlobNotFound", "message": "Blob not found"})
+	}
+
 	var blob models.Blob
 	if err := s.db.Raw(ctx, "SELECT * FROM blobs WHERE did = ? AND cid = ?", nil, did, c.Bytes()).Scan(&blob).Error; err != nil {
 		logger.Error("error looking up blob", "error", err)

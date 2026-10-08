@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    {{ template "meta" }}
+    <title>Add an authenticator app</title>
+  </head>
+  <body>
+    <header class="topbar">{{ template "brand" .Hostname }}</header>
+    <main class="page-narrow" style="max-width:520px">
+      <a class="back" href="/account/2fa">&larr; Back</a>
+      <section class="card">
+        <h1 style="font-size:1.35rem;margin-bottom:1rem">Add an authenticator app</h1>
+        {{ if .Error }}
+        <div class="alert alert-danger" role="alert"><p>{{ .Error }}</p></div>
+        {{ end }}
+        {{ template "flashes" .flashes }}
+
+        {{ if .EmailOnly }}
+        <div class="alert alert-info">
+          <div>
+            <p>
+              Your account currently uses emailed sign-in codes. Adding this
+              replaces them, so first confirm you can read your email.
+            </p>
+            <form action="/account/2fa/email-code" method="post" style="margin-top:0.6rem">
+              <input type="hidden" name="next" value="/account/2fa/totp" />
+              <button class="small" type="submit">Email me a code</button>
+            </form>
+          </div>
+        </div>
+        {{ end }}
+
+        <ol class="steps">
+          <li>Scan this QR code with your authenticator app.</li>
+        </ol>
+        <div class="qr"><img src="{{ .QR }}" width="256" height="256" alt="QR code for your authenticator app" /></div>
+        <p class="muted small">Can't scan it? Enter this key instead: <code>{{ .Secret }}</code></p>
+
+        <ol class="steps" start="2" style="counter-reset: step 1">
+          <li>Enter the 6-digit code it shows, and confirm it's you.</li>
+        </ol>
+        <form action="/account/2fa/totp" method="post">
+          <input type="hidden" name="secret" value="{{ .Secret }}" />
+          <label for="name">Name</label>
+          <input id="name" name="name" placeholder="Name (e.g. Phone)" maxlength="64" />
+          <label for="code">Code from the app</label>
+          <input class="input-code" id="code" name="code" placeholder="6-digit code" inputmode="numeric" autocomplete="one-time-code" />
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" placeholder="Password" autocomplete="current-password" />
+          {{ if .EmailOnly }}
+          <label for="current_code">Code from the email</label>
+          <input id="current_code" name="current_code" placeholder="Code from the email" autocomplete="off" />
+          {{ else if .HasCredentials }}
+          <label for="current_code">Current code</label>
+          <input id="current_code" name="current_code" placeholder="Code from a current method, or a backup code" autocomplete="off" />
+          {{ end }}
+          <button class="primary block" type="submit">Add authenticator app</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

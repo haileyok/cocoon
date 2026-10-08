@@ -65,6 +65,15 @@ func (s *Server) handleSyncListBlobs(e echo.Context) error {
 			logger.Error("error casting cid", "error", err)
 			continue
 		}
+		// Blobs only space records reference stay out of public sync.
+		if b.RefCount <= 0 {
+			if spaceOnly, err := s.isSpaceOnlyBlob(ctx, did, c); err != nil {
+				logger.Error("error checking blob references", "error", err)
+				return helpers.ServerError(e, nil)
+			} else if spaceOnly {
+				continue
+			}
+		}
 		cstrs = append(cstrs, c.String())
 	}
 

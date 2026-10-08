@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    {{ template "meta" }}
+    <title>{{ .Title }}</title>
+  </head>
+  <body>
+    <header class="topbar">{{ template "brand" .Hostname }}</header>
+    <main class="page-narrow">
+      <section class="card auth-card" style="text-align:center">
+        <h1 style="font-size:1.3rem;margin-bottom:0.6rem">{{ .Title }}</h1>
+        <p class="muted">{{ .Message }}</p>
+        <p style="margin-top:1.25rem"><a class="button" href="/account">Go to your account</a></p>
+      </section>
+    </main>
+  </body>
+</html>
