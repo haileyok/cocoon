@@ -37,8 +37,9 @@ type IndigoResolver struct {
 	posTTL time.Duration
 	negTTL time.Duration
 
-	mu    sync.Mutex
-	cache map[string]cacheEntry
+	mu         sync.Mutex
+	cache      map[string]cacheEntry
+	spaceCache map[string]spaceCacheEntry
 }
 
 // NewIndigoResolver builds a resolver backed by the default identity directory.

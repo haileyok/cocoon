@@ -103,6 +103,10 @@ services:
       # Optional: Fallback proxy
       COCOON_FALLBACK_PROXY: ${COCOON_FALLBACK_PROXY:-}
       COCOON_PLC_URL: ${COCOON_PLC_URL:-}
+
+      # Optional: let YubiKeys be added by tapping them (checked with Yubico)
+      COCOON_YUBICO_CLIENT_ID: ${COCOON_YUBICO_CLIENT_ID:-}
+      COCOON_YUBICO_API_KEY: ${COCOON_YUBICO_API_KEY:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/xrpc/_health"]

@@ -5,6 +5,7 @@ import (
 	"crypto"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -37,6 +38,20 @@ func TestGetServiceAuthPermissions(t *testing.T) {
 		{"chat excludes other RPCs", "transition:chat.bsky", "did:web:appview.test", method, false, 403},
 		{"email grants no RPC", "transition:email", "did:web:appview.test", method, false, 403},
 		{"legacy unchanged", "", "did:web:appview.test", method, true, 200},
+		{"service ref exact grant", "rpc:town.delve.actor.getPreferences?aud=did:web:api.delve.town%23bsky_appview", "did:web:api.delve.town#bsky_appview", "town.delve.actor.getPreferences", false, 200},
+		{"membership exact grant", "rpc:town.delve.membership.getMembership?aud=did:web:api.delve.town%23bsky_appview", "did:web:api.delve.town#bsky_appview", "town.delve.membership.getMembership", false, 200},
+		{"different service grant", "rpc:" + method + "?aud=did:web:appview.test%23other", "did:web:appview.test#view", method, false, 403},
+		{"bare grant cannot authorize service ref", "rpc:" + method + "?aud=did:web:appview.test", "did:web:appview.test#view", method, false, 403},
+		{"service grant cannot authorize bare DID", "rpc:" + method + "?aud=did:web:appview.test%23view", "did:web:appview.test", method, false, 403},
+		{"malformed DID", "transition:generic", "did:WEB:appview.test#view", method, false, 400},
+		{"empty fragment", "transition:generic", "did:web:appview.test#", method, false, 400},
+		{"multiple fragments", "transition:generic", "did:web:appview.test#view#other", method, false, 400},
+		{"path before fragment", "transition:generic", "did:web:appview.test/path#view", method, false, 400},
+		{"query before fragment", "transition:generic", "did:web:appview.test?x=y#view", method, false, 400},
+		{"invalid fragment escape", "transition:generic", "did:web:appview.test#bad%GG", method, false, 400},
+		{"fragment whitespace", "transition:generic", "did:web:appview.test#bad name", method, false, 400},
+		{"fragment unicode", "transition:generic", "did:web:appview.test#café", method, false, 400},
+		{"fragment escaped bytes and RFC punctuation", "transition:generic", "did:web:appview.test#svc%20name/path?x=y:@!$&'()*+,;~", method, false, 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestServer(t)
@@ -49,7 +64,7 @@ func TestGetServiceAuthPermissions(t *testing.T) {
 			s.echo = echo.New()
 			s.echo.Validator = newTestValidator()
 			s.addRoutes()
-			target := "/xrpc/com.atproto.server.getServiceAuth?" + url.Values{"aud": {tc.aud}, "lxm": {tc.lxm}}.Encode()
+			target := "/xrpc/com.atproto.server.getServiceAuth?" + url.Values{"aud": {tc.aud}, "lxm": {tc.lxm}, "exp": {fmt.Sprint(time.Now().Unix() + 60)}}.Encode()
 			r := httptest.NewRequest(http.MethodGet, target, nil)
 			if tc.legacy {
 				session, err := s.createSession(context.Background(), &repo.Repo)
@@ -97,6 +112,12 @@ func TestGetServiceAuthPermissions(t *testing.T) {
 			var response map[string]string
 			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 				t.Fatal(err)
+			}
+			if tc.want == 400 {
+				if w.Body.String() != "{\"error\":\"InvalidRequest\"}\n" {
+					t.Fatalf("unexpected validation response: %q", w.Body.String())
+				}
+				return
 			}
 			if tc.want == 403 {
 				if response["error"] != "insufficient_scope" || response["token"] != "" {

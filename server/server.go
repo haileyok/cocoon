@@ -14,6 +14,7 @@ import (
 	"net/smtp"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,11 +28,13 @@ import (
 	"github.com/bluesky-social/indigo/util"
 	"github.com/bluesky-social/indigo/xrpc"
 	"github.com/domodwyer/mailyak/v3"
+	cache "github.com/go-pkgz/expirable-cache/v3"
 	"github.com/go-playground/validator"
 	"github.com/gorilla/sessions"
 	"github.com/haileyok/cocoon/identity"
 	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/internal/helpers"
+	"github.com/haileyok/cocoon/internal/yubicloud"
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/oauth/client"
 	"github.com/haileyok/cocoon/oauth/constants"
@@ -85,9 +88,28 @@ type Server struct {
 	evtpersister  *DbPersister
 	passport      *identity.Passport
 	scopeResolver scopes.PermissionSetResolver
+	// spaceTypes resolves space type declarations; nil uses scopeResolver.
+	spaceTypes    scopes.SpaceTypeResolver
 	fallbackProxy string
 
+	// yubiCloud checks YubiKey OTPs with Yubico, so factory keys can be
+	// registered by tapping them. Nil when no Yubico API key is configured.
+	yubiCloud *yubicloud.Client
+
 	repoWriteLocks sync.Map // DID -> *sync.Mutex; shared by writes and imports.
+
+	// spaceJobs tracks background Spaces work (notification fan-out).
+	spaceJobs sync.WaitGroup
+	// spaceWorker resends failed write notifications.
+	spaceWorker spaceWorker
+	// spaceFetchHTTP fetches client metadata and JWKS for client
+	// attestations. Nil uses the SSRF-guarded client.
+	spaceFetchHTTP *http.Client
+	// spaceHTTP sends space requests to endpoints DID documents name
+	// (managing apps, notification recipients, space hosts). Nil uses the
+	// SSRF-guarded client.
+	spaceHTTP     *http.Client
+	spaceHTTPOnce sync.Once
 
 	// Optional client override for proxy and feed-record requests. Nil keeps
 	// each path's existing default client.
@@ -95,6 +117,10 @@ type Server struct {
 
 	lastRequestCrawl time.Time
 	requestCrawlMu   sync.Mutex
+
+	// Display names of OAuth clients for the account page.
+	clientDisplays    cache.Cache[string, clientDisplay]
+	clientDisplayOnce sync.Once
 
 	dbName   string
 	dbType   string
@@ -137,6 +163,13 @@ type Args struct {
 	// PlcURL is the PLC directory used for creating, updating, and resolving
 	// did:plc identities. Empty defaults to identity.DefaultPlcURL.
 	PlcURL string
+
+	// YubicoClientID and YubicoAPIKey (base64) let YubiKeys be checked with
+	// Yubico's YubiCloud service, so they can be added by tapping them. Get
+	// both from https://upgrade.yubico.com/getapikey/. Leave both empty to
+	// only accept YubiKeys programmed with a secret this server stores.
+	YubicoClientID string
+	YubicoAPIKey   string
 }
 
 type config struct {
@@ -194,29 +227,43 @@ type TemplateRenderer struct {
 	templates    *template.Template
 	isDev        bool
 	templatePath string
+	hostname     string
+}
+
+var templateFuncs = template.FuncMap{
+	// initial is the first letter of a name, for avatar placeholders.
+	"initial": func(s string) string {
+		s = strings.TrimLeft(s, "@ ")
+		for _, r := range s {
+			return strings.ToUpper(string(r))
+		}
+		return "?"
+	},
 }
 
 func (s *Server) loadTemplates() {
 	absPath, _ := filepath.Abs("server/templates/*.html")
 	if s.config.Version == "dev" {
-		tmpl := template.Must(template.ParseGlob(absPath))
+		tmpl := template.Must(template.New("").Funcs(templateFuncs).ParseGlob(absPath))
 		s.echo.Renderer = &TemplateRenderer{
 			templates:    tmpl,
 			isDev:        true,
 			templatePath: absPath,
+			hostname:     s.config.Hostname,
 		}
 	} else {
-		tmpl := template.Must(template.ParseFS(templateFS, "templates/*.html"))
+		tmpl := template.Must(template.New("").Funcs(templateFuncs).ParseFS(templateFS, "templates/*.html"))
 		s.echo.Renderer = &TemplateRenderer{
 			templates: tmpl,
 			isDev:     false,
+			hostname:  s.config.Hostname,
 		}
 	}
 }
 
 func (t *TemplateRenderer) Render(w io.Writer, name string, data any, c echo.Context) error {
 	if t.isDev {
-		tmpl, err := template.ParseGlob(t.templatePath)
+		tmpl, err := template.New("").Funcs(templateFuncs).ParseGlob(t.templatePath)
 		if err != nil {
 			return err
 		}
@@ -225,6 +272,9 @@ func (t *TemplateRenderer) Render(w io.Writer, name string, data any, c echo.Con
 
 	if viewContext, isMap := data.(map[string]any); isMap {
 		viewContext["reverse"] = c.Echo().Reverse
+		if _, ok := viewContext["Hostname"]; !ok {
+			viewContext["Hostname"] = t.hostname
+		}
 	}
 
 	return t.templates.ExecuteTemplate(w, name, data)
@@ -507,6 +557,15 @@ func New(args *Args) (*Server, error) {
 		s.mailLk = &sync.Mutex{}
 	}
 
+	yc, err := newYubiCloudFromConfig(args.YubicoClientID, args.YubicoAPIKey)
+	if err != nil {
+		return nil, err
+	}
+	s.yubiCloud = yc
+	if yc == nil {
+		args.Logger.Info("no yubico api key configured; yubikeys must be programmed with a secret to be added")
+	}
+
 	return s, nil
 }
 
@@ -556,7 +615,17 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/account/switch", s.handleAccountSwitchPost)
 	s.echo.GET("/account/signin", s.handleAccountSigninGet)
 	s.echo.POST("/account/signin", s.handleAccountSigninPost)
+	s.echo.GET("/account/signin/verify", s.handleAccountSigninVerifyGet)
+	s.echo.POST("/account/signin/verify", s.handleAccountSigninVerifyPost)
 	s.echo.GET("/account/signout", s.handleAccountSignout)
+	s.echo.GET("/account/2fa", s.handleAccountTwoFactor)
+	s.echo.GET("/account/2fa/totp", s.handleAccountTwoFactorTOTPGet)
+	s.echo.POST("/account/2fa/totp", s.handleAccountTwoFactorTOTPPost)
+	s.echo.GET("/account/2fa/yubikey", s.handleAccountTwoFactorYubiKeyGet)
+	s.echo.POST("/account/2fa/yubikey", s.handleAccountTwoFactorYubiKeyPost)
+	s.echo.POST("/account/2fa/email-code", s.handleAccountTwoFactorEmailCode)
+	s.echo.POST("/account/2fa/remove", s.handleAccountTwoFactorRemove)
+	s.echo.POST("/account/2fa/backup-codes", s.handleAccountTwoFactorBackupCodes)
 
 	// oauth account
 	s.echo.GET("/oauth/jwks", s.handleOauthJwks)
@@ -608,6 +677,8 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCode", s.handleCreateInviteCode, s.handleAdminMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCodes", s.handleCreateInviteCodes, s.handleAdminMiddleware)
 
+	s.addSpaceRoutes()
+
 	// are there any routes that we should be allowing without auth? i dont think so but idk
 	s.echo.GET("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
@@ -620,7 +691,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	logger.Info("migrating...")
 
-	s.db.AutoMigrate(
+	if err := s.db.AutoMigrate(
 		&models.Actor{},
 		&models.Repo{},
 		&models.InviteCode{},
@@ -631,9 +702,16 @@ func (s *Server) Serve(ctx context.Context) error {
 		&models.Blob{},
 		&models.BlobPart{},
 		&models.ReservedKey{},
+		&models.TwoFactorCredential{},
+		&models.TwoFactorBackupCode{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
-	)
+	); err != nil {
+		logger.Error("migration failed", "err", err)
+	}
+	if err := migrateSpaceTables(s.db.Client(), logger); err != nil {
+		logger.Error("space table migration failed; spaces will not work", "err", err)
+	}
 
 	logger.Info("starting cocoon")
 
@@ -644,6 +722,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 
 	go s.backupRoutine()
+	s.startSpaceWorkers()
+	go s.oauthTokenCleanupRoutine(ctx)
 
 	go func() {
 		if err := s.requestCrawl(ctx); err != nil {

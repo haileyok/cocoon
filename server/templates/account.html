@@ -1,55 +1,147 @@
 <!doctype html>
 <html lang="en">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="light dark" />
-    <link rel="stylesheet" href="/static/pico.css" />
-    <link rel="stylesheet" href="/static/style.css" />
-    <title>Your Account</title>
+    {{ template "meta" }}
+    <title>Your account · {{ .Repo.Handle }}</title>
   </head>
-  <body class="margin-top-md">
-    <main class="container base-container authorize-container margin-top-xl">
-      <h2>Welcome, {{ .Repo.Handle }}</h2>
-      <ul>
-        <li><a href="/account/signout">Sign out this account</a></li>
-        <li><a href="/account/signin">Sign in another account</a></li>
-      </ul>
-      {{ if gt (len .Accounts) 1 }}
-      <form action="/account/switch" method="post">
-        <input type="hidden" name="next" value="/account" />
-        <label for="did">Switch signed-in account</label>
-        <select name="did" id="did">
+  <body>
+    <header class="topbar">
+      {{ template "brand" .Hostname }}
+      <details class="menu">
+        <summary>
+          <span class="avatar avatar-sm" aria-hidden="true">{{ initial .Repo.Handle }}</span>
+          <span class="truncate">{{ .Repo.Handle }}</span>
+        </summary>
+        <div class="menu-panel">
+          <div class="menu-label">Signed-in accounts</div>
           {{ range .Accounts }}
-          <option value="{{ .Repo.Did }}" {{ if eq .Repo.Did $.ActiveDid }}selected{{ end }}>
-            {{ .Handle }}
-          </option>
+          {{ if eq .Repo.Did $.ActiveDid }}
+          <div class="menu-item">
+            <span class="avatar avatar-sm" aria-hidden="true">{{ initial .Handle }}</span>
+            <span class="truncate">{{ .Handle }}</span>
+            <span class="check" aria-label="Current account">&#10003;</span>
+          </div>
+          {{ else }}
+          <form action="/account/switch" method="post">
+            <input type="hidden" name="did" value="{{ .Repo.Did }}" />
+            <input type="hidden" name="next" value="/account" />
+            <button class="menu-item" type="submit">
+              <span class="avatar avatar-sm" aria-hidden="true">{{ initial .Handle }}</span>
+              <span class="truncate">{{ .Handle }}</span>
+            </button>
+          </form>
           {{ end }}
-        </select>
-        <button type="submit">Switch account</button>
-      </form>
+          {{ end }}
+          <div class="menu-sep"></div>
+          <a class="menu-item" href="/account/signin?add=1">+ Add another account</a>
+          <a class="menu-item" href="/account/signout">Sign out of {{ .Repo.Handle }}</a>
+        </div>
+      </details>
+    </header>
+
+    <main class="page">
+      {{ template "flashes" .flashes }}
+
+      <section class="card">
+        <div class="profile">
+          <span class="avatar avatar-lg" aria-hidden="true">{{ initial .Repo.Handle }}</span>
+          <div class="profile-main">
+            <h1>@{{ .Repo.Handle }}</h1>
+            <span class="did">{{ .Repo.Repo.Did }}</span>
+            {{ if .Repo.Repo.Email }}<div class="muted small">{{ .Repo.Repo.Email }}</div>{{ end }}
+          </div>
+        </div>
+        <div class="stats">
+          <a class="stat" href="#apps">
+            <span class="stat-value">{{ len .Apps }}</span>
+            <span class="stat-label">Connected {{ if eq (len .Apps) 1 }}app{{ else }}apps{{ end }}</span>
+          </a>
+          <a class="stat" href="#apps">
+            <span class="stat-value">{{ .SessionCount }}</span>
+            <span class="stat-label">Active {{ if eq .SessionCount 1 }}session{{ else }}sessions{{ end }}</span>
+          </a>
+          <a class="stat" href="/account/2fa">
+            {{ if gt .TwoFactorMethods 0 }}
+            <span class="stat-value"><span class="badge badge-success"><span class="dot"></span>On</span></span>
+            <span class="stat-label">Two-factor · {{ .TwoFactorMethods }} {{ if eq .TwoFactorMethods 1 }}method{{ else }}methods{{ end }}</span>
+            {{ else if .EmailTwoFactor }}
+            <span class="stat-value"><span class="badge badge-success"><span class="dot"></span>Email</span></span>
+            <span class="stat-label">Two-factor · emailed codes</span>
+            {{ else }}
+            <span class="stat-value"><span class="badge badge-warning"><span class="dot"></span>Off</span></span>
+            <span class="stat-label">Two-factor · set it up</span>
+            {{ end }}
+          </a>
+        </div>
+      </section>
+
+      {{ if and (eq .TwoFactorMethods 0) (not .EmailTwoFactor) }}
+      <div class="section-title"><h2>Security</h2></div>
+      <section class="card">
+        <div class="card-header" style="margin-bottom:0">
+          <div>
+            <h3>Protect your account with two-factor authentication</h3>
+            <p class="muted small">Require a code from an authenticator app or a YubiKey when you sign in.</p>
+          </div>
+          <a class="button primary" href="/account/2fa">Set up</a>
+        </div>
+      </section>
       {{ end }}
-      {{ if .flashes.successes }}
-      <div class="alert alert-success margin-bottom-xs">
-        <p>{{ index .flashes.successes 0 }}</p>
+
+      <div class="section-title" id="apps">
+        <h2>Connected apps</h2>
+        <span class="muted small">Apps you've signed in to with this account</span>
       </div>
-      {{ end }} {{ if eq (len .Tokens) 0 }}
-      <div class="alert alert-success" role="alert">
-        <p class="alert-message">You do not have any active OAuth sessions!</p>
-      </div>
-      {{ else }} {{ range .Tokens }}
-      <div class="base-container">
-        <h4>{{ .ClientName }}</h4>
-        <p>Session Age: {{ .Age}}</p>
-        <p>Last Updated: {{ .LastUpdated }} ago</p>
-        <p>Expires In: {{ .ExpiresIn }}</p>
-        <p>IP Address: {{ .Ip }}</p>
-        <form action="/account/revoke" method="post">
-          <input type="hidden" name="token" value="{{ .Token }}" />
-          <button type="submit" value="">Revoke</button>
-        </form>
-      </div>
-      {{ end }} {{ end }}
+      <section class="card card-flush">
+        {{ if not .Apps }}
+        <div class="empty">
+          <h3>No connected apps</h3>
+          <p>When you sign in to an app with {{ .Repo.Handle }}, it'll show up here.</p>
+        </div>
+        {{ else }}
+        <ul class="list">
+          {{ range .Apps }}
+          <li>
+            <details class="app">
+              <summary class="row">
+                <span class="avatar avatar-app" aria-hidden="true">{{ .Initial }}</span>
+                <div class="row-main">
+                  <div class="row-title">{{ .Name }}</div>
+                  <div class="row-sub">
+                    {{ .Host }} · {{ len .Sessions }} {{ if eq (len .Sessions) 1 }}session{{ else }}sessions{{ end }} · active {{ .LastActiveAgo }}{{ if ne .LastActiveAgo "just now" }} ago{{ end }}
+                  </div>
+                </div>
+                <span class="chevron" aria-hidden="true"></span>
+              </summary>
+              <div class="app-body">
+                {{ range .Sessions }}
+                <div class="session">
+                  <dl class="session-meta">
+                    <div><dt>Last active</dt><dd>{{ .LastActiveAgo }}{{ if ne .LastActiveAgo "just now" }} ago{{ end }}</dd></div>
+                    <div><dt>Signed in</dt><dd>{{ .SignedInAgo }}{{ if ne .SignedInAgo "just now" }} ago{{ end }}</dd></div>
+                    <div><dt>Expires</dt><dd>in {{ .ExpiresIn }}</dd></div>
+                    <div><dt>IP address</dt><dd class="mono">{{ if .IP }}{{ .IP }}{{ else }}unknown{{ end }}</dd></div>
+                  </dl>
+                  <form action="/account/revoke" method="post">
+                    <input type="hidden" name="id" value="{{ .ID }}" />
+                    <button class="small danger" type="submit">Sign out</button>
+                  </form>
+                </div>
+                {{ end }}
+              </div>
+              <div class="app-footer">
+                {{ if .URI }}<a class="button small ghost" href="{{ .URI }}" rel="noopener noreferrer" target="_blank">Visit app</a>{{ end }}
+                <form action="/account/revoke" method="post">
+                  <input type="hidden" name="client_id" value="{{ .ClientID }}" />
+                  <button class="small danger" type="submit">Sign out everywhere</button>
+                </form>
+              </div>
+            </details>
+          </li>
+          {{ end }}
+        </ul>
+        {{ end }}
+      </section>
     </main>
   </body>
 </html>

@@ -64,10 +64,15 @@ func newTestServer(t *testing.T) *Server {
 		&models.Blob{},
 		&models.BlobPart{},
 		&models.ReservedKey{},
+		&models.TwoFactorCredential{},
+		&models.TwoFactorBackupCode{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
+	}
+	if err := migrateSpaceTables(gdb, slog.Default()); err != nil {
+		t.Fatalf("migrate spaces: %v", err)
 	}
 
 	t.Cleanup(func() {

@@ -1,0 +1,12 @@
+AT Protocol Spaces lexicons (the permissioned-data alpha), copied unmodified
+from the reference implementation:
+
+  repo:   https://github.com/bluesky-social/atproto
+  branch: permissioned-data (PR #5187)
+  commit: 5b95b2f2723a2882824fbb0b819fd6aad884ef20
+  paths:  lexicons/com/atproto/space/*.json        (20 methods + defs)
+          lexicons/com/atproto/simplespace/*.json  (8 methods + defs)
+
+License: MIT (bluesky-social/atproto). Upstream changes weekly; to update,
+copy both directories from a newer commit, update this file, and re-bundle
+(lexicons/bundle.py, usage at its top).
