@@ -30,6 +30,13 @@ func (s *Server) handleServerActivateAccount(e echo.Context) error {
 	}
 
 	urepo := e.Get("repo").(*models.RepoActor)
+	unlock := s.lockRepoWrite(urepo.Repo.Did)
+	defer unlock()
+	urepo, err := s.getRepoActorByDid(ctx, urepo.Repo.Did)
+	if err != nil {
+		logger.Error("error loading account for activation", "error", err)
+		return helpers.ServerError(e, nil)
+	}
 
 	if !s.validAccountDID(ctx, urepo) {
 		return helpers.InputError(e, to.StringPtr("DID configuration could not be verified for this server"))
