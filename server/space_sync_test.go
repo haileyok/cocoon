@@ -1107,17 +1107,20 @@ func TestSpaceSyncNotifyWrite(t *testing.T) {
 		hash := space.NewLtHash().Digest()
 		h := hash[:]
 
-		var wg sync.WaitGroup
-		wg.Add(2)
+		start := make(chan struct{})
+		responses := make(chan xres, 2)
 		go func() {
-			defer wg.Done()
-			mustOK(t, syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, newer.String(), h), ""))
+			<-start
+			responses <- syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, newer.String(), h), "")
 		}()
 		go func() {
-			defer wg.Done()
-			mustOK(t, syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, older.String(), nil), ""))
+			<-start
+			responses <- syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, older.String(), nil), "")
 		}()
-		wg.Wait()
+		close(start)
+		first, second := <-responses, <-responses
+		mustOK(t, first)
+		mustOK(t, second)
 
 		cred := credentialFor(t, bob, r.pds1, sp)
 		listed := syncListRepos(t, cred, r.pds1, sp, nil)
@@ -1134,6 +1137,44 @@ func TestSpaceSyncNotifyWrite(t *testing.T) {
 		}
 		if !bytesEqual(got, h) {
 			t.Fatalf("hash %v, want %v", repos[0]["hash"], h)
+		}
+	})
+
+	t.Run("sequences concurrent notifications from different writers", func(t *testing.T) {
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, carol}})
+		syncer := r.net.newMockService("atproto_space_syncer", nil)
+		cred := credentialFor(t, alice, r.pds1, sp)
+		syncRegisterNotify(t, cred, r.pds1, sp, syncer.serviceRef())
+		rev := syntax.NewTIDNow(0).String()
+		start := make(chan struct{})
+		responses := make(chan xres, 2)
+		for _, writer := range []*actor{bob, carol} {
+			go func() {
+				<-start
+				responses <- syncNotify(t, r, writer, syncNotifyBody(sp, writer.did, rev, nil), "")
+			}()
+		}
+		close(start)
+		first, second := <-responses, <-responses
+		mustOK(t, first)
+		mustOK(t, second)
+		r.net.waitSpaceJobs()
+		repos := syncListRepos(t, cred, r.pds1, sp, nil).list("repos")
+		if len(repos) != 2 || repos[0]["did"] == repos[1]["did"] || repos[0]["repoRev"] != rev || repos[1]["repoRev"] != rev {
+			t.Fatalf("expected both writers at %s: %+v", rev, repos)
+		}
+		calls := syncer.callsTo("com.atproto.space.notifyWrite")
+		if len(calls) != 2 {
+			t.Fatalf("got %d notifications, want 2", len(calls))
+		}
+		sort.Slice(calls, func(i, j int) bool { return calls[i].body["spaceRev"].(string) < calls[j].body["spaceRev"].(string) })
+		if prev, _ := calls[0].body["prevSpaceRev"].(string); prev != "" || calls[1].body["prevSpaceRev"] != calls[0].body["spaceRev"] {
+			t.Fatal("notifications did not form a single space revision chain")
+		}
+		for i := range repos {
+			if repos[i]["spaceRev"] != calls[i].body["spaceRev"] || repos[i]["did"] != calls[i].body["repo"] {
+				t.Fatal("listed writers differ from the published sequence")
+			}
 		}
 	})
 
