@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/haileyok/cocoon/internal/helpers"
@@ -49,8 +50,12 @@ func (s *Server) handleDeleteRecord(e echo.Context) error {
 			Rkey:       &req.Rkey,
 			SwapRecord: req.SwapRecord,
 		},
-	}, req.SwapCommit)
+	}, req.SwapCommit, s.repoWriteAuthorization(e))
 	if err != nil {
+		var scopeErr repoScopeError
+		if errors.As(err, &scopeErr) {
+			return helpers.InsufficientScopeError(e, scopeErr.Error())
+		}
 		logger.Error("error applying writes", "error", err)
 		return helpers.ServerError(e, nil)
 	}
