@@ -654,22 +654,22 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		return nil, err
 	}
 
-	// NOTE: using the request ctx seems a bit suss here, so using a background context. i'm not sure if this
-	// runs sync or not
-	rm.s.evtman.AddEvent(context.Background(), &events.XRPCStreamEvent{
-		RepoCommit: &atproto.SyncSubscribeRepos_Commit{
-			Repo:     urepo.Did,
-			Blocks:   buf.Bytes(),
-			Blobs:    blobs,
-			Rev:      rev,
-			Since:    &urepo.Rev,
-			Commit:   lexutil.LexLink(newroot),
-			PrevData: &prevDataLink,
-			Time:     time.Now().Format(time.RFC3339Nano),
-			Ops:      repoOps,
-			TooBig:   false,
-		},
-	})
+	if urepo.Active() {
+		rm.s.evtman.AddEvent(context.Background(), &events.XRPCStreamEvent{
+			RepoCommit: &atproto.SyncSubscribeRepos_Commit{
+				Repo:     urepo.Did,
+				Blocks:   buf.Bytes(),
+				Blobs:    blobs,
+				Rev:      rev,
+				Since:    &urepo.Rev,
+				Commit:   lexutil.LexLink(newroot),
+				PrevData: &prevDataLink,
+				Time:     time.Now().Format(time.RFC3339Nano),
+				Ops:      repoOps,
+				TooBig:   false,
+			},
+		})
+	}
 
 	if err := rm.s.UpdateRepo(ctx, urepo.Did, newroot, rev); err != nil {
 		return nil, err

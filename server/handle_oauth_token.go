@@ -133,7 +133,11 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 
 		refreshToken := oauth.GenerateRefreshToken()
 
-		expandedScope := s.expandScopes(ctx, authReq.Parameters.Scope, repo.Repo.Did)
+		expandedScope, err := s.issueScope(ctx, authReq.Parameters.Scope, repo.Repo.Did)
+		if err != nil {
+			s.logger.Error("refusing to issue token: space type declaration unavailable", "client_id", authReq.ClientId, "scope", authReq.Parameters.Scope, "error", err)
+			return invalidScopeError(e, err)
+		}
 		authReq.Parameters.Scope = expandedScope
 
 		accessClaims := jwt.MapClaims{
@@ -254,7 +258,11 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		now := time.Now()
 		eat := now.Add(constants.TokenMaxAge)
 
-		expandedScope := s.expandScopes(ctx, oauthToken.Parameters.Scope, oauthToken.Sub)
+		expandedScope, err := s.issueScope(ctx, oauthToken.Parameters.Scope, oauthToken.Sub)
+		if err != nil {
+			s.logger.Error("refusing to refresh token: space type declaration unavailable", "scope", oauthToken.Parameters.Scope, "error", err)
+			return invalidScopeError(e, err)
+		}
 		oauthToken.Parameters.Scope = expandedScope
 
 		accessClaims := jwt.MapClaims{
@@ -302,17 +310,38 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 	return helpers.InputError(e, to.StringPtr(fmt.Sprintf(`grant type "%s" is not supported`, req.GrantType)))
 }
 
-// expandScopes parses a raw scope string, resolves any include: scopes via
+// invalidScopeError answers a token request whose scope can't be issued.
+func invalidScopeError(e echo.Context, err error) error {
+	return e.JSON(400, map[string]string{
+		"error":             "invalid_scope",
+		"error_description": err.Error(),
+	})
+}
+
+// expandScopes is issueScope for display, as on the consent screen: a space
+// type whose declaration can't be resolved leaves its grant as it is instead
+// of failing.
+func (s *Server) expandScopes(ctx context.Context, rawScope, userDid string) string {
+	out, _ := s.issueScope(ctx, rawScope, userDid)
+	return out
+}
+
+// issueScope parses a raw scope string, resolves any include: scopes via
 // the permission-set resolver, and appends the expanded granular scopes
 // alongside the originals. If the resolver is nil or resolution fails, the
 // original scope string is returned unchanged. Space grants are then
 // finished for userDid, as the reference does at issuance: bare
 // space:<type> grants gain the type's declared collections, and a "self"
 // authority resolves to the user.
-func (s *Server) expandScopes(ctx context.Context, rawScope, userDid string) string {
+//
+// An error means a bare space:<type> grant names a type whose declaration
+// can't be resolved. The returned scope is still usable for display, but a
+// token must not be minted from it: it would carry no write targets, a
+// narrower grant than the user consented to.
+func (s *Server) issueScope(ctx context.Context, rawScope, userDid string) (string, error) {
 	parsed, err := scopes.ParseList(rawScope)
 	if err != nil {
-		return rawScope
+		return rawScope, nil
 	}
 	if s.scopeResolver == nil {
 		return s.finishSpaceScopes(ctx, strings.Fields(rawScope), userDid)
@@ -364,8 +393,8 @@ func (s *Server) expandScopes(ctx context.Context, rawScope, userDid string) str
 
 // finishSpaceScopes materializes declared collections into bare space:
 // grants, resolves "self" authorities to the user, and drops duplicates.
-func (s *Server) finishSpaceScopes(ctx context.Context, grants []string, userDid string) string {
-	grants = scopes.ExpandSpaceCollections(ctx, s.spaceTypeResolver(), grants)
+func (s *Server) finishSpaceScopes(ctx context.Context, grants []string, userDid string) (string, error) {
+	grants, err := scopes.ExpandSpaceCollections(ctx, s.spaceTypeResolver(), grants)
 	seen := make(map[string]bool, len(grants))
 	out := make([]string, 0, len(grants))
 	for _, g := range grants {
@@ -377,7 +406,7 @@ func (s *Server) finishSpaceScopes(ctx context.Context, grants []string, userDid
 			out = append(out, g)
 		}
 	}
-	return strings.Join(out, " ")
+	return strings.Join(out, " "), err
 }
 
 // spaceTypeResolver resolves space type declarations for bare space: grants.

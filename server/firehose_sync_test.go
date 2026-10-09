@@ -1,8 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,7 +15,9 @@ import (
 	"github.com/bluesky-social/indigo/atproto/repo/mst"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/bluesky-social/indigo/events"
+	"github.com/haileyok/cocoon/models"
 	"github.com/ipfs/go-cid"
+	"github.com/ipld/go-car"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
@@ -196,5 +201,97 @@ func TestActivateAccountEmitsRepoSync(t *testing.T) {
 		case <-deadline:
 			t.Fatal("did not observe a #sync event after activation")
 		}
+	}
+}
+
+func TestInactiveWritesStayLocalUntilActivation(t *testing.T) {
+	s, account := endpointTestServer(t)
+	s.repoman = NewRepoMan(s)
+	manager, persister := newTestEvtmanPersister(t)
+	s.evtman = manager
+	s.seedGenesisRepo(t, account.Did, account.SigningKey)
+	attachStatusDID(t, s, account, account.Did, "valid")
+	if err := s.db.Client().Model(&models.Repo{}).Where("did = ?", account.Did).Update("deactivated", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	session, err := s.createSession(context.Background(), &mustRepoActor(t, s, account.Did).Repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := func(nsid string, body any) *httptest.ResponseRecorder {
+		t.Helper()
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest("POST", "/xrpc/com.atproto."+nsid, bytes.NewReader(data))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Authorization", "Bearer "+session.AccessToken)
+		w := httptest.NewRecorder()
+		s.echo.ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Fatalf("%s: %d %s", nsid, w.Code, w.Body.String())
+		}
+		return w
+	}
+	readEvents := func() []*events.XRPCStreamEvent {
+		t.Helper()
+		var got []*events.XRPCStreamEvent
+		if err := persister.Playback(context.Background(), 0, func(evt *events.XRPCStreamEvent) error {
+			got = append(got, evt)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	write := ComAtprotoRepoPutRecordInput{Repo: account.Did, Collection: "app.bsky.feed.post", Rkey: "kept", Record: postRecord("draft")}
+	request("repo.createRecord", write)
+	write.Record = postRecord("staged")
+	w := request("repo.putRecord", write)
+	var saved ApplyWriteResult
+	if err := json.Unmarshal(w.Body.Bytes(), &saved); err != nil {
+		t.Fatal(err)
+	}
+	request("repo.applyWrites", ComAtprotoRepoApplyWritesInput{Repo: account.Did, Writes: []ComAtprotoRepoApplyWritesItem{
+		{Type: OpTypeCreate.String(), Collection: write.Collection, Rkey: "removed", Value: rmPostRecord("temporary")},
+	}})
+	request("repo.deleteRecord", ComAtprotoRepoDeleteRecordInput{Repo: account.Did, Collection: write.Collection, Rkey: "removed"})
+	staged := mustRepoActor(t, s, account.Did)
+	leaves := walkMstLeaves(t, s, account.Did)
+	if staged.Active() || saved.Cid == nil || len(leaves) != 1 || leaves[write.Collection+"/kept"].String() != *saved.Cid {
+		t.Fatal("inactive writes did not preserve the staged repository")
+	}
+	if got := readEvents(); len(got) != 0 {
+		t.Fatalf("inactive writes published %d events", len(got))
+	}
+	request("server.activateAccount", map[string]any{})
+	got := readEvents()
+	if len(got) != 3 || got[0].RepoAccount == nil || !got[0].RepoAccount.Active || got[1].RepoIdentity == nil || got[2].RepoSync == nil {
+		t.Fatalf("expected account, identity, sync after activation: %+v", got)
+	}
+	syncEvent := got[2].RepoSync
+	if syncEvent.Did != account.Did || syncEvent.Rev != staged.Rev {
+		t.Fatalf("activation did not announce staged revision: %+v", syncEvent)
+	}
+	cr, err := car.NewCarReader(bytes.NewReader(syncEvent.Blocks))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cr.Header.Roots) != 1 || !bytes.Equal(cr.Header.Roots[0].Bytes(), staged.Root) {
+		t.Fatal("activation announced the wrong head")
+	}
+	write.Record = postRecord("public")
+	request("repo.putRecord", write)
+	got = readEvents()
+	if len(got) != 4 || got[3].RepoCommit == nil || got[3].RepoCommit.Rev != currentRev(t, s, account.Did) {
+		t.Fatal("active write did not publish its commit")
+	}
+	request("server.deactivateAccount", map[string]any{})
+	write.Record = postRecord("private again")
+	request("repo.putRecord", write)
+	got = readEvents()
+	if len(got) != 5 || got[4].RepoAccount == nil || got[4].RepoAccount.Active {
+		t.Fatal("writes after deactivation published an event")
 	}
 }

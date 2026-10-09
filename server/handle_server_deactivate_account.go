@@ -29,6 +29,8 @@ func (s *Server) handleServerDeactivateAccount(e echo.Context) error {
 	}
 
 	urepo := e.Get("repo").(*models.RepoActor)
+	unlock := s.lockRepoWrite(urepo.Repo.Did)
+	defer unlock()
 
 	if err := s.db.Exec(ctx, "UPDATE repos SET deactivated = ? WHERE did = ?", nil, true, urepo.Repo.Did).Error; err != nil {
 		logger.Error("error updating account status to deactivated", "error", err)

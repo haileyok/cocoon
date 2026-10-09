@@ -221,6 +221,10 @@ type writerSequence struct {
 // recordWriter records a newer repo state for a writer and advances the
 // space's sequence. Nil when the state is not newer than the last.
 func (st *spaceStore) recordWriter(uri, writer, repoRev string, hash []byte) (*writerSequence, error) {
+	// Lock before reading to serialize the space sequence and avoid SQLite read-to-write upgrades.
+	if err := st.db.Model(&models.Space{}).Where("did = ? AND uri = ?", st.did, uri).UpdateColumn("uri", uri).Error; err != nil {
+		return nil, err
+	}
 	sp, err := st.getSpace(uri)
 	if err != nil {
 		return nil, err
