@@ -593,10 +593,10 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/xrpc/com.atproto.server.describeServer", s.handleDescribeServer)
 	s.echo.POST("/xrpc/com.atproto.server.reserveSigningKey", s.handleServerReserveSigningKey)
 
-	s.echo.GET("/xrpc/com.atproto.repo.describeRepo", s.handleDescribeRepo)
+	s.echo.GET("/xrpc/com.atproto.repo.describeRepo", s.handleDescribeRepo, s.handleRepoReadMiddleware)
 	s.echo.GET("/xrpc/com.atproto.sync.listRepos", s.handleListRepos)
-	s.echo.GET("/xrpc/com.atproto.repo.listRecords", s.handleListRecords)
-	s.echo.GET("/xrpc/com.atproto.repo.getRecord", s.handleRepoGetRecord)
+	s.echo.GET("/xrpc/com.atproto.repo.listRecords", s.handleListRecords, s.handleRepoReadMiddleware)
+	s.echo.GET("/xrpc/com.atproto.repo.getRecord", s.handleRepoGetRecord, s.handleRepoReadMiddleware)
 	s.echo.GET("/xrpc/com.atproto.sync.getRecord", s.handleSyncGetRecord, s.handleRepoReadMiddleware)
 	s.echo.GET("/xrpc/com.atproto.sync.getBlocks", s.handleGetBlocks, s.handleRepoReadMiddleware)
 	s.echo.GET("/xrpc/com.atproto.sync.getLatestCommit", s.handleSyncGetLatestCommit, s.handleRepoReadMiddleware)
