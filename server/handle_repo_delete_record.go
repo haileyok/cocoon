@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/Azure/go-autorest/autorest/to"
@@ -11,11 +12,11 @@ import (
 )
 
 type ComAtprotoRepoDeleteRecordInput struct {
-	Repo       string  `json:"repo" validate:"required,atproto-did"`
-	Collection string  `json:"collection" validate:"required,atproto-nsid"`
-	Rkey       string  `json:"rkey" validate:"required,atproto-rkey"`
-	SwapRecord *string `json:"swapRecord"`
-	SwapCommit *string `json:"swapCommit"`
+	Repo       string          `json:"repo" validate:"required,atproto-did"`
+	Collection string          `json:"collection" validate:"required,atproto-nsid"`
+	Rkey       string          `json:"rkey" validate:"required,atproto-rkey"`
+	SwapRecord json.RawMessage `json:"swapRecord,omitempty"`
+	SwapCommit json.RawMessage `json:"swapCommit,omitempty"`
 }
 
 func (s *Server) handleDeleteRecord(e echo.Context) error {
@@ -44,14 +45,23 @@ func (s *Server) handleDeleteRecord(e echo.Context) error {
 		return helpers.InsufficientScopeError(e, fmt.Sprintf("repo:%s?action=delete", req.Collection))
 	}
 
+	swapCommit, err := parseRepoSwap(req.SwapCommit, false)
+	if err != nil {
+		return helpers.InputError(e, nil)
+	}
+	swapRecord, err := parseRepoSwap(req.SwapRecord, false)
+	if err != nil {
+		return helpers.InputError(e, nil)
+	}
+
 	results, err := s.repoman.applyWrites(ctx, repo.Repo, []Op{
 		{
 			Type:       OpTypeDelete,
 			Collection: req.Collection,
 			Rkey:       &req.Rkey,
-			SwapRecord: req.SwapRecord,
+			SwapRecord: swapRecord,
 		},
-	}, req.SwapCommit, s.repoWriteAuthorization(e))
+	}, swapCommit, s.repoWriteAuthorization(e))
 	if err != nil {
 		var scopeErr repoScopeError
 		if errors.As(err, &scopeErr) {
@@ -60,6 +70,9 @@ func (s *Server) handleDeleteRecord(e echo.Context) error {
 		var downErr errAccountTakenDown
 		if errors.As(err, &downErr) {
 			return helpers.InputError(e, to.StringPtr("AccountTakedown"))
+		}
+		if errors.Is(err, errInvalidSwap) {
+			return e.JSON(400, map[string]string{"error": "InvalidSwap"})
 		}
 		logger.Error("error applying writes", "error", err)
 		return helpers.ServerError(e, nil)
