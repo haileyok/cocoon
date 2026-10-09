@@ -39,7 +39,7 @@ func TestApplyWritesCreateThenDeleteSameRkey(t *testing.T) {
 		{Type: OpTypeCreate, Collection: "app.bsky.feed.post", Rkey: &rkey, Record: &rec},
 		{Type: OpTypeDelete, Collection: "app.bsky.feed.post", Rkey: &rkey},
 	}
-	if _, err := s.repoman.applyWrites(ctx, urepo.Repo, ops, nil); err != nil {
+	if _, err := s.repoman.applyWrites(ctx, urepo.Repo, ops, nil, nil); err != nil {
 		t.Fatalf("applyWrites create+delete (same rkey): %v", err)
 	}
 }
@@ -59,7 +59,7 @@ func TestApplyWritesCreateAndDeleteOther(t *testing.T) {
 	recB := postRecord("first")
 	if _, err := s.repoman.applyWrites(ctx, urepo.Repo, []Op{
 		{Type: OpTypeCreate, Collection: "app.bsky.feed.post", Rkey: &rkeyB, Record: &recB},
-	}, nil); err != nil {
+	}, nil, nil); err != nil {
 		t.Fatalf("seed record B: %v", err)
 	}
 
@@ -75,7 +75,7 @@ func TestApplyWritesCreateAndDeleteOther(t *testing.T) {
 	if _, err := s.repoman.applyWrites(ctx, urepo.Repo, []Op{
 		{Type: OpTypeCreate, Collection: "app.bsky.feed.post", Rkey: &rkeyA, Record: &recA},
 		{Type: OpTypeDelete, Collection: "app.bsky.feed.post", Rkey: &rkeyB},
-	}, nil); err != nil {
+	}, nil, nil); err != nil {
 		t.Fatalf("applyWrites create A + delete B: %v", err)
 	}
 }

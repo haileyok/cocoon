@@ -131,7 +131,7 @@ func TestApplyWritesEmitsPrevData(t *testing.T) {
 		Type:       OpTypeCreate,
 		Collection: "app.bsky.feed.post",
 		Record:     &rec,
-	}}, nil); err != nil {
+	}}, nil, nil); err != nil {
 		t.Fatalf("applyWrites: %v", err)
 	}
 

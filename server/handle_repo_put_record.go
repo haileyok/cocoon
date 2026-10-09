@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/haileyok/cocoon/internal/helpers"
@@ -46,7 +47,7 @@ func (s *Server) handlePutRecord(e echo.Context) error {
 	}
 
 	action := actionForOpType(optype)
-	if !s.hasRepoScope(e, req.Collection, action) {
+	if !s.hasRepoScope(e, req.Collection, "create") && !s.hasRepoScope(e, req.Collection, "update") {
 		return helpers.InsufficientScopeError(e, fmt.Sprintf("repo:%s?action=%s", req.Collection, action))
 	}
 
@@ -59,8 +60,12 @@ func (s *Server) handlePutRecord(e echo.Context) error {
 			Record:     &req.Record,
 			SwapRecord: req.SwapRecord,
 		},
-	}, req.SwapCommit)
+	}, req.SwapCommit, s.repoWriteAuthorization(e))
 	if err != nil {
+		var scopeErr repoScopeError
+		if errors.As(err, &scopeErr) {
+			return helpers.InsufficientScopeError(e, scopeErr.Error())
+		}
 		logger.Error("error applying writes", "error", err)
 		return helpers.ServerError(e, nil)
 	}

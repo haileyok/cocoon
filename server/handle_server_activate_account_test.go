@@ -98,7 +98,7 @@ func TestAccountStatusWaitsForRepoWrite(t *testing.T) {
 			}
 			writeDone := make(chan error, 1)
 			go func() {
-				_, err := s.repoman.applyWrites(context.Background(), repo.Repo, []Op{{Type: OpTypeCreate, Collection: "app.bsky.feed.post", Rkey: strPtr("staged"), Record: rmPostRecord("staged")}}, nil)
+				_, err := s.repoman.applyWrites(context.Background(), repo.Repo, []Op{{Type: OpTypeCreate, Collection: "app.bsky.feed.post", Rkey: strPtr("staged"), Record: rmPostRecord("staged")}}, nil, nil)
 				writeDone <- err
 			}()
 			select {
