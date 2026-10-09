@@ -7,10 +7,6 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/haileyok/cocoon/models"
 	"github.com/ipfs/go-cid"
 	"github.com/labstack/echo/v4"
@@ -36,21 +32,12 @@ func (s *Server) readBlobBytes(ctx context.Context, did string, c cid.Cid) ([]by
 		if s.s3Config == nil || !s.s3Config.BlobstoreEnabled {
 			return nil, false, fmt.Errorf("s3 storage disabled")
 		}
-		cfg := &aws.Config{Region: aws.String(s.s3Config.Region), Credentials: credentials.NewStaticCredentials(s.s3Config.AccessKey, s.s3Config.SecretKey, "")}
-		if s.s3Config.Endpoint != "" {
-			cfg.Endpoint = aws.String(s.s3Config.Endpoint)
-			cfg.S3ForcePathStyle = aws.Bool(true)
-		}
-		sess, err := session.NewSession(cfg)
+		body, err := s.getS3Blob(ctx, did, c)
 		if err != nil {
 			return nil, false, err
 		}
-		out, err := s3.New(sess).GetObjectWithContext(ctx, &s3.GetObjectInput{Bucket: aws.String(s.s3Config.Bucket), Key: aws.String(fmt.Sprintf("blobs/%s/%s", did, c.String()))})
-		if err != nil {
-			return nil, false, err
-		}
-		defer out.Body.Close()
-		b, err := io.ReadAll(out.Body)
+		defer body.Close()
+		b, err := io.ReadAll(body)
 		return b, err == nil, err
 	default:
 		var parts []models.BlobPart

@@ -6,10 +6,6 @@ import (
 	"io"
 
 	"github.com/Azure/go-autorest/autorest/to"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
 	"github.com/ipfs/go-cid"
@@ -85,50 +81,16 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 			return e.Redirect(302, redirectUrl)
 		}
 
-		config := &aws.Config{
-			Region:      aws.String(s.s3Config.Region),
-			Credentials: credentials.NewStaticCredentials(s.s3Config.AccessKey, s.s3Config.SecretKey, ""),
-		}
-
-		if s.s3Config.Endpoint != "" {
-			config.Endpoint = aws.String(s.s3Config.Endpoint)
-			config.S3ForcePathStyle = aws.Bool(true)
-		}
-
-		sess, err := session.NewSession(config)
+		body, err := s.getS3Blob(ctx, urepo.Repo.Did, c)
 		if err != nil {
-			logger.Error("error creating aws session", "error", err)
-			return helpers.ServerError(e, nil)
-		}
-
-		svc := s3.New(sess)
-		if result, err := svc.GetObject(&s3.GetObjectInput{
-			Bucket: aws.String(s.s3Config.Bucket),
-			Key:    aws.String(blobKey),
-		}); err != nil {
 			logger.Error("error getting blob from s3", "error", err)
 			return helpers.ServerError(e, nil)
-		} else {
-			read := 0
-			part := 0
-			partBuf := make([]byte, 0x10000)
+		}
+		defer body.Close()
 
-			for {
-				n, err := io.ReadFull(result.Body, partBuf)
-				if err == io.ErrUnexpectedEOF || err == io.EOF {
-					if n == 0 {
-						break
-					}
-				} else if err != nil && err != io.ErrUnexpectedEOF {
-					logger.Error("error reading blob", "error", err)
-					return helpers.ServerError(e, nil)
-				}
-
-				data := partBuf[:n]
-				read += n
-				buf.Write(data)
-				part++
-			}
+		if _, err := io.Copy(buf, body); err != nil {
+			logger.Error("error reading blob", "error", err)
+			return helpers.ServerError(e, nil)
 		}
 	} else {
 		logger.Error("unknown storage", "storage", blob.Storage)
