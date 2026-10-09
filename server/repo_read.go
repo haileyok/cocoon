@@ -13,7 +13,21 @@ import (
 func (s *Server) handleRepoReadMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(e echo.Context) error {
 		ctx := e.Request().Context()
+		syncRead := strings.HasPrefix(e.Request().URL.Path, "/xrpc/com.atproto.sync.")
 		did := e.QueryParam("did")
+		if !syncRead {
+			did = e.QueryParam("repo")
+			if did != "" && !strings.HasPrefix(did, "did:") {
+				actor, err := s.getActorByHandle(ctx, did)
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return next(e)
+				}
+				if err != nil {
+					return helpers.ServerError(e, nil)
+				}
+				did = actor.Did
+			}
+		}
 		if did == "" {
 			return next(e)
 		}
@@ -29,7 +43,7 @@ func (s *Server) handleRepoReadMiddleware(next echo.HandlerFunc) echo.HandlerFun
 		}
 
 		deny := func() error { return helpers.InputError(e, to.StringPtr("RepoDeactivated")) }
-		if e.Request().Header.Get("Authorization") == "" {
+		if !syncRead || e.Request().Header.Get("Authorization") == "" {
 			return deny()
 		}
 		allow := func(e echo.Context) error {

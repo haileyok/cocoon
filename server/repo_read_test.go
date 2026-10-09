@@ -9,11 +9,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/haileyok/cocoon/identity"
 	"github.com/haileyok/cocoon/models"
 	"github.com/ipfs/go-cid"
 )
 
-func TestInactiveSyncReads(t *testing.T) {
+func TestInactiveRepoReads(t *testing.T) {
 	s, account := endpointTestServer(t)
 	s.repoman = NewRepoMan(s)
 	blob, record := blobRecord(t, "staged media")
@@ -22,6 +23,11 @@ func TestInactiveSyncReads(t *testing.T) {
 		t.Fatalf("import: %d %s", code, msg)
 	}
 	uploadTestBlob(t, s, account, "staged media")
+	cache := identity.NewMemCache(10)
+	if err := cache.PutDoc(account.Did, &identity.DidDoc{Id: account.Did}); err != nil {
+		t.Fatal(err)
+	}
+	s.passport = identity.NewPassport(nil, cache)
 	owner, err := s.createSession(context.Background(), &mustRepoActor(t, s, account.Did).Repo)
 	if err != nil {
 		t.Fatal(err)
@@ -43,6 +49,11 @@ func TestInactiveSyncReads(t *testing.T) {
 			"sync.getLatestCommit?did=" + account.Did,
 			"sync.listBlobs?did=" + account.Did,
 			"sync.getBlob?did=" + account.Did + "&cid=" + blob.String(),
+			"repo.getRecord?repo=" + account.Did + "&collection=app.bsky.feed.post&rkey=one",
+			"repo.listRecords?repo=" + account.Did + "&collection=app.bsky.feed.post",
+			"repo.listRecords?repo=" + account.Handle + "&collection=app.bsky.feed.post",
+			"repo.listRecords?repo=" + account.Handle + "&collection=app.bsky.feed.post&did=" + other.Did,
+			"repo.describeRepo?repo=" + account.Did,
 		} {
 			for _, auth := range []string{"anonymous", "owner", "other", "refresh", "invalid", "admin"} {
 				t.Run(endpoint+"/"+auth+map[bool]string{true: "/inactive", false: "/active"}[inactive], func(t *testing.T) {
@@ -61,7 +72,7 @@ func TestInactiveSyncReads(t *testing.T) {
 					}
 					w := httptest.NewRecorder()
 					s.echo.ServeHTTP(w, r)
-					allowed := !inactive || auth == "owner" || auth == "admin"
+					allowed := !inactive || (strings.HasPrefix(endpoint, "sync.") && (auth == "owner" || auth == "admin"))
 					if allowed {
 						if w.Code != 200 || w.Body.Len() == 0 {
 							t.Fatalf("read: %d %s", w.Code, w.Body.String())
@@ -69,9 +80,35 @@ func TestInactiveSyncReads(t *testing.T) {
 						if strings.HasPrefix(endpoint, "sync.getBlob?") && w.Body.String() != "staged media" {
 							t.Fatal("wrong blob payload")
 						}
+						switch {
+						case strings.HasPrefix(endpoint, "repo.getRecord?"):
+							var got ComAtprotoRepoGetRecordResponse
+							if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+								t.Fatal(err)
+							}
+							if got.Uri != "at://"+account.Did+"/app.bsky.feed.post/one" || got.Value["embed"] == nil {
+								t.Fatalf("wrong record: %s", w.Body.String())
+							}
+						case strings.HasPrefix(endpoint, "repo.listRecords?"):
+							var got ComAtprotoRepoListRecordsResponse
+							if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+								t.Fatal(err)
+							}
+							if len(got.Records) != 1 || got.Records[0].Uri != "at://"+account.Did+"/app.bsky.feed.post/one" {
+								t.Fatalf("wrong records: %s", w.Body.String())
+							}
+						case strings.HasPrefix(endpoint, "repo.describeRepo?"):
+							var got ComAtprotoRepoDescribeRepoResponse
+							if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+								t.Fatal(err)
+							}
+							if got.Did != account.Did || len(got.Collections) != 1 || got.Collections[0] != "app.bsky.feed.post" {
+								t.Fatalf("wrong description: %s", w.Body.String())
+							}
+						}
 					} else if w.Code < 400 || w.Code >= 500 {
 						t.Fatalf("rejection: %d %s", w.Code, w.Body.String())
-					} else if auth == "anonymous" || auth == "other" {
+					} else if auth == "anonymous" || auth == "other" || strings.HasPrefix(endpoint, "repo.") {
 						var body map[string]string
 						if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 							t.Fatal(err)
