@@ -514,7 +514,7 @@ func New(args *Args) (*Server, error) {
 		},
 		evtman:        events.NewEventManager(evtPersister),
 		evtpersister:  evtPersister,
-		passport:      identity.NewPassport(h, identity.NewMemCache(10_000), identity.WithPlcURL(plcURL)),
+		passport:      identity.NewPassport(nil, identity.NewMemCache(10_000), identity.WithPlcURL(plcURL)),
 		scopeResolver: scopes.NewIndigoResolverWithPLCURL(plcURL),
 
 		dbName:   args.DbName,
