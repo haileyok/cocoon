@@ -475,7 +475,7 @@ func TestImportSerializesWithWrites(t *testing.T) {
 	}
 	writeDone := make(chan error, 1)
 	go func() {
-		_, err := s.repoman.applyWrites(context.Background(), repo.Repo, []Op{{Type: OpTypeCreate, Collection: "app.bsky.feed.post", Rkey: strPtr("written"), Record: rmPostRecord("written")}}, nil)
+		_, err := s.repoman.applyWrites(context.Background(), repo.Repo, []Op{{Type: OpTypeCreate, Collection: "app.bsky.feed.post", Rkey: strPtr("written"), Record: rmPostRecord("written")}}, nil, nil)
 		writeDone <- err
 	}()
 	select {
@@ -524,7 +524,7 @@ func TestWriteAfterImportRefreshesHead(t *testing.T) {
 	if status, body := callImportRepo(t, s, account, bytes.NewReader(importCAR(t, []cid.Cid{root}, all))); status != 200 {
 		t.Fatalf("import: %d %s", status, body)
 	}
-	if _, err := s.repoman.applyWrites(context.Background(), stale.Repo, []Op{{Type: OpTypeCreate, Collection: "app.bsky.feed.post", Rkey: strPtr("new"), Record: rmPostRecord("new")}}, nil); err != nil {
+	if _, err := s.repoman.applyWrites(context.Background(), stale.Repo, []Op{{Type: OpTypeCreate, Collection: "app.bsky.feed.post", Rkey: strPtr("new"), Record: rmPostRecord("new")}}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	leaves := walkMstLeaves(t, s, account.Did)

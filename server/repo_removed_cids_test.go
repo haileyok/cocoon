@@ -122,7 +122,7 @@ func mustApply(t *testing.T, s *Server, did string, ops ...Op) {
 	if err != nil {
 		t.Fatalf("getRepoActorByDid: %v", err)
 	}
-	if _, err := s.repoman.applyWrites(context.Background(), urepo.Repo, ops, nil); err != nil {
+	if _, err := s.repoman.applyWrites(context.Background(), urepo.Repo, ops, nil, nil); err != nil {
 		t.Fatalf("applyWrites: %v", err)
 	}
 }
@@ -491,7 +491,7 @@ func TestApplyWritesBatchCreateThenDeleteCleansBlock(t *testing.T) {
 	if _, err := s.repoman.applyWrites(context.Background(), urepo.Repo, []Op{
 		{Type: OpTypeCreate, Collection: "app.bsky.feed.post", Rkey: &rkey, Record: rec},
 		{Type: OpTypeDelete, Collection: "app.bsky.feed.post", Rkey: &rkey},
-	}, nil); err != nil {
+	}, nil, nil); err != nil {
 		t.Fatalf("applyWrites create+delete: %v", err)
 	}
 
@@ -535,7 +535,7 @@ func TestApplyWritesBatchUpdateThenDeleteCleansBlock(t *testing.T) {
 	if _, err := s.repoman.applyWrites(context.Background(), urepo.Repo, []Op{
 		{Type: OpTypeUpdate, Collection: "app.bsky.feed.post", Rkey: &rkey, Record: rmPostRecord("v2")},
 		{Type: OpTypeDelete, Collection: "app.bsky.feed.post", Rkey: &rkey},
-	}, nil); err != nil {
+	}, nil, nil); err != nil {
 		t.Fatalf("applyWrites update+delete: %v", err)
 	}
 

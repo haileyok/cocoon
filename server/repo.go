@@ -344,7 +344,7 @@ func (s *Server) lockRepoWrite(did string) func() {
 }
 
 // TODO make use of swap commit
-func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []Op, swapCommit *string) ([]ApplyWriteResult, error) {
+func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []Op, swapCommit *string, authorize func(collection, action string) error) ([]ApplyWriteResult, error) {
 	unlock := rm.s.lockRepoWrite(urepo.Did)
 	defer unlock()
 	current, err := rm.s.getRepoActorByDid(ctx, urepo.Did)
@@ -377,28 +377,48 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 	var removedCids []cid.Cid
 
 	if err := rm.withRepo(ctx, urepo.Did, rootcid, func(r *atp.Repo) (cid.Cid, error) {
+		// Authorize the entire batch under the write lock before persisting blocks.
+		// Earlier operations in the batch affect whether a later write creates or updates.
+		present := make(map[string]bool)
+		for i := range writes {
+			op := &writes[i]
+			if op.Rkey == nil {
+				if op.Type != OpTypeCreate {
+					return cid.Undef, fmt.Errorf("invalid rkey")
+				}
+				op.Rkey = to.StringPtr(rm.clock.Next().String())
+			}
+			path := fmt.Sprintf("%s/%s", op.Collection, *op.Rkey)
+			exists, seen := present[path]
+			if !seen {
+				existing, err := r.MST.Get([]byte(path))
+				if err != nil {
+					return cid.Undef, err
+				}
+				exists = existing != nil
+			}
+			action := actionForOpType(op.Type)
+			if op.Type == OpTypeCreate || op.Type == OpTypeUpdate {
+				action = "create"
+				if exists {
+					action = "update"
+					op.Type = OpTypeUpdate
+				}
+			}
+			if authorize != nil {
+				if err := authorize(op.Collection, action); err != nil {
+					return cid.Undef, err
+				}
+			}
+			present[path] = op.Type != OpTypeDelete
+		}
+
 		// Snapshot the pre-write tree so we can compute which blocks this
 		// commit supersedes (removedCids) after mutating.
 		prevTree := r.MST.Copy()
 
 		entries = make([]models.Record, 0, len(writes))
-		for i, op := range writes {
-			// updates or deletes must supply an rkey
-			if op.Type != OpTypeCreate && op.Rkey == nil {
-				return cid.Undef, fmt.Errorf("invalid rkey")
-			} else if op.Type == OpTypeCreate && op.Rkey != nil {
-				// we should convert this op to an update if the rkey already exists
-				path := fmt.Sprintf("%s/%s", op.Collection, *op.Rkey)
-				existing, _ := r.MST.Get([]byte(path))
-				if existing != nil {
-					op.Type = OpTypeUpdate
-				}
-			} else if op.Rkey == nil {
-				// creates that don't supply an rkey will have one generated for them
-				op.Rkey = to.StringPtr(rm.clock.Next().String())
-				writes[i].Rkey = op.Rkey
-			}
-
+		for _, op := range writes {
 			path := fmt.Sprintf("%s/%s", op.Collection, *op.Rkey)
 
 			// validate the record key is actually valid

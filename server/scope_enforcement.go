@@ -1,11 +1,25 @@
 package server
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/haileyok/cocoon/oauth/scopes"
 	"github.com/labstack/echo/v4"
 )
+
+type repoScopeError string
+
+func (e repoScopeError) Error() string { return string(e) }
+
+func (s *Server) repoWriteAuthorization(e echo.Context) func(string, string) error {
+	return func(collection, action string) error {
+		if !s.hasRepoScope(e, collection, action) {
+			return repoScopeError(fmt.Sprintf("repo:%s?action=%s", collection, action))
+		}
+		return nil
+	}
+}
 
 // hasRPCScope checks the exact method and audience before delegating authority.
 // An omitted method requests an unrestricted token and requires lxm=*.

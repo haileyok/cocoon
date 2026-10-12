@@ -828,7 +828,7 @@ func TestCommitUpdateOpCarriesPrev(t *testing.T) {
 	rec := MarshalableMap{"$type": "app.bsky.feed.post", "text": "v1", "createdAt": "2024-01-01T00:00:00Z"}
 	if _, err := s.repoman.applyWrites(ctx, urepo.Repo, []Op{{
 		Type: OpTypeCreate, Collection: "app.bsky.feed.post", Rkey: &rkey, Record: &rec,
-	}}, nil); err != nil {
+	}}, nil, nil); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 
@@ -850,7 +850,7 @@ func TestCommitUpdateOpCarriesPrev(t *testing.T) {
 	rec2 := MarshalableMap{"$type": "app.bsky.feed.post", "text": "v2", "createdAt": "2024-01-01T00:00:01Z"}
 	if _, err := s.repoman.applyWrites(ctx, urepo.Repo, []Op{{
 		Type: OpTypeUpdate, Collection: "app.bsky.feed.post", Rkey: &rkey, Record: &rec2,
-	}}, nil); err != nil {
+	}}, nil, nil); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	updEvt := recvCommit()

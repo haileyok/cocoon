@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/haileyok/cocoon/internal/helpers"
@@ -61,13 +62,21 @@ func (s *Server) handleApplyWrites(e echo.Context) error {
 
 	for _, op := range ops {
 		action := actionForOpType(op.Type)
-		if !s.hasRepoScope(e, op.Collection, action) {
+		allowed := s.hasRepoScope(e, op.Collection, action)
+		if op.Type == OpTypeCreate || op.Type == OpTypeUpdate {
+			allowed = s.hasRepoScope(e, op.Collection, "create") || s.hasRepoScope(e, op.Collection, "update")
+		}
+		if !allowed {
 			return helpers.InsufficientScopeError(e, fmt.Sprintf("repo:%s?action=%s", op.Collection, action))
 		}
 	}
 
-	results, err := s.repoman.applyWrites(ctx, repo.Repo, ops, req.SwapCommit)
+	results, err := s.repoman.applyWrites(ctx, repo.Repo, ops, req.SwapCommit, s.repoWriteAuthorization(e))
 	if err != nil {
+		var scopeErr repoScopeError
+		if errors.As(err, &scopeErr) {
+			return helpers.InsufficientScopeError(e, scopeErr.Error())
+		}
 		logger.Error("error applying writes", "error", err)
 		return helpers.ServerError(e, nil)
 	}
