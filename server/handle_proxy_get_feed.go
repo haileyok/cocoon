@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/url"
 
 	"github.com/Azure/go-autorest/autorest/to"
@@ -36,7 +37,22 @@ func (s *Server) handleProxyBskyFeedGetFeed(e echo.Context) error {
 		Client: s.proxyHTTPClient,
 	}
 	feedRecord, err := atproto.RepoGetRecord(e.Request().Context(), &appViewClient, "", feedUri.Collection().String(), feedUri.Authority().String(), feedUri.RecordKey().String())
-	feedGeneratorDid := feedRecord.Value.Val.(*bsky.FeedGenerator).Did
+	if err != nil {
+		var xrpcErr *xrpc.Error
+		if errors.As(err, &xrpcErr) && xrpcErr.StatusCode >= 400 && xrpcErr.StatusCode < 500 {
+			return helpers.InputError(e, to.StringPtr("could not find feed generator record"))
+		}
+		e.Logger().Error("could not get feed generator record", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+	if feedRecord == nil || feedRecord.Value == nil {
+		return helpers.ServerError(e, nil)
+	}
+	generator, ok := feedRecord.Value.Val.(*bsky.FeedGenerator)
+	if !ok || generator == nil {
+		return helpers.InputError(e, to.StringPtr("feed uri does not point to a feed generator"))
+	}
+	feedGeneratorDid := generator.Did
 
 	e.Set("proxyTokenLxm", "app.bsky.feed.getFeedSkeleton")
 	e.Set("proxyTokenAud", feedGeneratorDid)
