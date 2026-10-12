@@ -3,7 +3,12 @@ package identity
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
+	"time"
+
+	"github.com/bluesky-social/gttp"
+	"github.com/haileyok/cocoon/internal/helpers"
 )
 
 type BackingCache interface {
@@ -17,10 +22,11 @@ type BackingCache interface {
 }
 
 type Passport struct {
-	h      *http.Client
-	bc     BackingCache
-	plcURL string
-	mu     sync.RWMutex
+	h       *http.Client
+	plcHTTP *http.Client
+	bc      BackingCache
+	plcURL  string
+	mu      sync.RWMutex
 }
 
 // PassportOption configures optional Passport behavior.
@@ -36,15 +42,26 @@ func WithPlcURL(plcURL string) PassportOption {
 	}
 }
 
+// NewPassport uses restricted web fetching and a separate client for the
+// configured PLC directory. An explicit client overrides both defaults.
 func NewPassport(h *http.Client, bc BackingCache, opts ...PassportOption) *Passport {
+	plcHTTP := h
 	if h == nil {
-		h = http.DefaultClient
+		h = helpers.NewSafeFetchClient()
+		plcHTTP = gttp.New(
+			gttp.WithNoRedirects(),
+			gttp.WithNoProxy(),
+			gttp.WithMaxResponseBodyBytes(helpers.SafeFetchClientMaxBodyBytes),
+			gttp.WithTimeout(10*time.Second),
+			gttp.WithNoRetries(),
+		)
 	}
 
 	p := &Passport{
-		h:      h,
-		bc:     bc,
-		plcURL: DefaultPlcURL,
+		h:       h,
+		plcHTTP: plcHTTP,
+		bc:      bc,
+		plcURL:  DefaultPlcURL,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -66,7 +83,11 @@ func (p *Passport) FetchDoc(ctx context.Context, did string) (*DidDoc, error) {
 		}
 	}
 
-	doc, err := FetchDidDoc(ctx, p.h, p.plcURL, did)
+	h := p.h
+	if strings.HasPrefix(did, "did:plc:") {
+		h = p.plcHTTP
+	}
+	doc, err := FetchDidDoc(ctx, h, p.plcURL, did)
 	if err != nil {
 		return nil, err
 	}
