@@ -175,6 +175,32 @@ func safeClientURI(raw string) string {
 	return u.String()
 }
 
+// accountAuthKey is one sign-in key shown on the account page.
+type accountAuthKey struct {
+	ID         uint
+	DidKey     string
+	CreatedAgo string
+	Revoked    bool
+}
+
+// loadAccountAuthKeys returns the account's sign-in keys, newest first.
+func (s *Server) loadAccountAuthKeys(ctx context.Context, did string, now time.Time) ([]accountAuthKey, error) {
+	var keys []models.AuthKey
+	if err := s.db.Raw(ctx, "SELECT * FROM auth_keys WHERE did = ? ORDER BY created_at DESC", nil, did).Scan(&keys).Error; err != nil {
+		return nil, err
+	}
+	out := make([]accountAuthKey, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, accountAuthKey{
+			ID:         k.ID,
+			DidKey:     k.DidKey,
+			CreatedAgo: shortDuration(now.Sub(k.CreatedAt)),
+			Revoked:    k.RevokedAt != nil,
+		})
+	}
+	return out, nil
+}
+
 // loadAccountApps returns the account's live OAuth sessions grouped by app,
 // most recently used first.
 func (s *Server) loadAccountApps(ctx context.Context, repo *models.RepoActor, now time.Time) ([]accountApp, error) {

@@ -326,6 +326,15 @@ func (s *Server) getRepoByDid(ctx context.Context, did string) (*models.Repo, er
 	return &repo, nil
 }
 
+// ListAuthKeys returns the account's sign-in keys, newest first.
+func (s *Server) ListAuthKeys(ctx context.Context, did string) ([]models.AuthKey, error) {
+	var keys []models.AuthKey
+	if err := s.db.Raw(ctx, "SELECT * FROM auth_keys WHERE did = ? ORDER BY created_at DESC", nil, did).Scan(&keys).Error; err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
 // RevokeAuthKey revokes the account's sign-in key matching didKey. An empty
 // didKey revokes all of the account's keys. Revocation stops future grants
 // and revokes the OAuth sessions issued through the key. It reports whether
