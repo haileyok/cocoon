@@ -267,6 +267,17 @@ func (s *Server) pruneOauthTokens(ctx context.Context, now time.Time) (int64, er
 	}
 	n := res.RowsAffected
 
+	// Single-use jwt-bearer assertion jtis whose assertions could still be
+	// replayed are long past; the rest of the table can go.
+	res = s.db.Exec(ctx,
+		"DELETE FROM auth_key_assertions WHERE expires_at < ?",
+		nil, now,
+	)
+	if res.Error != nil {
+		return n, res.Error
+	}
+	n += res.RowsAffected
+
 	res = s.db.Exec(ctx,
 		"DELETE FROM oauth_tokens WHERE session_version < (SELECT r.session_version FROM repos r WHERE r.did = oauth_tokens.sub)",
 		nil,
