@@ -121,7 +121,7 @@ func (s *Server) handleOauthAuthorizationServer(e echo.Context) error {
 		SubjectTypesSupported:                      []string{"public"},
 		ResponseTypesSupported:                     []string{"code"},
 		ResponseModesSupported:                     []string{"query", "fragment", "form_post"},
-		GrantTypesSupported:                        []string{"authorization_code", "refresh_token"},
+		GrantTypesSupported:                        []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"},
 		CodeChallengeMethodsSupported:              []string{"S256"},
 		UILocalesSupported:                         []string{"en-US"},
 		DisplayValuesSupported:                     []string{"page", "popup", "touch"},
