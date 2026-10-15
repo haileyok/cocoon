@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/Azure/go-autorest/autorest/to"
 	"io"
 	"net/http"
 	"strings"
@@ -34,6 +35,9 @@ func (s *Server) handleRepoImportRepo(e echo.Context) error {
 	logger := s.logger.With("name", "handleImportRepo")
 
 	urepo := e.Get("repo").(*models.RepoActor)
+	if urepo.Repo.TakenDown() {
+		return helpers.InputError(e, to.StringPtr("AccountTakedown"))
+	}
 
 	body := http.MaxBytesReader(e.Response(), e.Request().Body, importRepoMaxBodyBytes)
 	b, err := io.ReadAll(body)

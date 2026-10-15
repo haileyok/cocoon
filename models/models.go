@@ -124,6 +124,13 @@ func (r *Repo) Active() bool {
 	return r.Status() == nil
 }
 
+// TakenDown reports whether the account has been taken down by an
+// administrator. A taken-down account's repo is hidden and its writes refused,
+// like a deactivated account's, but (unlike deactivation) an admin can undo it.
+func (r *Repo) TakenDown() bool {
+	return r.TakedownRef != nil
+}
+
 type Actor struct {
 	Did    string `gorm:"primaryKey"`
 	Handle string `gorm:"uniqueIndex"`

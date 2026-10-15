@@ -676,6 +676,8 @@ func (s *Server) addRoutes() {
 	// admin routes
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCode", s.handleCreateInviteCode, s.handleAdminMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCodes", s.handleCreateInviteCodes, s.handleAdminMiddleware)
+	s.echo.GET("/xrpc/com.atproto.admin.getSubjectStatus", s.handleAdminGetSubjectStatus, s.handleAdminMiddleware)
+	s.echo.POST("/xrpc/com.atproto.admin.updateSubjectStatus", s.handleAdminUpdateSubjectStatus, s.handleAdminMiddleware)
 
 	s.addSpaceRoutes()
 

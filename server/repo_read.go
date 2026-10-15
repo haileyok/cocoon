@@ -38,6 +38,11 @@ func (s *Server) handleRepoReadMiddleware(next echo.HandlerFunc) echo.HandlerFun
 		if err != nil {
 			return helpers.ServerError(e, nil)
 		}
+		if repo.Repo.TakenDown() {
+			// A taken-down account's repo is hidden entirely, even from its
+			// owner and (unlike deactivation) even from admin reads.
+			return helpers.InputError(e, to.StringPtr("RepoTakedown"))
+		}
 		if repo.Active() {
 			return next(e)
 		}

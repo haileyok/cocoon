@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"fmt"
+	"github.com/Azure/go-autorest/autorest/to"
 	"io"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -36,6 +37,9 @@ func (s *Server) handleRepoUploadBlob(e echo.Context) error {
 	logger := s.logger.With("name", "handleRepoUploadBlob")
 
 	urepo := e.Get("repo").(*models.RepoActor)
+	if urepo.Repo.TakenDown() {
+		return helpers.InputError(e, to.StringPtr("AccountTakedown"))
+	}
 
 	mime := e.Request().Header.Get("content-type")
 	if mime == "" {
