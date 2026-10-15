@@ -335,6 +335,11 @@ func computeRemovedCids(prev *mst.Node, curr *mst.Node, prevCommitCids []cid.Cid
 	return out
 }
 
+// errAccountTakenDown marks a write refused because the account is taken down.
+type errAccountTakenDown struct{}
+
+func (errAccountTakenDown) Error() string { return "account taken down" }
+
 // Serializes repository mutations within this server process.
 func (s *Server) lockRepoWrite(did string) func() {
 	value, _ := s.repoWriteLocks.LoadOrStore(did, &sync.Mutex{})
@@ -347,9 +352,14 @@ func (s *Server) lockRepoWrite(did string) func() {
 func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []Op, swapCommit *string, authorize func(collection, action string) error) ([]ApplyWriteResult, error) {
 	unlock := rm.s.lockRepoWrite(urepo.Did)
 	defer unlock()
+	// A taken-down account cannot write, and writes within this process are
+	// serialized by the write lock.
 	current, err := rm.s.getRepoActorByDid(ctx, urepo.Did)
 	if err != nil {
 		return nil, err
+	}
+	if current.Repo.TakenDown() {
+		return nil, errAccountTakenDown{}
 	}
 	urepo = current.Repo
 	rootcid, err := cid.Cast(urepo.Root)

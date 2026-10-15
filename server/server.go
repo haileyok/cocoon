@@ -676,6 +676,8 @@ func (s *Server) addRoutes() {
 	// admin routes
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCode", s.handleCreateInviteCode, s.handleAdminMiddleware)
 	s.echo.POST("/xrpc/com.atproto.server.createInviteCodes", s.handleCreateInviteCodes, s.handleAdminMiddleware)
+	s.echo.GET("/xrpc/com.atproto.admin.getSubjectStatus", s.handleAdminGetSubjectStatus, s.handleAdminMiddleware)
+	s.echo.POST("/xrpc/com.atproto.admin.updateSubjectStatus", s.handleAdminUpdateSubjectStatus, s.handleAdminMiddleware)
 
 	s.addSpaceRoutes()
 
@@ -684,13 +686,11 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 }
 
-func (s *Server) Serve(ctx context.Context) error {
-	logger := s.logger.With("name", "Serve")
-
-	s.addRoutes()
-
-	logger.Info("migrating...")
-
+// Migrate runs the database migrations Serve applies at startup, so offline
+// commands (like create-agent) operate on an up-to-date schema. The space
+// tables are migrated even if the main migration fails, as Serve always has.
+func (s *Server) Migrate() error {
+	var errs []error
 	if err := s.db.AutoMigrate(
 		&models.Actor{},
 		&models.Repo{},
@@ -707,10 +707,23 @@ func (s *Server) Serve(ctx context.Context) error {
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
 	); err != nil {
-		logger.Error("migration failed", "err", err)
+		errs = append(errs, fmt.Errorf("migration failed: %w", err))
 	}
-	if err := migrateSpaceTables(s.db.Client(), logger); err != nil {
-		logger.Error("space table migration failed; spaces will not work", "err", err)
+	if err := migrateSpaceTables(s.db.Client(), s.logger); err != nil {
+		errs = append(errs, fmt.Errorf("space table migration failed; spaces will not work: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+func (s *Server) Serve(ctx context.Context) error {
+	logger := s.logger.With("name", "Serve")
+
+	s.addRoutes()
+
+	logger.Info("migrating...")
+
+	if err := s.Migrate(); err != nil {
+		logger.Error("migrations failed", "err", err)
 	}
 
 	logger.Info("starting cocoon")

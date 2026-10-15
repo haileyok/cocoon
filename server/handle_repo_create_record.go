@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"github.com/Azure/go-autorest/autorest/to"
 
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
@@ -65,6 +66,10 @@ func (s *Server) handleCreateRecord(e echo.Context) error {
 		var scopeErr repoScopeError
 		if errors.As(err, &scopeErr) {
 			return helpers.InsufficientScopeError(e, scopeErr.Error())
+		}
+		var downErr errAccountTakenDown
+		if errors.As(err, &downErr) {
+			return helpers.InputError(e, to.StringPtr("AccountTakedown"))
 		}
 		logger.Error("error applying writes", "error", err)
 		return helpers.ServerError(e, nil)

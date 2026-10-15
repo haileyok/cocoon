@@ -29,6 +29,10 @@ type ComAtprotoServerCreateAccountRequest struct {
 	Did        *string `json:"did" validate:"atproto-did"`
 	Password   string  `json:"password" validate:"required"`
 	InviteCode string  `json:"inviteCode" validate:"omitempty"`
+	// RecoveryKey is an optional did:key that is placed FIRST in the genesis
+	// PLC operation's rotationKeys, before the PDS's own rotation key, so its
+	// holder outranks the PDS for identity recovery.
+	RecoveryKey string `json:"recoveryKey" validate:"omitempty"`
 }
 
 type ComAtprotoServerCreateAccountResponse struct {
@@ -170,7 +174,13 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 	}
 
 	if signupDid == "" {
-		did, op, err := s.plcClient.CreateDID(k, "", request.Handle)
+		if request.RecoveryKey != "" {
+			if _, err := atcrypto.ParsePublicDIDKey(request.RecoveryKey); err != nil {
+				return helpers.InputError(e, to.StringPtr("InvalidRequest"))
+			}
+		}
+
+		did, op, err := s.plcClient.CreateDID(k, request.RecoveryKey, request.Handle)
 		if err != nil {
 			logger.Error("error creating operation", "endpoint", "com.atproto.server.createAccount", "error", err)
 			return helpers.ServerError(e, nil)
