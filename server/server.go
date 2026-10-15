@@ -686,13 +686,9 @@ func (s *Server) addRoutes() {
 	s.echo.POST("/xrpc/*", s.handleProxy, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 }
 
-func (s *Server) Serve(ctx context.Context) error {
-	logger := s.logger.With("name", "Serve")
-
-	s.addRoutes()
-
-	logger.Info("migrating...")
-
+// Migrate runs the database migrations Serve applies at startup, so offline
+// commands (like create-agent) operate on an up-to-date schema.
+func (s *Server) Migrate() error {
 	if err := s.db.AutoMigrate(
 		&models.Actor{},
 		&models.Repo{},
@@ -709,10 +705,21 @@ func (s *Server) Serve(ctx context.Context) error {
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
 	); err != nil {
-		logger.Error("migration failed", "err", err)
+		return err
 	}
-	if err := migrateSpaceTables(s.db.Client(), logger); err != nil {
-		logger.Error("space table migration failed; spaces will not work", "err", err)
+	if err := migrateSpaceTables(s.db.Client(), s.logger); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) Serve(ctx context.Context) error {
+	logger := s.logger.With("name", "Serve")
+
+	s.addRoutes()
+
+	if err := s.Migrate(); err != nil {
+		logger.Error("migration failed", "err", err)
 	}
 
 	logger.Info("starting cocoon")

@@ -192,6 +192,7 @@ func main() {
 			runResetPassword,
 			runRecommitRepos,
 			runGcRepos,
+			runCreateAgent,
 		},
 		ErrWriter: os.Stdout,
 		Version:   Version,
@@ -596,6 +597,108 @@ var runGcRepos = &cli.Command{
 		}
 		return nil
 	},
+}
+
+var runCreateAgent = &cli.Command{
+	Name:  "create-agent",
+	Usage: "creates an agent account and publishes its operator declaration records",
+	Description: "Creates an agent account on this PDS (random password, placeholder email: agents sign in via OAuth). " +
+		"The genesis PLC operation's rotationKeys put --recovery-key FIRST, before the PDS's own key, so the operator " +
+		"holds identity recovery offline. The agent's repo gets a garden.engram.agents.declaration/self record naming " +
+		"the operator; if the operator is an account on this PDS, their repo also gets a garden.engram.agents.operated " +
+		"record listing the agent.\n\n" +
+		"Uses the same config as `run` (COCOON_* env vars): needs the database, rotation key, JWK, and PLC settings. " +
+		"Run with the PDS stopped (it opens the same database).",
+	Flags: []cli.Flag{
+		&cli.StringFlag{
+			Name:     "handle",
+			Required: true,
+			Usage:    "handle for the agent account, e.g. assistant.agents.example.com",
+		},
+		&cli.StringFlag{
+			Name:     "operator",
+			Required: true,
+			Usage:    "the operator's DID, named in the agent's declaration record",
+		},
+		&cli.StringFlag{
+			Name:    "recovery-key",
+			Aliases: []string{"recovery"},
+			Usage:   "did:key held offline by the operator; placed FIRST in the genesis operation's rotationKeys",
+		},
+		&cli.BoolFlag{
+			Name:  "no-recovery-key",
+			Usage: "explicitly create the agent without an operator recovery key (not recommended)",
+		},
+		&cli.StringFlag{
+			Name:  "description",
+			Usage: "optional description string on the declaration record",
+		},
+		&cli.StringFlag{
+			Name:    "plc-url",
+			Usage:   "PLC directory (same as run; e.g. a local directory for testing)",
+			EnvVars: []string{"COCOON_PLC_URL"},
+			Value:   identity.DefaultPlcURL,
+		},
+	},
+	Action: func(cmd *cli.Context) error {
+		recoveryKey := cmd.String("recovery-key")
+		if recoveryKey == "" && !cmd.Bool("no-recovery-key") {
+			return fmt.Errorf("--recovery-key is required (pass --no-recovery-key to create the agent without one)")
+		}
+
+		s, err := newAgentServer(cmd)
+		if err != nil {
+			return err
+		}
+
+		// The offline command may run against a fresh database; apply the
+		// same migrations Serve applies at startup.
+		if err := s.Migrate(); err != nil {
+			return fmt.Errorf("error migrating database: %w", err)
+		}
+
+		res, err := s.CreateAgent(context.Background(), server.CreateAgentArgs{
+			Handle:      cmd.String("handle"),
+			Operator:    cmd.String("operator"),
+			RecoveryKey: recoveryKey,
+			Description: cmd.String("description"),
+		})
+		if err != nil {
+			return fmt.Errorf("error creating agent: %w", err)
+		}
+
+		fmt.Printf("Agent created.\nDID: %s\nHandle: %s\n", res.Did, res.Handle)
+		if res.OperatedWritten {
+			fmt.Println("Operator operated record written to the operator's repo.")
+		} else {
+			fmt.Println("Operator is not an account on this PDS; only the agent's declaration record was written.")
+		}
+		return nil
+	},
+}
+
+// newAgentServer builds a *server.Server for offline agent creation, using the
+// same config as `run` (COCOON_* env vars). It does not start serving.
+func newAgentServer(cmd *cli.Context) (*server.Server, error) {
+	return server.New(&server.Args{
+		Logger:            slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		Addr:              "localhost:0",
+		DbName:            cmd.String("db-name"),
+		DbType:            cmd.String("db-type"),
+		DatabaseURL:       cmd.String("database-url"),
+		Did:               cmd.String("did"),
+		Hostname:          cmd.String("hostname"),
+		RotationKeyPath:   cmd.String("rotation-key-path"),
+		JwkPath:           cmd.String("jwk-path"),
+		ContactEmail:      cmd.String("contact-email"),
+		Version:           Version,
+		Relays:            cmd.StringSlice("relays"),
+		AdminPassword:     cmd.String("admin-password"),
+		RequireInvite:     cmd.Bool("require-invite"),
+		SessionSecret:     cmd.String("session-secret"),
+		BlockstoreVariant: server.MustReturnBlockstoreVariant(cmd.String("blockstore-variant")),
+		PlcURL:            cmd.String("plc-url"),
+	})
 }
 
 func newDb(cmd *cli.Context) (*gorm.DB, error) {
