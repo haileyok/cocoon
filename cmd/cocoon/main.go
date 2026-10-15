@@ -601,12 +601,10 @@ var runGcRepos = &cli.Command{
 
 var runCreateAgent = &cli.Command{
 	Name:  "create-agent",
-	Usage: "creates an agent account and publishes its operator declaration records",
+	Usage: "creates an account for an automated agent, with the operator's recovery key first",
 	Description: "Creates an agent account on this PDS (random password, placeholder email: agents sign in via OAuth). " +
 		"The genesis PLC operation's rotationKeys put --recovery-key FIRST, before the PDS's own key, so the operator " +
-		"holds identity recovery offline. The agent's repo gets a garden.engram.agents.declaration/self record naming " +
-		"the operator; if the operator is an account on this PDS, their repo also gets a garden.engram.agents.operated " +
-		"record listing the agent.\n\n" +
+		"holds identity recovery offline. It writes no records.\n\n" +
 		"Uses the same config as `run` (COCOON_* env vars): needs the database, rotation key, JWK, and PLC settings. " +
 		"Run with the PDS stopped (it opens the same database).",
 	Flags: []cli.Flag{
@@ -616,11 +614,6 @@ var runCreateAgent = &cli.Command{
 			Usage:    "handle for the agent account, e.g. assistant.agents.example.com",
 		},
 		&cli.StringFlag{
-			Name:     "operator",
-			Required: true,
-			Usage:    "the operator's DID, named in the agent's declaration record",
-		},
-		&cli.StringFlag{
 			Name:    "recovery-key",
 			Aliases: []string{"recovery"},
 			Usage:   "did:key held offline by the operator; placed FIRST in the genesis operation's rotationKeys",
@@ -628,10 +621,6 @@ var runCreateAgent = &cli.Command{
 		&cli.BoolFlag{
 			Name:  "no-recovery-key",
 			Usage: "explicitly create the agent without an operator recovery key (not recommended)",
-		},
-		&cli.StringFlag{
-			Name:  "description",
-			Usage: "optional description string on the declaration record",
 		},
 		&cli.StringFlag{
 			Name:    "plc-url",
@@ -659,20 +648,13 @@ var runCreateAgent = &cli.Command{
 
 		res, err := s.CreateAgent(context.Background(), server.CreateAgentArgs{
 			Handle:      cmd.String("handle"),
-			Operator:    cmd.String("operator"),
 			RecoveryKey: recoveryKey,
-			Description: cmd.String("description"),
 		})
 		if err != nil {
 			return fmt.Errorf("error creating agent: %w", err)
 		}
 
 		fmt.Printf("Agent created.\nDID: %s\nHandle: %s\n", res.Did, res.Handle)
-		if res.OperatedWritten {
-			fmt.Println("Operator operated record written to the operator's repo.")
-		} else {
-			fmt.Println("Operator is not an account on this PDS; only the agent's declaration record was written.")
-		}
 		return nil
 	},
 }
