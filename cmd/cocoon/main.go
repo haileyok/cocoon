@@ -193,6 +193,7 @@ func main() {
 			runRecommitRepos,
 			runGcRepos,
 			runCreateAgent,
+			runAuthKeys,
 		},
 		ErrWriter: os.Stdout,
 		Version:   Version,
