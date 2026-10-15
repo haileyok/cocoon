@@ -7,7 +7,28 @@ import (
 	"testing"
 
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
+	"github.com/bluesky-social/indigo/atproto/atdata"
+	"github.com/haileyok/cocoon/models"
 )
+
+// getAgentOperatedRecord finds the operated record naming agent in
+// operator's repo, returning its URI and CID, or "" when there is none.
+func (s *Server) getAgentOperatedRecord(ctx context.Context, operator, agent string) (string, string, error) {
+	var records []models.Record
+	if err := s.db.Raw(ctx, "SELECT * FROM records WHERE did = ? AND nsid = ?", nil, operator, agentOperatedCollection).Scan(&records).Error; err != nil {
+		return "", "", err
+	}
+	for _, r := range records {
+		val, err := atdata.UnmarshalCBOR(r.Value)
+		if err != nil {
+			return "", "", err
+		}
+		if val["agent"] == agent {
+			return "at://" + r.Did + "/" + r.Nsid + "/" + r.Rkey, r.Cid, nil
+		}
+	}
+	return "", "", nil
+}
 
 // TestCreateAgent wires a test server like the create-account tests do (test
 // PLC server, evtman, passport) and runs CreateAgent, checking:

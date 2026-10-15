@@ -687,8 +687,10 @@ func (s *Server) addRoutes() {
 }
 
 // Migrate runs the database migrations Serve applies at startup, so offline
-// commands (like create-agent) operate on an up-to-date schema.
+// commands (like create-agent) operate on an up-to-date schema. The space
+// tables are migrated even if the main migration fails, as Serve always has.
 func (s *Server) Migrate() error {
+	var errs []error
 	if err := s.db.AutoMigrate(
 		&models.Actor{},
 		&models.Repo{},
@@ -705,12 +707,12 @@ func (s *Server) Migrate() error {
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
 	); err != nil {
-		return err
+		errs = append(errs, fmt.Errorf("migration failed: %w", err))
 	}
 	if err := migrateSpaceTables(s.db.Client(), s.logger); err != nil {
-		return err
+		errs = append(errs, fmt.Errorf("space table migration failed; spaces will not work: %w", err))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (s *Server) Serve(ctx context.Context) error {
@@ -718,8 +720,10 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	s.addRoutes()
 
+	logger.Info("migrating...")
+
 	if err := s.Migrate(); err != nil {
-		logger.Error("migration failed", "err", err)
+		logger.Error("migrations failed", "err", err)
 	}
 
 	logger.Info("starting cocoon")

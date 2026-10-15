@@ -207,19 +207,3 @@ func (s *Server) applyWritesForRepo(ctx context.Context, repo models.Repo, op Op
 	}
 	return s.repoman.applyWrites(ctx, repo, []Op{op}, nil, nil)
 }
-
-// getAgentOperatedRecord finds the operated record for agent in operator's
-// repo, returning its URI or "" when there is none.
-func (s *Server) getAgentOperatedRecord(ctx context.Context, operator, agent string) (string, string, error) {
-	var records []models.Record
-	if err := s.db.Raw(ctx, "SELECT * FROM records WHERE did = ? AND nsid = ?", nil, operator, agentOperatedCollection).Scan(&records).Error; err != nil {
-		return "", "", err
-	}
-	for _, r := range records {
-		if !strings.Contains(string(r.Value), agent) {
-			continue
-		}
-		return "at://" + r.Did + "/" + r.Nsid + "/" + r.Rkey, r.Cid, nil
-	}
-	return "", "", nil
-}

@@ -94,6 +94,32 @@ func TestAdminUpdateSubjectStatus(t *testing.T) {
 			t.Fatalf("taken-down repo read should be refused, got %d: %s", rec.Code, rec.Body.String())
 		}
 
+		// but an admin can still read it, on sync and repo read paths alike
+		for _, target := range []string{
+			"/xrpc/com.atproto.sync.getRepoStatus?did=" + url.QueryEscape(acct.Did),
+			"/xrpc/com.atproto.repo.describeRepo?repo=" + url.QueryEscape(acct.Did),
+		} {
+			c, rec = newRequestContext(http.MethodGet, target, "", nil)
+			c.Request().SetBasicAuth("admin", s.config.AdminPassword)
+			reached := false
+			handler = s.handleRepoReadMiddleware(func(e echo.Context) error { reached = true; return e.NoContent(http.StatusOK) })
+			if err := handler(c); err != nil {
+				t.Fatalf("admin read %s: %v", target, err)
+			}
+			if !reached || rec.Code != http.StatusOK {
+				t.Fatalf("admin read of %s should be allowed, got %d: %s", target, rec.Code, rec.Body.String())
+			}
+			// a wrong admin password is still refused
+			c, rec = newRequestContext(http.MethodGet, target, "", nil)
+			c.Request().SetBasicAuth("admin", "wrong")
+			if err := s.handleRepoReadMiddleware(func(e echo.Context) error { return e.NoContent(http.StatusOK) })(c); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("bad admin read of %s should be refused, got %d", target, rec.Code)
+			}
+		}
+
 		// getSubjectStatus reports it
 		code, body = adminCall(t, s, http.MethodGet, "/xrpc/com.atproto.admin.getSubjectStatus?did="+url.QueryEscape(acct.Did), "")
 		if code != http.StatusOK {

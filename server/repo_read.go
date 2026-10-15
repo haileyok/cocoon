@@ -10,6 +10,13 @@ import (
 	"gorm.io/gorm"
 )
 
+// isAdminBasicAuth reports whether the request carries the admin's basic
+// auth credentials.
+func (s *Server) isAdminBasicAuth(e echo.Context) bool {
+	username, password, ok := e.Request().BasicAuth()
+	return ok && s.config.AdminPassword != "" && username == "admin" && password == s.config.AdminPassword
+}
+
 func (s *Server) handleRepoReadMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(e echo.Context) error {
 		ctx := e.Request().Context()
@@ -38,9 +45,16 @@ func (s *Server) handleRepoReadMiddleware(next echo.HandlerFunc) echo.HandlerFun
 		if err != nil {
 			return helpers.ServerError(e, nil)
 		}
+		allow := func(e echo.Context) error {
+			e.Set("inactiveRepoRead", did)
+			return next(e)
+		}
 		if repo.Repo.TakenDown() {
-			// A taken-down account's repo is hidden entirely, even from its
-			// owner and (unlike deactivation) even from admin reads.
+			// A taken-down account's repo is hidden from everyone, its owner
+			// included, except the admin.
+			if s.isAdminBasicAuth(e) {
+				return allow(e)
+			}
 			return helpers.InputError(e, to.StringPtr("RepoTakedown"))
 		}
 		if repo.Active() {
@@ -51,12 +65,8 @@ func (s *Server) handleRepoReadMiddleware(next echo.HandlerFunc) echo.HandlerFun
 		if !syncRead || e.Request().Header.Get("Authorization") == "" {
 			return deny()
 		}
-		allow := func(e echo.Context) error {
-			e.Set("inactiveRepoRead", did)
-			return next(e)
-		}
-		if username, password, ok := e.Request().BasicAuth(); ok {
-			if s.config.AdminPassword != "" && username == "admin" && password == s.config.AdminPassword {
+		if _, _, ok := e.Request().BasicAuth(); ok {
+			if s.isAdminBasicAuth(e) {
 				return allow(e)
 			}
 			return deny()
