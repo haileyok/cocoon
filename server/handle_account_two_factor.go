@@ -18,7 +18,6 @@ import (
 	"github.com/haileyok/cocoon/models"
 	"github.com/labstack/echo/v4"
 	qrcode "github.com/skip2/go-qrcode"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // Pages under /account/2fa for adding and removing authenticator apps,
@@ -55,7 +54,7 @@ func credentialName(name, fallback string) string {
 // has an authenticator or YubiKey, a current code from one of them. It
 // returns a message for the user when the check fails.
 func (s *Server) authorizeTwoFactorChange(ctx context.Context, repo *models.RepoActor, creds []models.TwoFactorCredential, password, currentCode string) (string, error) {
-	if bcrypt.CompareHashAndPassword([]byte(repo.Password), []byte(password)) != nil {
+	if comparePassword(repo.Password, password) != nil {
 		return "Password is incorrect.", nil
 	}
 	emailOnly := len(creds) == 0 && repo.TwoFactorType != models.TwoFactorTypeNone
@@ -389,7 +388,7 @@ func (s *Server) addYubiCloudKey(e echo.Context, sess *sessions.Session, repo *m
 	// tap, since each tap is spent once Yubico sees it but is the cheapest
 	// thing to redo; then the current code, which may be a single-use backup
 	// code (authorizeTwoFactorChange repeats the password check, harmlessly).
-	if bcrypt.CompareHashAndPassword([]byte(repo.Password), []byte(req.Password)) != nil {
+	if comparePassword(repo.Password, req.Password) != nil {
 		return s.renderYubiKeySetup(e, http.StatusBadRequest, repo, hasCreds, "Password is incorrect.", nil)
 	}
 	ok, err := s.yubiCloud.Verify(ctx, token)

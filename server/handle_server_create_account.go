@@ -213,9 +213,9 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		signupDid = did
 	}
 
-	// An account that signs in with a key and no password stores no usable
-	// password hash: bcrypt.CompareHashAndPassword against an empty stored
-	// hash always fails, so every password path refuses the account.
+	// An account that signs in with a key and no password stores an empty
+	// password hash, which comparePassword never matches, so every password
+	// path refuses the account.
 	hashed := []byte(request.Password)
 	if request.Password != "" {
 		h, err := bcrypt.GenerateFromPassword([]byte(request.Password), 10)

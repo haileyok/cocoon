@@ -306,7 +306,7 @@ func (s *Server) handleAccountSigninPost(e echo.Context) error {
 		return back("Something went wrong. Please try again.")
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(repo.Password), []byte(req.Password)); err != nil {
+	if err := comparePassword(repo.Password, req.Password); err != nil {
 		if errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
 			return back("Handle or password is incorrect.")
 		}
