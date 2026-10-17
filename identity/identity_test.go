@@ -2,10 +2,21 @@ package identity
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/bluesky-social/gttp"
+	"github.com/haileyok/cocoon/internal/helpers"
 )
 
 func TestNormalizePlcURL(t *testing.T) {
@@ -136,7 +147,7 @@ func TestFetchHelpersUseConfiguredPlcURL(t *testing.T) {
 func TestPassportUsesConfiguredPlcURL(t *testing.T) {
 	srv, paths := fakePlc(t)
 
-	p := NewPassport(srv.Client(), NewMemCache(10), WithPlcURL(srv.URL))
+	p := NewPassport(nil, NewMemCache(10), WithPlcURL(srv.URL))
 	doc, err := p.FetchDoc(context.Background(), "did:plc:abc123")
 	if err != nil {
 		t.Fatalf("FetchDoc: %v", err)
@@ -146,5 +157,145 @@ func TestPassportUsesConfiguredPlcURL(t *testing.T) {
 	}
 	if len(*paths) != 1 || (*paths)[0] != "/did:plc:abc123" {
 		t.Fatalf("fake PLC was not queried as expected: %v", *paths)
+	}
+}
+
+func TestPassportBlocksPrivateWebFetches(t *testing.T) {
+	var connections atomic.Int64
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(DidDoc{Id: "did:web:localhost"})
+	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	srv.StartTLS()
+	defer srv.Close()
+	p := NewPassport(nil, NewMemCache(10), WithPlcURL(srv.URL))
+	_, port, err := net.SplitHostPort(srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"127.0.0.1", "localhost", "::1", "::ffff:127.0.0.1", "10.0.0.1", "169.254.169.254"} {
+		t.Run(host, func(t *testing.T) {
+			host = net.JoinHostPort(host, port)
+			_, err := p.FetchDoc(context.Background(), "did:web:"+host)
+			if !errors.Is(err, gttp.ErrBlockedByIPPolicy) {
+				t.Fatalf("DID fetch: want IP-policy rejection, got %v", err)
+			}
+			_, err = ResolveHandleFromWellKnown(context.Background(), p.h, host)
+			if !errors.Is(err, gttp.ErrBlockedByIPPolicy) {
+				t.Fatalf("handle fetch: want IP-policy rejection, got %v", err)
+			}
+		})
+	}
+	if connections.Load() != 0 {
+		t.Fatalf("private web server received %d connections", connections.Load())
+	}
+}
+
+func TestPassportPublicWebFetches(t *testing.T) {
+	for _, mode := range []string{"document", "redirect", "private-redirect", "oversized"} {
+		t.Run(mode, func(t *testing.T) {
+			const did = "did:web:203.0.113.10"
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/.well-known/atproto-did" {
+					fmt.Fprint(w, did)
+					return
+				}
+				switch mode {
+				case "redirect":
+					if r.URL.Path != "/document" {
+						http.Redirect(w, r, "/document", http.StatusFound)
+						return
+					}
+				case "private-redirect":
+					http.Redirect(w, r, "https://127.0.0.1/document", http.StatusFound)
+					return
+				case "oversized":
+					fmt.Fprint(w, `{"id":"`+did+`"}`+strings.Repeat(" ", helpers.SafeFetchClientMaxBodyBytes))
+					return
+				}
+				json.NewEncoder(w).Encode(DidDoc{Id: did})
+			}))
+			defer srv.Close()
+			roots := x509.NewCertPool()
+			roots.AddCert(srv.Certificate())
+			client := gttp.New(
+				gttp.WithStrictSSRFProtection(), gttp.WithNoProxy(), gttp.WithNoRetries(),
+				gttp.WithMaxResponseBodyBytes(helpers.SafeFetchClientMaxBodyBytes),
+				gttp.WithTimeout(time.Second),
+				gttp.WithTLSConfig(&tls.Config{RootCAs: roots, ServerName: "example.com"}),
+				gttp.WithDialContext(func(ctx context.Context, network, address string) (net.Conn, error) {
+					// gttp must approve the logical public address before this test-only dial.
+					if address != "203.0.113.10:443" {
+						return nil, fmt.Errorf("unexpected dial: %s", address)
+					}
+					return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+				}),
+			)
+			defer client.CloseIdleConnections()
+			p := NewPassport(client, NewMemCache(10))
+			doc, err := p.FetchDoc(context.Background(), did)
+			switch mode {
+			case "private-redirect":
+				if !errors.Is(err, gttp.ErrBlockedByIPPolicy) {
+					t.Fatalf("want IP-policy rejection, got %v", err)
+				}
+			case "oversized":
+				if !errors.Is(err, gttp.ErrResponseTooLarge) {
+					t.Fatalf("want response size rejection, got %v", err)
+				}
+			default:
+				if err != nil || doc.Id != did {
+					t.Fatalf("document: %+v, error: %v", doc, err)
+				}
+				resolved, err := ResolveHandleFromWellKnown(context.Background(), client, "203.0.113.10")
+				if err != nil || resolved != did {
+					t.Fatalf("handle: %q, error: %v", resolved, err)
+				}
+			}
+		})
+	}
+}
+
+func TestPassportPlcFetchLimits(t *testing.T) {
+	for _, mode := range []string{"redirect", "oversized", "cancel"} {
+		t.Run(mode, func(t *testing.T) {
+			var redirected atomic.Int64
+			target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				redirected.Add(1)
+				json.NewEncoder(w).Encode(DidDoc{Id: "did:plc:abc123"})
+			}))
+			defer target.Close()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch mode {
+				case "redirect":
+					http.Redirect(w, r, target.URL, http.StatusFound)
+				case "oversized":
+					json.NewEncoder(w).Encode(DidDoc{Id: strings.Repeat("x", helpers.SafeFetchClientMaxBodyBytes+1)})
+				case "cancel":
+					<-r.Context().Done()
+				}
+			}))
+			defer srv.Close()
+			p := NewPassport(nil, NewMemCache(10), WithPlcURL(srv.URL))
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_, err := p.FetchDoc(ctx, "did:plc:abc123")
+			if err == nil {
+				t.Fatal("expected fetch rejection")
+			}
+			if mode == "oversized" && !errors.Is(err, gttp.ErrResponseTooLarge) {
+				t.Fatalf("want response size rejection, got %v", err)
+			}
+			if mode == "cancel" && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("want deadline error, got %v", err)
+			}
+			if redirected.Load() != 0 {
+				t.Fatalf("PLC redirect reached another server: %d requests", redirected.Load())
+			}
+		})
 	}
 }
