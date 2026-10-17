@@ -1,20 +1,44 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/Azure/go-autorest/autorest/to"
 
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
+	"github.com/ipfs/go-cid"
 	"github.com/labstack/echo/v4"
 )
+
+func parseRepoSwap(raw json.RawMessage, nullable bool) (*cid.Cid, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var value *string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	if value == nil {
+		if !nullable {
+			return nil, fmt.Errorf("swap CID cannot be null")
+		}
+		absent := cid.Undef
+		return &absent, nil
+	}
+	parsed, err := cid.Decode(*value)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
 
 type ComAtprotoRepoApplyWritesInput struct {
 	Repo       string                          `json:"repo" validate:"required,atproto-did"`
 	Validate   *bool                           `json:"bool,omitempty"`
 	Writes     []ComAtprotoRepoApplyWritesItem `json:"writes"`
-	SwapCommit *string                         `json:"swapCommit"`
+	SwapCommit json.RawMessage                 `json:"swapCommit,omitempty"`
 }
 
 type ComAtprotoRepoApplyWritesItem struct {
@@ -51,6 +75,11 @@ func (s *Server) handleApplyWrites(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
+	swapCommit, err := parseRepoSwap(req.SwapCommit, false)
+	if err != nil {
+		return helpers.InputError(e, nil)
+	}
+
 	ops := make([]Op, 0, len(req.Writes))
 	for _, item := range req.Writes {
 		ops = append(ops, Op{
@@ -72,7 +101,7 @@ func (s *Server) handleApplyWrites(e echo.Context) error {
 		}
 	}
 
-	results, err := s.repoman.applyWrites(ctx, repo.Repo, ops, req.SwapCommit, s.repoWriteAuthorization(e))
+	results, err := s.repoman.applyWrites(ctx, repo.Repo, ops, swapCommit, s.repoWriteAuthorization(e))
 	if err != nil {
 		var scopeErr repoScopeError
 		if errors.As(err, &scopeErr) {
@@ -81,6 +110,9 @@ func (s *Server) handleApplyWrites(e echo.Context) error {
 		var downErr errAccountTakenDown
 		if errors.As(err, &downErr) {
 			return helpers.InputError(e, to.StringPtr("AccountTakedown"))
+		}
+		if errors.Is(err, errInvalidSwap) {
+			return e.JSON(400, map[string]string{"error": "InvalidSwap"})
 		}
 		logger.Error("error applying writes", "error", err)
 		return helpers.ServerError(e, nil)

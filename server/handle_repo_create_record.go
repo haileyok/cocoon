@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/Azure/go-autorest/autorest/to"
@@ -11,13 +12,13 @@ import (
 )
 
 type ComAtprotoRepoCreateRecordInput struct {
-	Repo       string         `json:"repo" validate:"required,atproto-did"`
-	Collection string         `json:"collection" validate:"required,atproto-nsid"`
-	Rkey       *string        `json:"rkey,omitempty"`
-	Validate   *bool          `json:"bool,omitempty"`
-	Record     MarshalableMap `json:"record" validate:"required"`
-	SwapRecord *string        `json:"swapRecord"`
-	SwapCommit *string        `json:"swapCommit"`
+	Repo       string          `json:"repo" validate:"required,atproto-did"`
+	Collection string          `json:"collection" validate:"required,atproto-nsid"`
+	Rkey       *string         `json:"rkey,omitempty"`
+	Validate   *bool           `json:"bool,omitempty"`
+	Record     MarshalableMap  `json:"record" validate:"required"`
+	SwapRecord json.RawMessage `json:"swapRecord,omitempty"`
+	SwapCommit json.RawMessage `json:"swapCommit,omitempty"`
 }
 
 func (s *Server) handleCreateRecord(e echo.Context) error {
@@ -42,8 +43,17 @@ func (s *Server) handleCreateRecord(e echo.Context) error {
 		return helpers.InputError(e, nil)
 	}
 
+	swapCommit, err := parseRepoSwap(req.SwapCommit, false)
+	if err != nil {
+		return helpers.InputError(e, nil)
+	}
+	swapRecord, err := parseRepoSwap(req.SwapRecord, false)
+	if err != nil {
+		return helpers.InputError(e, nil)
+	}
+
 	optype := OpTypeCreate
-	if req.SwapRecord != nil {
+	if swapRecord != nil {
 		optype = OpTypeUpdate
 	}
 
@@ -59,9 +69,9 @@ func (s *Server) handleCreateRecord(e echo.Context) error {
 			Rkey:       req.Rkey,
 			Validate:   req.Validate,
 			Record:     &req.Record,
-			SwapRecord: req.SwapRecord,
+			SwapRecord: swapRecord,
 		},
-	}, req.SwapCommit, s.repoWriteAuthorization(e))
+	}, swapCommit, s.repoWriteAuthorization(e))
 	if err != nil {
 		var scopeErr repoScopeError
 		if errors.As(err, &scopeErr) {
@@ -70,6 +80,9 @@ func (s *Server) handleCreateRecord(e echo.Context) error {
 		var downErr errAccountTakenDown
 		if errors.As(err, &downErr) {
 			return helpers.InputError(e, to.StringPtr("AccountTakedown"))
+		}
+		if errors.Is(err, errInvalidSwap) {
+			return e.JSON(400, map[string]string{"error": "InvalidSwap"})
 		}
 		logger.Error("error applying writes", "error", err)
 		return helpers.ServerError(e, nil)
