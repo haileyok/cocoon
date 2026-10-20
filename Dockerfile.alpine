@@ -1,5 +1,5 @@
 ### Compile stage
-FROM golang:1.26-alpine AS build-env
+FROM golang:1.26.10-alpine AS build-env
 
 WORKDIR /dockerbuild
 ADD . .
