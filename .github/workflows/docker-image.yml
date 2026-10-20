@@ -49,6 +49,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Each leg builds a single-platform image, so it must never write an
+          # unsuffixed tag. metadata-action's default `flavor: latest=auto` adds
+          # a bare `latest` to any non-prerelease semver tag, which made a `v*`
+          # tag push publish `latest` as an arm64-only (or amd64-only) manifest
+          # and clobber the multi-arch index built by publish-manifest. Only
+          # publish-manifest may write `latest`, from a default-branch push.
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=latest,enable={{is_default_branch}},suffix=-${{ matrix.arch }}
             type=sha,suffix=-${{ matrix.arch }}
@@ -88,6 +96,11 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # `latest` stays owned by default-branch pushes via the raw rule below;
+          # opt out of the implicit semver-driven `latest` so publishing a
+          # release tag cannot move it.
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha
@@ -96,15 +109,23 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
 
       - name: Create and push manifest
+        env:
+          DIGEST_AMD64: ${{ needs.build-and-push-image.outputs.digest-amd64 }}
+          DIGEST_ARM64: ${{ needs.build-and-push-image.outputs.digest-arm64 }}
         run: |
+          if [ -z "$DIGEST_AMD64" ] || [ -z "$DIGEST_ARM64" ]; then
+            echo "::error::missing per-arch digest (amd64='$DIGEST_AMD64' arm64='$DIGEST_ARM64'); refusing to publish a single-platform tag"
+            exit 1
+          fi
+
           # Split tags into an array
           readarray -t tags <<< "${{ steps.meta.outputs.tags }}"
 
           # Create and push manifest for each tag
           for tag in "${tags[@]}"; do
             docker buildx imagetools create -t "$tag" \
-              "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push-image.outputs.digest-amd64 }}" \
-              "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push-image.outputs.digest-arm64 }}"
+              "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@$DIGEST_AMD64" \
+              "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@$DIGEST_ARM64"
           done
 
       # This step generates an artifact attestation for the image, which is an unforgeable statement about where and how it was built. It increases supply chain security for people who consume the image. For more information, see "[AUTOTITLE](/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds)."
