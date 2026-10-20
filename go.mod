@@ -1,6 +1,6 @@
 module github.com/haileyok/cocoon
 
-go 1.26.1
+go 1.26.10
 
 require (
 	github.com/Azure/go-autorest/autorest/to v0.4.1
