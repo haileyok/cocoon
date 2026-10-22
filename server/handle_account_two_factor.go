@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -83,7 +82,7 @@ func (s *Server) authorizeTwoFactorChange(ctx context.Context, repo *models.Repo
 		if repo.TwoFactorCode == nil || repo.TwoFactorCodeExpiresAt == nil {
 			return "Use \"Email me a code\" to get a code first.", nil
 		}
-		ok = subtle.ConstantTimeCompare([]byte(*repo.TwoFactorCode), []byte(currentCode)) == 1
+		ok = codeMatches(*repo.TwoFactorCode, currentCode)
 		if ok && now.After(*repo.TwoFactorCodeExpiresAt) {
 			return "That code has expired. Use \"Email me a code\" to get a new one.", nil
 		}

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -45,6 +46,18 @@ func DecodeSecret(s string) ([]byte, error) {
 	return b32.DecodeString(strings.ToUpper(strings.TrimSpace(s)))
 }
 
+// stripSeparators removes the characters people and apps put between the
+// digits of a code. The Bluesky app always shows a dash, so "123-456" and
+// "123456" have to mean the same thing.
+func stripSeparators(code string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '-' || unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, code)
+}
+
 func step(t time.Time) int64 {
 	return t.Unix() / int64(Period/time.Second)
 }
@@ -71,7 +84,7 @@ func Code(secret []byte, t time.Time) string {
 // success the matched step is returned and should be persisted as the new
 // lastStep.
 func Validate(secret []byte, code string, now time.Time, lastStep int64) (int64, bool) {
-	code = strings.ReplaceAll(strings.TrimSpace(code), " ", "")
+	code = stripSeparators(code)
 	if len(code) != Digits {
 		return 0, false
 	}

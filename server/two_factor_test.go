@@ -49,6 +49,20 @@ func TestCreateSessionTwoFactorClearedOnSuccess(t *testing.T) {
 	}
 }
 
+func TestCreateSessionEmailCodeWithoutDash(t *testing.T) {
+	s := newTestServer(t)
+	acct := s.createTestAccount(t, "carol.pds.test")
+	const code = "ABCDE-FGHIJ"
+	s.setTwoFactor(t, acct.Did, code, time.Now().Add(10*time.Minute))
+
+	if rec := createSessionWith(t, s, acct, ptr("ABCDEFGHIJ")); rec.Code != http.StatusOK {
+		t.Fatalf("emailed code without its dash rejected: %d %s", rec.Code, rec.Body.String())
+	}
+	if got := s.twoFactorCode(t, acct.Did); got != nil {
+		t.Fatalf("two_factor_code should be cleared after a successful login, still set to %q", *got)
+	}
+}
+
 func TestCreateSessionTwoFactorWrongCode(t *testing.T) {
 	s := newTestServer(t)
 	acct := s.createTestAccount(t, "bob.pds.test")
