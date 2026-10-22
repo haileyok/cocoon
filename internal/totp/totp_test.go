@@ -64,6 +64,13 @@ func TestValidateNormalizesInput(t *testing.T) {
 	if _, ok := Validate(rfcSecret, "005 924", now, 0); !ok {
 		t.Error("spaces should be ignored")
 	}
+	// The Bluesky app draws a dash between the digits.
+	if _, ok := Validate(rfcSecret, "005-924", now, 0); !ok {
+		t.Error("dashes should be ignored")
+	}
+	if _, ok := Validate(rfcSecret, " 005 - 924 ", now, 0); !ok {
+		t.Error("surrounding spaces and a padded dash should be ignored")
+	}
 	for _, bad := range []string{"", "12345", "1234567", "abcdef", "00592x"} {
 		if _, ok := Validate(rfcSecret, bad, now, 0); ok {
 			t.Errorf("%q must not validate", bad)

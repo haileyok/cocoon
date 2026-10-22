@@ -108,6 +108,32 @@ func TestCreateSessionTOTPValidAndReplay(t *testing.T) {
 	}
 }
 
+// The Bluesky app always draws a dash in its code box, so a code submitted
+// as "123-456" must work anywhere the plain six digits do.
+func TestCreateSessionTOTPAcceptsDash(t *testing.T) {
+	s := newTestServer(t)
+	acct := s.createTestAccount(t, "totp-dash.pds.test")
+	secret := s.addTOTP(t, acct.Did)
+	code := totp.Code(secret, time.Now())
+
+	if rec := createSessionWith(t, s, acct, ptr(code[:3]+"-"+code[3:])); rec.Code != http.StatusOK {
+		t.Fatalf("dashed TOTP rejected: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCreateSessionBackupCodeWithoutDash(t *testing.T) {
+	s := newTestServer(t)
+	acct := s.createTestAccount(t, "backup-dash.pds.test")
+	s.addTOTP(t, acct.Did)
+	codes, err := s.regenerateBackupCodes(context.Background(), acct.Did)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := createSessionWith(t, s, acct, ptr(strings.ReplaceAll(codes[0], "-", ""))); rec.Code != http.StatusOK {
+		t.Fatalf("backup code without its dash rejected: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestCreateSessionYubiKey(t *testing.T) {
 	s := newTestServer(t)
 	acct := s.createTestAccount(t, "yubi.pds.test")

@@ -217,6 +217,20 @@ func TestAddSecondMethodRequiresCurrentCode(t *testing.T) {
 	}
 }
 
+func TestAddSecondMethodAcceptsDashedCurrentCode(t *testing.T) {
+	s, acct, cookie := manageServer(t)
+	existing := s.addTOTP(t, acct.Did)
+	code := totp.Code(existing, time.Now())
+	form := url.Values{
+		"name": {"key"}, "password": {acct.Password},
+		"aes_key": {hex.EncodeToString(testYubiKey)}, "otp": {yubiOTP(t, 1, 1)},
+		"current_code": {code[:3] + "-" + code[3:]},
+	}
+	if w := browserDo(s, cookie, "POST", "/account/2fa/yubikey", form); w.Code != 303 || s.countCreds(t, acct.Did) != 2 {
+		t.Fatalf("a dashed current code must be accepted: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestAddYubiKeyRejectsMismatchedKey(t *testing.T) {
 	s, acct, cookie := manageServer(t)
 	form := url.Values{

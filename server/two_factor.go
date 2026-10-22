@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/haileyok/cocoon/internal/helpers"
@@ -26,6 +27,9 @@ const (
 	secondFactorLockout     = 15 * time.Minute
 
 	backupCodeCount = 10
+	// backupCodeGroupLen is the length of each of the two letter groups in a
+	// backup code, which are shown separated by a dash.
+	backupCodeGroupLen = 5
 )
 
 type secondFactorResult int
@@ -104,7 +108,7 @@ func (s *Server) checkSecondFactor(ctx context.Context, repo *models.RepoActor, 
 			}
 			return secondFactorRequired, nil
 		}
-		ok = subtle.ConstantTimeCompare([]byte(*repo.TwoFactorCode), []byte(token)) == 1
+		ok = codeMatches(*repo.TwoFactorCode, token)
 		if ok && now.After(*repo.TwoFactorCodeExpiresAt) {
 			return secondFactorExpired, nil
 		}
@@ -182,7 +186,7 @@ func (s *Server) verifyStrongSecondFactor(ctx context.Context, did string, creds
 }
 
 func isTOTPShaped(token string) bool {
-	token = strings.ReplaceAll(token, " ", "")
+	token = stripCodeSeparators(token)
 	if len(token) != totp.Digits {
 		return false
 	}
@@ -272,8 +276,42 @@ func (s *Server) claimYubiCloudOTP(ctx context.Context, c models.TwoFactorCreden
 	return true, nil
 }
 
+// stripCodeSeparators removes the characters people and apps put between the
+// characters of a code: whitespace anywhere and dashes. The Bluesky app draws
+// a dash in every code it shows, so "123-456" and "123456" are the same code.
+func stripCodeSeparators(code string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '-' || unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, code)
+}
+
+// codeMatches reports whether submitted equals the stored code, ignoring
+// separators so a dashed code and a bare one are both accepted.
+func codeMatches(stored, submitted string) bool {
+	return subtle.ConstantTimeCompare(
+		[]byte(stripCodeSeparators(stored)),
+		[]byte(stripCodeSeparators(submitted)),
+	) == 1
+}
+
 func normalizeBackupCode(code string) string {
-	return strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(code), " ", ""))
+	var b strings.Builder
+	for _, r := range strings.ToUpper(strings.TrimSpace(code)) {
+		if r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	// Codes are shown in two groups of five. Rebuilding the dash keeps the
+	// hashes of existing codes matching while letting the dash the app draws
+	// be left out on the way in.
+	s := b.String()
+	if len(s) == 2*backupCodeGroupLen {
+		return s[:backupCodeGroupLen] + "-" + s[backupCodeGroupLen:]
+	}
+	return s
 }
 
 func hashBackupCode(code string) []byte {
