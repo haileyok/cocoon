@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/haileyok/cocoon/space"
 	"github.com/ipfs/go-cid"
 )
 
@@ -114,6 +115,19 @@ func TestSpaceRecordsWrites(t *testing.T) {
 		mustOK(t, doWrite(r.alice, sp, writeOpts{rkey: "gone", text: "here"}))
 		mustOK(t, doDel(r.alice, sp, "", "gone"))
 		mustOK(t, doDel(r.alice, sp, "", "gone"))
+	})
+
+	t.Run("creates a repo in another authority's space without checking it exists", func(t *testing.T) {
+		// Never created: the writer's PDS does not ask the authority.
+		sp := createSpace(t, r.alice, spaceOpts{ungoverned: true})
+		mustOK(t, doWrite(r.bob, sp, writeOpts{text: "first write"}))
+		expectSetHashMatchesStore(t, r.bob, sp)
+	})
+
+	t.Run("refuses a record over the size limit", func(t *testing.T) {
+		sp := createSpace(t, r.alice, spaceOpts{})
+		res := doWrite(r.alice, sp, writeOpts{text: strings.Repeat("x", space.MaxRecordSize)})
+		authExpectMsg(t, res, 400, "InvalidRecord", "Record too large")
 	})
 }
 

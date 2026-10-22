@@ -45,7 +45,12 @@ func (s *Server) handleSubmitPlcOperation(e echo.Context) error {
 		logger.Error("error parsing key", "error", err)
 		return helpers.ServerError(e, nil)
 	}
-	required, err := s.plcClient.CreateDidCredentials(k, "", repo.Actor.Handle)
+	kemDidKey, err := accountKemDIDKey(repo.Repo)
+	if err != nil {
+		logger.Error("error parsing kem key", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+	required, err := s.plcClient.CreateDidCredentials(k, kemDidKey, "", repo.Actor.Handle)
 	if err != nil {
 		logger.Error("error crating did credentials", "error", err)
 		return helpers.ServerError(e, nil)
@@ -64,6 +69,10 @@ func (s *Server) handleSubmitPlcOperation(e echo.Context) error {
 	}
 	if op.VerificationMethods["atproto"] != required.VerificationMethods["atproto"] {
 		return helpers.InputError(e, nil)
+	}
+	// When this PDS holds a KEM key, the operation must publish it.
+	if kemDidKey != "" && op.VerificationMethods["atproto_kem"] != kemDidKey {
+		return e.JSON(400, map[string]string{"error": "InvalidRequest", "message": "Incorrect KEM key"})
 	}
 	if len(op.AlsoKnownAs) == 0 || op.AlsoKnownAs[0] != required.AlsoKnownAs[0] {
 		// Reference parity: alsoKnownAs.at(0) must be at://<current handle>.

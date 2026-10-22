@@ -16,7 +16,14 @@ func (s *Server) handleGetRecommendedDidCredentials(e echo.Context) error {
 		logger.Error("error parsing key", "error", err)
 		return helpers.ServerError(e, nil)
 	}
-	creds, err := s.plcClient.CreateDidCredentials(k, "", repo.Actor.Handle)
+	// Includes the #atproto_kem key when the account has one, so a migration
+	// or a self-managed DID document publishes it.
+	kemDidKey, err := accountKemDIDKey(repo.Repo)
+	if err != nil {
+		logger.Error("error parsing kem key", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+	creds, err := s.plcClient.CreateDidCredentials(k, kemDidKey, "", repo.Actor.Handle)
 	if err != nil {
 		logger.Error("error crating did credentials", "error", err)
 		return helpers.ServerError(e, nil)

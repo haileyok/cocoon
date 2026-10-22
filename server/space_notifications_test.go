@@ -72,7 +72,7 @@ func newNotificationsNet(t *testing.T) *notificationsNet {
 		}
 		return status, body
 	}
-	n.host = n.net.newMockService("atproto_space_host", n.defaultRespond)
+	n.host = n.net.newMockService("atproto_pds", n.defaultRespond)
 	n.spaceURI = "at://" + n.host.did + "/space/com.example.group/notifications"
 	return n
 }
@@ -116,7 +116,7 @@ func (n *notificationsNet) notifyNow(t *testing.T, spaceURI, did string, commit 
 	}
 	d := h.Digest()
 	n.pds1.s.notifyAndQueue(context.Background(), notifyWriteBody{
-		Space: spaceURI, Repo: did, RepoRev: commit.rev, Hash: d[:],
+		Space: spaceURI, Repo: did, RepoRev: commit.rev, Data: d[:],
 	})
 	n.net.waitSpaceJobs()
 }
@@ -129,7 +129,7 @@ func (n *notificationsNet) notifyBody(spaceURI, did string, commit *notifCommit)
 		return notifyWriteBody{}, false
 	}
 	d := h.Digest()
-	return notifyWriteBody{Space: spaceURI, Repo: did, RepoRev: commit.rev, Hash: d[:]}, true
+	return notifyWriteBody{Space: spaceURI, Repo: did, RepoRev: commit.rev, Data: d[:]}, true
 }
 
 // retryPass runs one retry pass, as the reference's awaited retryPending does.
@@ -312,7 +312,7 @@ func TestSpaceNotificationRetries(t *testing.T) {
 			if row.ExpiresAt < before.Add(24*time.Hour).UnixMilli() || row.ExpiresAt > time.Now().Add(24*time.Hour).UnixMilli() {
 				t.Fatalf("expiresAt %d not within a day", row.ExpiresAt)
 			}
-			notifHashEquals(t, row.Hash, commit)
+			notifHashEquals(t, row.Data, commit)
 
 			notifMakeDue(t, n)
 			n.retryPass(t)
@@ -510,7 +510,7 @@ func TestSpaceNotificationRetries(t *testing.T) {
 			t.Fatal(err)
 		}
 		d := h.Digest()
-		if err := n.pds1.s.notifyAndQueue(context.Background(), notifyWriteBody{Space: n.spaceURI, Repo: n.writer.did, RepoRev: commit.rev, Hash: d[:]}); err == nil {
+		if err := n.pds1.s.notifyAndQueue(context.Background(), notifyWriteBody{Space: n.spaceURI, Repo: n.writer.did, RepoRev: commit.rev, Data: d[:]}); err == nil {
 			t.Fatal("a failed queue write was not surfaced")
 		}
 		if calls := n.host.callsTo(lxmNotifyWrite); len(calls) != 1 {
@@ -553,13 +553,13 @@ func TestSpaceNotificationRetries(t *testing.T) {
 		if row.ExpiresAt < before.Add(24*time.Hour).UnixMilli() || row.ExpiresAt > time.Now().Add(24*time.Hour).UnixMilli() {
 			t.Fatalf("expiresAt %d not within a day", row.ExpiresAt)
 		}
-		notifHashEquals(t, row.Hash, newer)
+		notifHashEquals(t, row.Data, newer)
 
 		n.notifyNow(t, n.spaceURI, n.writer.did, older)
 		n.notifyNow(t, n.spaceURI, n.writer.did, newer)
 		after := notifRetryRow(t, n)
 		if after.RepoRev != row.RepoRev || after.Attempts != row.Attempts || after.RetryAt != row.RetryAt ||
-			after.ExpiresAt != row.ExpiresAt || string(after.Hash) != string(row.Hash) {
+			after.ExpiresAt != row.ExpiresAt || string(after.Data) != string(row.Data) {
 			t.Fatalf("row changed: %+v vs %+v", after, row)
 		}
 	})
@@ -702,7 +702,7 @@ func TestSpaceNotificationRetries(t *testing.T) {
 
 			after := notifRetryRow(t, n)
 			if after.RepoRev != fresh.RepoRev || after.Attempts != fresh.Attempts || after.RetryAt != fresh.RetryAt ||
-				after.ExpiresAt != fresh.ExpiresAt || string(after.Hash) != string(fresh.Hash) {
+				after.ExpiresAt != fresh.ExpiresAt || string(after.Data) != string(fresh.Data) {
 				t.Fatalf("row changed: %+v vs %+v", after, fresh)
 			}
 			if calls := n.host.callsTo(lxmNotifyWrite); len(calls) != 3 {
@@ -795,6 +795,183 @@ func TestSpaceNotificationRetries(t *testing.T) {
 		n.retryPass(t)
 		if calls := n.host.callsTo(lxmNotifyWrite); len(calls) != 2 {
 			t.Fatalf("expected 2 notifyWrite calls, got %d", len(calls))
+		}
+	})
+}
+
+// Ported from the reference's describe('space deleted') in
+// notifications.test.ts (bluesky-social/atproto ac0c9f15): reliable
+// notifySpaceDeleted delivery. N/A: "keeps a newer deletion retry when an
+// older delivery finishes", which spies on an in-flight delivery.
+func TestSpaceDeletedNotificationRetries(t *testing.T) {
+	n := newNotificationsNet(t)
+	s := n.pds1.s
+	ctx := context.Background()
+
+	deleted := createSpace(t, n.writer, spaceOpts{skey: "deleted"})
+	mustOK(t, simplespaceDeleteSpace(t, n.writer, deleted))
+	ref, err := space.ParseRef(deleted)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var mu sync.Mutex
+	syncerStatus := 200
+	syncer := n.net.newMockService("atproto_space_syncer", func(*http.Request, mockCall) (int, any) {
+		mu.Lock()
+		defer mu.Unlock()
+		return syncerStatus, map[string]any{}
+	})
+	setStatus := func(status int) {
+		mu.Lock()
+		syncerStatus = status
+		mu.Unlock()
+	}
+	reset := func(t *testing.T) {
+		t.Helper()
+		setStatus(200)
+		syncer.mu.Lock()
+		syncer.calls = syncer.calls[:0]
+		syncer.mu.Unlock()
+		if err := s.db.Client().Where("1 = 1").Delete(&models.SpaceDeletedNotificationRetry{}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	registration := func() []models.SpaceCredentialRecipient {
+		return []models.SpaceCredentialRecipient{{ServiceDid: syncer.serviceRef(), ExpiresAt: time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339Nano)}}
+	}
+	pending := func(t *testing.T) []models.SpaceDeletedNotificationRetry {
+		t.Helper()
+		var rows []models.SpaceDeletedNotificationRetry
+		if err := s.db.Client().Find(&rows).Error; err != nil {
+			t.Fatal(err)
+		}
+		return rows
+	}
+	makeDue := func(t *testing.T) {
+		t.Helper()
+		if err := s.db.Client().Model(&models.SpaceDeletedNotificationRetry{}).Where("1 = 1").Update("retry_at", 0).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := func() int { return len(syncer.callsTo("com.atproto.space.notifySpaceDeleted")) }
+
+	t.Run("sends immediately without queueing a successful notification", func(t *testing.T) {
+		reset(t)
+		s.notifySpaceDeleted(ctx, ref, registration())
+		delivered := syncer.callsTo("com.atproto.space.notifySpaceDeleted")
+		if len(delivered) != 1 || delivered[0].body["space"] != deleted {
+			t.Fatalf("deliveries: %+v", delivered)
+		}
+		if rows := pending(t); len(rows) != 0 {
+			t.Fatalf("queued: %+v", rows)
+		}
+	})
+
+	t.Run("retries a transient failure until delivered", func(t *testing.T) {
+		reset(t)
+		setStatus(503)
+		recipients := registration()
+		s.notifySpaceDeleted(ctx, ref, recipients)
+		rows := pending(t)
+		exp, _ := time.Parse(time.RFC3339Nano, recipients[0].ExpiresAt)
+		if len(rows) != 1 || rows[0].Space != deleted || rows[0].Service != syncer.serviceRef() || rows[0].Attempts != 1 || rows[0].ExpiresAt != exp.UnixMilli() {
+			t.Fatalf("queued: %+v", rows)
+		}
+
+		makeDue(t)
+		n.retryPass(t)
+		if rows := pending(t); len(rows) != 1 || rows[0].Attempts != 2 {
+			t.Fatalf("after a failed retry: %+v", rows)
+		}
+
+		setStatus(200)
+		makeDue(t)
+		n.retryPass(t)
+		if rows := pending(t); len(rows) != 0 {
+			t.Fatalf("after delivery: %+v", rows)
+		}
+		if calls() != 3 {
+			t.Fatalf("calls %d, want 3", calls())
+		}
+	})
+
+	t.Run("does not retry a permanent failure", func(t *testing.T) {
+		reset(t)
+		setStatus(400)
+		s.notifySpaceDeleted(ctx, ref, registration())
+		if rows := pending(t); len(rows) != 0 || calls() != 1 {
+			t.Fatalf("queued %+v, calls %d", rows, calls())
+		}
+	})
+
+	t.Run("stops retrying once the registration expires", func(t *testing.T) {
+		reset(t)
+		setStatus(503)
+		s.notifySpaceDeleted(ctx, ref, registration())
+		if err := s.db.Client().Model(&models.SpaceDeletedNotificationRetry{}).Where("1 = 1").
+			Updates(map[string]any{"retry_at": 0, "expires_at": time.Now().UnixMilli()}).Error; err != nil {
+			t.Fatal(err)
+		}
+		n.retryPass(t)
+		if rows := pending(t); len(rows) != 0 || calls() != 1 {
+			t.Fatalf("queued %+v, calls %d", rows, calls())
+		}
+	})
+
+	t.Run("holds retries while the authority is deactivated", func(t *testing.T) {
+		reset(t)
+		setStatus(503)
+		s.notifySpaceDeleted(ctx, ref, registration())
+		makeDue(t)
+		setDeactivated := func(on bool) {
+			if err := s.db.Exec(ctx, "UPDATE repos SET deactivated = ? WHERE did = ?", nil, on, n.writer.did).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		setDeactivated(true)
+		setStatus(200)
+		n.retryPass(t)
+		setDeactivated(false)
+		if rows := pending(t); len(rows) != 1 || rows[0].Attempts != 2 || calls() != 1 {
+			t.Fatalf("queued %+v, calls %d", rows, calls())
+		}
+		makeDue(t)
+		n.retryPass(t)
+		if rows := pending(t); len(rows) != 0 || calls() != 2 {
+			t.Fatalf("queued %+v, calls %d", rows, calls())
+		}
+	})
+
+	t.Run("drops retries once the space is recreated", func(t *testing.T) {
+		reset(t)
+		setStatus(503)
+		s.notifySpaceDeleted(ctx, ref, registration())
+		makeDue(t)
+		createSpace(t, n.writer, spaceOpts{skey: "deleted"})
+		defer func() { mustOK(t, simplespaceDeleteSpace(t, n.writer, deleted)) }()
+		setStatus(200)
+		n.retryPass(t)
+		if rows := pending(t); len(rows) != 0 || calls() != 1 {
+			t.Fatalf("queued %+v, calls %d", rows, calls())
+		}
+	})
+
+	t.Run("drops retries once the authority account is gone", func(t *testing.T) {
+		reset(t)
+		setStatus(503)
+		other := createSpace(t, n.outsider, spaceOpts{skey: "gone"})
+		mustOK(t, simplespaceDeleteSpace(t, n.outsider, other))
+		otherRef, _ := space.ParseRef(other)
+		s.notifySpaceDeleted(ctx, otherRef, registration())
+		makeDue(t)
+		if err := s.db.Exec(ctx, "DELETE FROM repos WHERE did = ?", nil, n.outsider.did).Error; err != nil {
+			t.Fatal(err)
+		}
+		setStatus(200)
+		n.retryPass(t)
+		if rows := pending(t); len(rows) != 0 || calls() != 1 {
+			t.Fatalf("queued %+v, calls %d", rows, calls())
 		}
 	})
 }

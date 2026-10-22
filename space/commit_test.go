@@ -17,9 +17,9 @@ var (
 )
 
 var testCtx = CommitCtx{
-	Space:  "at://did:example:space/space/app.bsky.group/test",
-	Author: "did:example:alice",
-	Rev:    "3kbcq3p7ad400",
+	Space: "at://did:example:space/space/app.bsky.group/test",
+	Repo:  "did:example:alice",
+	Rev:   "3kbcq3p7ad400",
 }
 
 func newK256(t *testing.T) *atcrypto.PrivateKeyK256 {
@@ -107,60 +107,51 @@ func TestRepoCommitApplyOp(t *testing.T) {
 	}
 }
 
-func TestRepoCommitSigning(t *testing.T) {
-	key := newK256(t)
-	didKey := didKeyOf(t, key)
+func TestRepoCommitToCommit(t *testing.T) {
 	repo := NewRepoCommit().Add("app.bsky.feed.post", "1", cidA)
-
-	c, err := repo.Sign(testCtx, key)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := repo.ToCommit(testCtx)
 	d := repo.SetHash.Digest()
-	if c.Ver != 1 || c.Rev != testCtx.Rev || !bytes.Equal(c.Hash, d[:]) || len(c.Ikm) != 32 || len(c.Mac) != 32 || len(c.Sig) == 0 {
+	if c.Ver != 1 || c.Repo != testCtx.Repo || c.Space != testCtx.Space || c.Rev != testCtx.Rev || !bytes.Equal(c.Data, d[:]) {
 		t.Fatalf("malformed commit %+v", c)
 	}
-	if !VerifyCommit(c, testCtx, didKey) || !repo.Matches(c) {
-		t.Fatal("does not verify its own commit")
-	}
-
-	c2, _ := repo.Sign(testCtx, key)
-	if bytes.Equal(c.Ikm, c2.Ikm) || bytes.Equal(c.Mac, c2.Mac) || bytes.Equal(c.Sig, c2.Sig) || !bytes.Equal(c.Hash, c2.Hash) {
-		t.Fatal("ikm is not fresh per commit")
-	}
-
-	if VerifyCommit(c, testCtx, didKeyOf(t, newK256(t))) {
-		t.Fatal("verified under another key")
-	}
-	for _, other := range []CommitCtx{
-		{Space: "at://did:example:space/space/app.bsky.group/other", Author: testCtx.Author, Rev: testCtx.Rev},
-		{Space: testCtx.Space, Author: "did:example:bob", Rev: testCtx.Rev},
-		{Space: testCtx.Space, Author: testCtx.Author, Rev: "3kbcq3p7ad999"},
-	} {
-		if VerifyCommit(c, other, didKey) {
-			t.Fatalf("verified under %+v", other)
-		}
-	}
-	empty := NewRepoCommit().SetHash.Digest()
-	tampered := c
-	tampered.Hash = empty[:]
-	if VerifyCommit(tampered, testCtx, didKey) {
-		t.Fatal("tampered hash verified")
-	}
-	badRev := c
-	badRev.Rev = "3kbcq3p7ad999"
-	if VerifyCommit(badRev, testCtx, didKey) {
-		t.Fatal("rev mismatch verified")
-	}
-	future := c
-	future.Ver = 2
-	if VerifyCommit(future, testCtx, didKey) {
-		t.Fatal("future version verified")
+	if !repo.Matches(c) {
+		t.Fatal("does not match its own commit")
 	}
 	advanced, _ := RepoCommitFromState(repo.SetHash.State())
 	advanced.Add("app.bsky.feed.post", "2", cidB)
 	if advanced.Matches(c) {
 		t.Fatal("matches after change")
+	}
+}
+
+func TestVerifyCommit(t *testing.T) {
+	secret := bytes.Repeat([]byte{7}, 32)
+	c := NewRepoCommit().Add("app.bsky.feed.post", "1", cidA).ToCommit(testCtx)
+	mac := ComputeCommitMac(secret, c)
+	params := VerifyCommitParams{Space: testCtx.Space, Repo: testCtx.Repo, SharedSecret: secret, Mac: mac}
+	if !VerifyCommit(c, params) {
+		t.Fatal("does not verify its own commit")
+	}
+	for name, p := range map[string]VerifyCommitParams{
+		"other secret": {Space: testCtx.Space, Repo: testCtx.Repo, SharedSecret: bytes.Repeat([]byte{8}, 32), Mac: mac},
+		"other space":  {Space: "at://did:example:space/space/app.bsky.group/other", Repo: testCtx.Repo, SharedSecret: secret, Mac: mac},
+		"other repo":   {Space: testCtx.Space, Repo: "did:example:bob", SharedSecret: secret, Mac: mac},
+		"short mac":    {Space: testCtx.Space, Repo: testCtx.Repo, SharedSecret: secret, Mac: mac[:31]},
+	} {
+		if VerifyCommit(c, p) {
+			t.Fatalf("verified with %s", name)
+		}
+	}
+	for name, mod := range map[string]func(*Commit){
+		"future version": func(c *Commit) { c.Ver = 2 },
+		"other rev":      func(c *Commit) { c.Rev = "3kbcq3p7ad999" },
+		"other data":     func(c *Commit) { d := NewLtHash().Digest(); c.Data = d[:] },
+	} {
+		tampered := c
+		mod(&tampered)
+		if VerifyCommit(tampered, params) {
+			t.Fatalf("verified with %s", name)
+		}
 	}
 }
 
@@ -173,45 +164,27 @@ func TestFormatSetHashElement(t *testing.T) {
 	}
 }
 
-func TestEncodeCommitCtx(t *testing.T) {
-	ikm := bytes.Repeat([]byte{7}, 32)
-	enc := EncodeCommitCtx(testCtx, ikm)
-	if string(enc[:16]) != "atproto-space-v1" || int(enc[16])<<8|int(enc[17]) != len(testCtx.Space) {
-		t.Fatal("prefix")
-	}
-	if bytes.Equal(EncodeCommitCtx(CommitCtx{"ab", "c", "d"}, ikm), EncodeCommitCtx(CommitCtx{"a", "bc", "d"}, ikm)) {
-		t.Fatal("ambiguous")
-	}
-	if !bytes.Equal(enc, EncodeCommitCtx(testCtx, ikm)) {
-		t.Fatal("non-deterministic")
-	}
-}
-
 func TestCommitVectors(t *testing.T) {
 	for i, v := range loadVectors(t).Commits {
 		var recs []RecordRef
 		for _, r := range v.Records {
-			c := cid.MustParse(r.Cid)
-			if FormatSetHashElement(r.Collection, r.Rkey, c) != r.Element {
-				t.Errorf("vector %d element", i)
-			}
-			recs = append(recs, RecordRef{r.Collection, r.Rkey, c})
+			recs = append(recs, RecordRef{r.Collection, r.Rkey, cid.MustParse(r.Cid)})
 		}
 		repo := RepoCommitFromRecords(recs)
-		d := repo.SetHash.Digest()
-		if hex.EncodeToString(d[:]) != v.Hash {
-			t.Errorf("vector %d hash", i)
+		c := repo.ToCommit(v.Ctx)
+		if hex.EncodeToString(c.Data) != v.Data {
+			t.Errorf("vector %d data", i)
 		}
-		ikm := unhex(t, v.Ikm)
-		if hex.EncodeToString(EncodeCommitCtx(v.Ctx, ikm)) != v.CtxBytes {
-			t.Errorf("vector %d ctxBytes", i)
+		secret := unhex(t, v.SharedSecret)
+		if got := hex.EncodeToString(ComputeCommitMac(secret, c)); got != v.Mac {
+			t.Errorf("vector %d mac %s", i, got)
 		}
-		c := SignedCommit{Ver: 1, Hash: d[:], Ikm: ikm, Mac: unhex(t, v.Mac), Sig: unhex(t, v.Sig), Rev: v.Ctx.Rev}
-		if !VerifyCommit(c, v.Ctx, v.DidKey) {
-			t.Errorf("vector %d does not verify", i)
+		if got := FormatMacHeader(CommitMacType, unhex(t, v.Mac)); got != v.MacHeader {
+			t.Errorf("vector %d header %s", i, got)
 		}
-		if !repo.Matches(c) {
-			t.Errorf("vector %d does not match", i)
+		mac, err := ParseMacHeader([]string{v.MacHeader}, CommitMacType)
+		if err != nil || !VerifyCommit(c, VerifyCommitParams{Space: v.Ctx.Space, Repo: v.Ctx.Repo, SharedSecret: secret, Mac: mac}) {
+			t.Errorf("vector %d does not verify: %v", i, err)
 		}
 	}
 }

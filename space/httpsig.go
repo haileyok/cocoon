@@ -9,15 +9,24 @@ import (
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
 )
 
-// HTTP message signatures (RFC 9421) as space requests use them: a signature
-// over the authorization header and, for a credential, the audience DID.
+// HTTP message signatures (RFC 9421) as requests authorized by a space
+// credential use them: a signature over the authorization header and the
+// audience DID, labeled and tagged atproto-space-credential. Follows
+// @atproto/space's http-signature.ts.
 
 const (
-	sigLabel = "atproto-space"
+	sigLabel = "atproto-space-credential"
+	sigTag   = "atproto-space-credential"
 	sigAlg   = "ecdsa-p256-sha256"
+	// CredentialScheme is the Authorization scheme a space credential is
+	// presented with.
+	CredentialScheme = "Atproto-Space-Credential"
 	// HeaderSpaceAudience names the audience DID a credential request is for.
 	HeaderSpaceAudience = "Atproto-Space-Audience"
 )
+
+// sigCovered is what a credential use covers, in order.
+const sigCovered = `("authorization" "atproto-space-audience")`
 
 // SignatureError is a request signature failure (BadSpaceSignature).
 type SignatureError struct {
@@ -32,7 +41,9 @@ func sigErr(format string, args ...any) *SignatureError {
 	return &SignatureError{Message: fmt.Sprintf(format, args...)}
 }
 
-func isP256DIDKey(didKey string) bool {
+// IsP256DIDKey reports whether didKey is a P-256 did:key, the only kind a
+// space credential can be bound to.
+func IsP256DIDKey(didKey string) bool {
 	pub, err := atcrypto.ParsePublicDIDKey(didKey)
 	if err != nil {
 		return false
@@ -41,24 +52,19 @@ func isP256DIDKey(didKey string) bool {
 	return ok
 }
 
-// CreateSpaceSig signs the authorization value and, when audience is set, the
-// audience. It returns the signature-input inner list and the compact
-// signature.
+// CreateSpaceSig signs a request authorized by a space credential, covering
+// the credential (authorization, which must use the Atproto-Space-Credential
+// scheme) and its audience DID. It returns the signature-input inner list and
+// the compact signature.
 func CreateSpaceSig(key atcrypto.PrivateKey, authorization, audience string) (string, []byte, error) {
 	if _, ok := key.(*atcrypto.PrivateKeyP256); !ok {
 		return "", nil, sigErr("signature key must be a P-256 did:key")
 	}
-	pub, err := key.PublicKey()
-	if err != nil {
-		return "", nil, err
-	}
-	var input string
 	if audience == "" {
-		input = `("authorization");keyid="` + pub.DIDKey() + `"`
-	} else {
-		input = `("authorization" "atproto-space-audience")`
+		return "", nil, sigErr("a space credential signature requires an audience")
 	}
-	sig, err := key.HashAndSign(signatureBase(authorization, input, audience, audience != ""))
+	input := sigCovered + `;tag="` + sigTag + `"`
+	sig, err := key.HashAndSign(signatureBase(authorization, audience, input))
 	if err != nil {
 		return "", nil, err
 	}
@@ -72,119 +78,90 @@ func CreateSpaceSigHeaders(key atcrypto.PrivateKey, authorization, audience stri
 	if err != nil {
 		return nil, err
 	}
-	out := map[string]string{
-		"authorization":   authorization,
-		"signature-input": sigLabel + "=" + input,
-		"signature":       sigLabel + "=:" + base64.StdEncoding.EncodeToString(sig) + ":",
-	}
-	if audience != "" {
-		out["atproto-space-audience"] = audience
-	}
-	return out, nil
+	return map[string]string{
+		"authorization":          authorization,
+		"atproto-space-audience": audience,
+		"signature-input":        sigLabel + "=" + input,
+		"signature":              sigLabel + "=:" + base64.StdEncoding.EncodeToString(sig) + ":",
+	}, nil
 }
 
-// VerifySpaceSignature verifies a space request signature. keyID is the
-// credential's bound did:key; empty means a delegation exchange, where the
-// signature names its own key and covers only the authorization. It returns
-// the did:key that signed.
-func VerifySpaceSignature(h http.Header, keyID string) (string, error) {
-	got, err := verifySpaceSignature(h, keyID)
-	if err != nil {
+// VerifyCredentialSig verifies the signature on a request authorized by a
+// space credential, against the key the credential is bound to (its cnf.kid).
+func VerifyCredentialSig(h http.Header, keyID string) error {
+	if err := verifyCredentialSig(h, keyID); err != nil {
 		if se, ok := err.(*SignatureError); ok {
-			return "", se
+			return se
 		}
-		return "", &SignatureError{Message: "invalid HTTP message signature", Cause: err}
+		return &SignatureError{Message: "invalid HTTP message signature", Cause: err}
 	}
-	return got, nil
+	return nil
 }
 
-func verifySpaceSignature(h http.Header, keyID string) (string, error) {
+func verifyCredentialSig(h http.Header, keyID string) error {
+	auths := h.Values("Authorization")
+	if len(auths) != 1 || auths[0] == "" {
+		return sigErr(`missing or malformed "authorization" field`)
+	}
+	auds := h.Values(HeaderSpaceAudience)
+	if len(auds) != 1 || auds[0] == "" {
+		return sigErr(`missing or malformed "atproto-space-audience" field`)
+	}
+
 	inputs, sigs := h.Values("Signature-Input"), h.Values("Signature")
 	if len(inputs) == 0 || len(sigs) == 0 {
-		return "", sigErr("missing or malformed signature headers")
+		return sigErr("missing or malformed signature headers")
 	}
 	// Repeated fields of a list-valued header combine, as an HTTP stack does.
 	inputDict, err1 := parseSFDictionary(strings.Join(inputs, ", "))
 	sigDict, err2 := parseSFDictionary(strings.Join(sigs, ", "))
 	if err1 != nil || err2 != nil {
-		return "", sigErr("missing or malformed atproto-space signature")
+		return sigErr("missing or malformed signature headers")
 	}
 	input, ok := inputDict[sigLabel].(sfInnerList)
 	if !ok {
-		return "", sigErr("missing or malformed atproto-space signature")
+		return sigErr("missing or malformed %s signature", sigLabel)
 	}
 	sigItem, ok := sigDict[sigLabel].(sfItem)
 	if !ok {
-		return "", sigErr("missing or malformed atproto-space signature")
+		return sigErr("missing or malformed %s signature", sigLabel)
 	}
 	sigBytes, ok := sigItem.Value.(sfBytes)
 	if !ok || len(sigItem.Params) != 0 {
-		return "", sigErr("missing or malformed atproto-space signature")
+		return sigErr("missing or malformed %s signature", sigLabel)
 	}
 
-	expected := []string{"authorization"}
-	expectedStr := `"authorization"`
-	if keyID != "" {
-		expected = append(expected, "atproto-space-audience")
-		expectedStr = `"authorization", "atproto-space-audience"`
+	if serializeSFInnerList(sfInnerList{Items: input.Items}) != sigCovered {
+		return sigErr("signature must cover exactly %s, in order", sigCovered)
 	}
-	if len(input.Items) != len(expected) {
-		return "", sigErr("signature must cover exactly %s, in order", expectedStr)
-	}
-	for i, it := range input.Items {
-		s, ok := it.Value.(string)
-		if !ok || len(it.Params) != 0 || s != expected[i] {
-			return "", sigErr("signature must cover exactly %s, in order", expectedStr)
-		}
+	if tag, ok := input.Params.get("tag"); !ok || tag != sigTag {
+		return sigErr(`signature tag must be "%s"`, sigTag)
 	}
 	if alg, ok := input.Params.get("alg"); ok && alg != sigAlg {
-		return "", sigErr("signature algorithm must be %s", sigAlg)
+		return sigErr("signature algorithm must be %s", sigAlg)
 	}
-	signingKey := keyID
-	paramKid, hasKid := input.Params.get("keyid")
-	if signingKey == "" {
-		s, ok := paramKid.(string)
-		if !hasKid || !ok {
-			return "", sigErr("signature key must be a P-256 did:key")
-		}
-		signingKey = s
+	if kid, ok := input.Params.get("keyid"); ok && kid != keyID {
+		return sigErr("signature keyid does not match the credential key")
 	}
-	if !isP256DIDKey(signingKey) {
-		return "", sigErr("signature key must be a P-256 did:key")
-	}
-	if keyID != "" && hasKid && paramKid != keyID {
-		return "", sigErr("signature keyid does not match the credential key")
+	if !IsP256DIDKey(keyID) {
+		return sigErr("signature key must be a P-256 did:key")
 	}
 
-	auths := h.Values("Authorization")
-	if len(auths) != 1 || auths[0] == "" {
-		return "", sigErr(`request requires exactly one "authorization" field`)
-	}
-	var audience string
-	if keyID != "" {
-		auds := h.Values(HeaderSpaceAudience)
-		if len(auds) != 1 || auds[0] == "" {
-			return "", sigErr(`request requires exactly one "atproto-space-audience" field`)
-		}
-		audience = auds[0]
-	}
-
-	base := signatureBase(auths[0], serializeSFInnerList(input), audience, keyID != "")
-	pub, err := atcrypto.ParsePublicDIDKey(signingKey)
+	base := signatureBase(auths[0], auds[0], serializeSFInnerList(input))
+	pub, err := atcrypto.ParsePublicDIDKey(keyID)
 	if err != nil {
-		return "", sigErr("signature key must be a P-256 did:key")
+		return sigErr("signature key must be a P-256 did:key")
 	}
 	if len(sigBytes) != 64 || pub.HashAndVerifyLenient(base, sigBytes) != nil {
-		return "", sigErr("invalid HTTP message signature")
+		return sigErr("invalid HTTP message signature")
 	}
-	return signingKey, nil
+	return nil
 }
 
-func signatureBase(authorization, input, audience string, withAudience bool) []byte {
-	lines := []string{`"authorization": ` + strings.TrimSpace(authorization)}
-	if withAudience {
-		lines = append(lines, `"atproto-space-audience": `+strings.TrimSpace(audience))
-	}
-	lines = append(lines, `"@signature-params": `+input)
-	return []byte(strings.Join(lines, "\n"))
+func signatureBase(authorization, audience, input string) []byte {
+	return []byte(strings.Join([]string{
+		`"authorization": ` + strings.TrimSpace(authorization),
+		`"atproto-space-audience": ` + strings.TrimSpace(audience),
+		`"@signature-params": ` + input,
+	}, "\n"))
 }

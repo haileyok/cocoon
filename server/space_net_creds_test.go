@@ -33,15 +33,35 @@ import (
 // rest of the reference's tests/_space.ts.
 
 // spaceCredential is a credential and the P-256 key it is bound to.
+//
+// It requests a MAC from the methods that require one, as a syncer would,
+// resolving the author's #atproto_kem key from the DID directory, and keeps
+// the latest request's shared secret and response MAC in lastMac.
 type spaceCredential struct {
 	credential string
 	key        *atcrypto.PrivateKeyP256
+	dir        *didDirectory
+	lastMac    *lastMac
+}
+
+type lastMac struct {
+	typ    string
+	secret []byte
+	header []string
+}
+
+// macTypes are the methods that require a MAC when called with a credential.
+var macTypes = map[string]string{
+	"com.atproto.space.getLatestCommit": space.CommitMacType,
+	"com.atproto.space.getRepo":         space.CommitMacType,
+	"com.atproto.space.listRepoOps":     space.CommitMacType,
+	"com.atproto.space.getRecord":       space.RecordMacType,
 }
 
 // headers signs a request with the credential for an audience DID.
 func (c *spaceCredential) headers(t *testing.T, audience string) map[string]string {
 	t.Helper()
-	h, err := space.CreateSpaceSigHeaders(c.key, "Atproto-Space "+c.credential, audience)
+	h, err := space.CreateSpaceSigHeaders(c.key, "Atproto-Space-Credential "+c.credential, audience)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +80,54 @@ func (c *spaceCredential) get(t *testing.T, p *spacePDS, nsid string, params map
 		}
 		aud = ref.Authority
 	}
-	return p.get(nsid, params, c.headers(t, aud))
+	h := c.headers(t, aud)
+	typ, ok := macTypes[nsid]
+	if !ok {
+		return p.get(nsid, params, h)
+	}
+	enc, err := space.Encapsulate(c.kemKey(t, params["repo"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h[space.HeaderWantMac] = space.FormatWantMacHeader(typ, enc.KeyShare)
+	res := p.get(nsid, params, h)
+	c.lastMac = &lastMac{typ: typ, secret: enc.SharedSecret, header: res.header.Values(space.HeaderMac)}
+	return res
+}
+
+// kemKey resolves an author's #atproto_kem key.
+func (c *spaceCredential) kemKey(t *testing.T, did string) string {
+	t.Helper()
+	doc := c.dir.get(did)
+	if doc == nil {
+		t.Fatalf("no did doc for %s", did)
+	}
+	k, ok := didDocKey(doc, "atproto_kem")
+	if !ok {
+		t.Fatalf("no #atproto_kem key for %s", did)
+	}
+	return k
+}
+
+// lastMacParams are the shared secret and response MAC of the latest
+// request.
+func (c *spaceCredential) lastMacParams(t *testing.T) ([]byte, []byte) {
+	t.Helper()
+	if c.lastMac == nil {
+		t.Fatal("no MAC was requested")
+	}
+	mac, err := space.ParseMacHeader(c.lastMac.header, c.lastMac.typ)
+	if err != nil {
+		t.Fatalf("response MAC: %v", err)
+	}
+	return c.lastMac.secret, mac
+}
+
+// verifyCommit checks a commit against the MAC from the latest request.
+func (c *spaceCredential) verifyCommit(t *testing.T, commit space.Commit, spaceURI, repo string) bool {
+	t.Helper()
+	secret, mac := c.lastMacParams(t)
+	return space.VerifyCommit(commit, space.VerifyCommitParams{Space: spaceURI, Repo: repo, SharedSecret: secret, Mac: mac})
 }
 
 func (c *spaceCredential) post(t *testing.T, p *spacePDS, nsid string, body map[string]any) xres {
@@ -90,19 +157,19 @@ func delegationTokenFor(t *testing.T, a *actor, spaceURI string) string {
 	return mustOK(t, a.get("com.atproto.space.getDelegationToken", map[string]string{"space": spaceURI})).str("token")
 }
 
-// exchange posts getSpaceCredential to the authority's PDS, signing the
-// exchange with key.
+// exchange posts getSpaceCredential to the authority's PDS, asking for a
+// credential bound to key. An empty token requests one without a delegation
+// token, as for a public space.
 func exchange(t *testing.T, authority *spacePDS, spaceURI, token string, key *atcrypto.PrivateKeyP256, attestation string) xres {
 	t.Helper()
-	h, err := space.CreateSpaceSigHeaders(key, "Bearer "+token, "")
-	if err != nil {
-		t.Fatal(err)
+	body := map[string]any{"space": spaceURI, "credentialKid": p256DIDKey(t, key)}
+	if token != "" {
+		body["delegationToken"] = token
 	}
-	body := map[string]any{"space": spaceURI}
 	if attestation != "" {
 		body["clientAttestation"] = attestation
 	}
-	return authority.post("com.atproto.space.getSpaceCredential", body, h)
+	return authority.post("com.atproto.space.getSpaceCredential", body, nil)
 }
 
 // credentialFor mints a delegation token on a's PDS and exchanges it with the
@@ -111,7 +178,16 @@ func credentialFor(t *testing.T, a *actor, authority *spacePDS, spaceURI string)
 	t.Helper()
 	key := newP256Key(t)
 	res := mustOK(t, exchange(t, authority, spaceURI, delegationTokenFor(t, a, spaceURI), key, ""))
-	return &spaceCredential{credential: res.str("credential"), key: key}
+	return &spaceCredential{credential: res.str("credential"), key: key, dir: authority.net.dir}
+}
+
+// publicCredential requests a credential without a delegation token, as for
+// a public space.
+func publicCredential(t *testing.T, authority *spacePDS, spaceURI, attestation string) *spaceCredential {
+	t.Helper()
+	key := newP256Key(t)
+	res := mustOK(t, exchange(t, authority, spaceURI, "", key, attestation))
+	return &spaceCredential{credential: res.str("credential"), key: key, dir: authority.net.dir}
 }
 
 // waitSpaceJobs waits for background space work on every PDS.
@@ -468,3 +544,12 @@ func (m *mockClientApp) attest(t *testing.T, spaceHost string, o attestOpts) str
 }
 
 const cryptoSHA256 = crypto.SHA256
+
+func p256DIDKey(t *testing.T, k *atcrypto.PrivateKeyP256) string {
+	t.Helper()
+	pub, err := k.PublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pub.DIDKey()
+}

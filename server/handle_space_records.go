@@ -10,13 +10,14 @@ import (
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/oauth/scopes"
 	"github.com/haileyok/cocoon/space"
+	"github.com/ipfs/go-cid"
 	"github.com/labstack/echo/v4"
 	"gorm.io/gorm"
 )
 
 // Space record writes and reads (com.atproto.space.*), following the
 // reference PDS (packages/pds/src/api/com/atproto/space) at
-// bluesky-social/atproto 5b95b2f2.
+// bluesky-social/atproto ac0c9f15.
 
 const spaceMaxWrites = 200
 
@@ -63,6 +64,10 @@ func prepareSpaceWrite(did string, ref space.Ref, action, collection, rkey strin
 	sr, err := space.SerializeRecord(collection, w.Rkey, rec)
 	if err != nil {
 		return w, errInvalid("InvalidRecord", "Invalid record: %v", err)
+	}
+	// A repo archive frames each record with at most this many bytes.
+	if len(sr.Bytes) > space.MaxRecordSize {
+		return w, errInvalid("InvalidRecord", "Record too large: %d bytes, max %d", len(sr.Bytes), space.MaxRecordSize)
 	}
 	w.Record = &sr
 	for _, b := range atdata.ExtractBlobs(rec) {
@@ -437,6 +442,10 @@ func (s *Server) handleSpaceGetRecord(e echo.Context) error {
 		if err != nil {
 			return nil, err
 		}
+		secret, err := s.spaceMacSecret(e, p, space.RecordMacType)
+		if err != nil {
+			return nil, err
+		}
 		uri := p.ref.RecordURI(p.repo, collection, rkey)
 		rec, err := s.spaceStore(nil, p.repo).getRecord(uri)
 		if err != nil {
@@ -449,6 +458,11 @@ func (s *Server) handleSpaceGetRecord(e echo.Context) error {
 		if err != nil {
 			return nil, err
 		}
+		c, err := cid.Decode(rec.Cid)
+		if err != nil {
+			return nil, err
+		}
+		setRecordMac(e, secret, uri, c)
 		return map[string]any{"uri": uri, "cid": rec.Cid, "value": val}, nil
 	}()
 	return writeSpaceResult(e, body, err)
@@ -521,6 +535,10 @@ func (s *Server) handleSpaceListRepoOps(e echo.Context) error {
 		if err != nil {
 			return nil, err
 		}
+		secret, err := s.spaceMacSecret(e, p, space.CommitMacType)
+		if err != nil {
+			return nil, err
+		}
 		var cursorRev string
 		var cursorIdx int
 		hasCursor := false
@@ -537,21 +555,13 @@ func (s *Server) handleSpaceListRepoOps(e echo.Context) error {
 			return nil, err
 		}
 		// A full page leaves the commit off: the caller isn't at head yet.
-		var commit *space.SignedCommit
+		var commit *space.Commit
 		if len(ops) < limit {
-			repoActor, err := s.getRepoActorByDid(e.Request().Context(), p.repo)
-			if err != nil {
-				return nil, err
-			}
 			state, err := st.getRepoState(p.ref.String())
 			if err != nil {
 				return nil, err
 			}
-			key, err := s.accountSigner(repoActor.Repo)
-			if err != nil {
-				return nil, err
-			}
-			if commit, err = buildSignedCommit(p.ref, p.repo, state, key); err != nil {
+			if commit, err = buildCommit(p.ref, p.repo, state); err != nil {
 				return nil, err
 			}
 		}
@@ -569,6 +579,10 @@ func (s *Server) handleSpaceListRepoOps(e echo.Context) error {
 		}
 		res := map[string]any{"ops": out}
 		if commit != nil {
+			// A page without a commit has nothing to MAC. Its ops are checked
+			// once the final page's commit is compared against the syncer's
+			// running set hash.
+			setCommitMac(e, secret, *commit)
 			res["commit"] = commit
 		} else if len(ops) > 0 {
 			last := ops[len(ops)-1]
@@ -585,7 +599,7 @@ func (s *Server) handleSpaceGetLatestCommit(e echo.Context) error {
 		if err != nil {
 			return nil, err
 		}
-		repoActor, err := s.getRepoActorByDid(e.Request().Context(), p.repo)
+		secret, err := s.spaceMacSecret(e, p, space.CommitMacType)
 		if err != nil {
 			return nil, err
 		}
@@ -593,17 +607,14 @@ func (s *Server) handleSpaceGetLatestCommit(e echo.Context) error {
 		if err != nil {
 			return nil, err
 		}
-		key, err := s.accountSigner(repoActor.Repo)
-		if err != nil {
-			return nil, err
-		}
-		commit, err := buildSignedCommit(p.ref, p.repo, state, key)
+		commit, err := buildCommit(p.ref, p.repo, state)
 		if err != nil {
 			return nil, err
 		}
 		if commit == nil {
 			return nil, errInvalid("RepoNotFound", "Could not find repo for space: %s", p.ref)
 		}
+		setCommitMac(e, secret, *commit)
 		return map[string]any{"commit": commit}, nil
 	}()
 	return writeSpaceResult(e, body, err)

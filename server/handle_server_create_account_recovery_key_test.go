@@ -18,7 +18,7 @@ func (s *Server) plcClientOwnsRotationKey(t *testing.T, didKey string) bool {
 	if err != nil {
 		t.Fatalf("generate signing key: %v", err)
 	}
-	creds, err := s.plcClient.CreateDidCredentials(k, "", "check.pds.test")
+	creds, err := s.plcClient.CreateDidCredentials(k, "", "", "check.pds.test")
 	if err != nil {
 		t.Fatalf("create did credentials: %v", err)
 	}

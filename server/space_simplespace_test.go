@@ -255,29 +255,17 @@ func TestSimplespaceLifecycle(t *testing.T) {
 		}
 	})
 
-	t.Run("governs a space written to before createSpace", func(t *testing.T) {
-		// Writing to at://me/space/<type>/<skey> materializes a repo but does
-		// not create a simplespace: there is no config until the owner asks
-		// for one, and no default to guess at.
+	t.Run("refuses an owner write until createSpace", func(t *testing.T) {
+		// A write to another authority's space creates the repo unchecked,
+		// but the owner's own space must exist first: a write never conjures
+		// one.
 		skey := "lazy"
 		sp := "at://" + r.alice.did + "/space/" + testSpaceType + "/" + skey
-		mustOK(t, doWrite(r.alice, sp, writeOpts{text: "lazy space"}))
-
-		expectErr(t, r.alice.get("com.atproto.simplespace.getSpace", map[string]string{"space": sp}), 400, "SpaceNotFound")
-		expectErr(t, r.alice.post("com.atproto.simplespace.putMember", map[string]any{"space": sp, "did": r.bob.did, "read": true, "write": true}), 400, "SpaceNotFound")
+		expectErr(t, doWrite(r.alice, sp, writeOpts{text: "too early"}), 400, "SpaceNotFound")
 
 		createSpace(t, r.alice, spaceOpts{skey: skey})
-		putMember(t, r.alice, sp, r.bob, true, true)
+		mustOK(t, doWrite(r.alice, sp, writeOpts{text: "lazy space"}))
 
-		got := simplespaceGetConfig(t, r.alice, sp)
-		if simplespaceUnion(t, got, "readPolicy")["$type"] != "com.atproto.simplespace.defs#memberListPolicy" {
-			t.Fatalf("readPolicy: %s", simplespaceJSON(t, got))
-		}
-		if simplespaceUnion(t, got, "writePolicy")["$type"] != "com.atproto.simplespace.defs#memberListPolicy" {
-			t.Fatalf("writePolicy: %s", simplespaceJSON(t, got))
-		}
-
-		// And the records that were already there stay put.
 		listed := mustOK(t, r.alice.get("com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.alice.did})).list("records")
 		if len(listed) != 1 {
 			t.Fatalf("records: %v", listed)
@@ -525,7 +513,7 @@ func TestSimplespaceConfig(t *testing.T) {
 
 func TestSimplespaceCredentialMintGates(t *testing.T) {
 	r := newSimplespaceNet(t)
-	hostAud := r.alice.did + "#atproto_space_host"
+	hostAud := r.alice.did + "#atproto_pds"
 
 	t.Run("mints for a non-member when the read policy is public", func(t *testing.T) {
 		sp := createSpace(t, r.alice, spaceOpts{readPolicy: publicPolicy()})
@@ -533,6 +521,51 @@ func TestSimplespaceCredentialMintGates(t *testing.T) {
 		if cred.credential == "" {
 			t.Fatal("no credential minted")
 		}
+	})
+
+	t.Run("mints without a delegation token when the read policy is public", func(t *testing.T) {
+		sp := createSpace(t, r.alice, spaceOpts{readPolicy: publicPolicy()})
+		mustOK(t, doWrite(r.alice, sp, writeOpts{text: "for anyone"}))
+
+		cred := publicCredential(t, r.pds1, sp, "")
+		res := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.alice.did}))
+		if len(res.list("records")) != 1 {
+			t.Fatalf("%s", res.raw)
+		}
+	})
+
+	for name, policy := range map[string]map[string]any{"member-list": nil, "managing-app": managingAppPolicy("did:web:unreachable.invalid#forum")} {
+		t.Run("hides a "+name+" space from a request without a delegation token", func(t *testing.T) {
+			sp := createSpace(t, r.alice, spaceOpts{skey: "hidden-" + name, readPolicy: policy})
+			expectErr(t, exchange(t, r.pds1, sp, "", newP256Key(t), ""), 400, "SpaceNotFound")
+		})
+	}
+
+	t.Run("hides a space from a request without a delegation token before checking the app", func(t *testing.T) {
+		// An AppNotAuthorized here would disclose that the space exists.
+		sp := createSpace(t, r.alice, spaceOpts{appAccess: allowList("https://app.example.com/client-metadata.json")})
+		expectErr(t, exchange(t, r.pds1, sp, "", newP256Key(t), ""), 400, "SpaceNotFound")
+	})
+
+	t.Run("refuses a request without a delegation token or attestation under an allowList", func(t *testing.T) {
+		sp := createSpace(t, r.alice, spaceOpts{readPolicy: publicPolicy(), appAccess: allowList("https://app.example.com/client-metadata.json")})
+		expectErr(t, exchange(t, r.pds1, sp, "", newP256Key(t), ""), 400, "AppNotAuthorized")
+	})
+
+	t.Run("mints for an allow-listed app without a delegation token", func(t *testing.T) {
+		app := r.net.newMockClientApp(clientAppOpts{})
+		app.installOn(r.pds1)
+		sp := createSpace(t, r.alice, spaceOpts{readPolicy: publicPolicy(), appAccess: allowList(app.clientID)})
+		cred := publicCredential(t, r.pds1, sp, app.attest(t, hostAud, attestOpts{}))
+		if cred.credential == "" {
+			t.Fatal("no credential minted")
+		}
+	})
+
+	t.Run("accepts a delegation token the space does not require", func(t *testing.T) {
+		sp := createSpace(t, r.alice, spaceOpts{readPolicy: publicPolicy()})
+		token := delegationTokenFor(t, r.carol, sp)
+		mustOK(t, simplespaceMint(t, r.pds1, sp, token, ""))
 	})
 
 	t.Run("refuses a non-member under member-list read policy", func(t *testing.T) {
@@ -616,7 +649,7 @@ func TestSimplespaceCredentialMintGates(t *testing.T) {
 		sp := createSpace(t, r.alice, spaceOpts{readPolicy: publicPolicy(), appAccess: allowList(app.clientID)})
 
 		token := delegationTokenFor(t, r.carol, sp)
-		res := simplespaceMint(t, r.pds1, sp, token, app.attest(t, r.bob.did+"#atproto_space_host", attestOpts{}))
+		res := simplespaceMint(t, r.pds1, sp, token, app.attest(t, r.bob.did+"#atproto_pds", attestOpts{}))
 		if res.status != 400 || !strings.Contains(res.message(), "Invalid client attestation") {
 			t.Fatalf("want 400 Invalid client attestation, got %d: %s", res.status, res.raw)
 		}
@@ -889,6 +922,24 @@ func TestSimplespaceDeletion(t *testing.T) {
 		mustOK(t, simplespaceDeleteSpace(t, r.alice, sp))
 
 		expectErr(t, simplespaceMint(t, r.pds1, sp, token, ""), 400, "SpaceDeleted")
+	})
+
+	t.Run("answers SpaceDeleted to a request without a delegation token", func(t *testing.T) {
+		// A public space's syncer may hold no delegation token, and still
+		// needs to learn that the space is gone.
+		sp := createSpace(t, r.alice, spaceOpts{readPolicy: publicPolicy()})
+		mustOK(t, simplespaceDeleteSpace(t, r.alice, sp))
+		expectErr(t, exchange(t, r.pds1, sp, "", newP256Key(t), ""), 400, "SpaceDeleted")
+	})
+
+	t.Run("refuses an authority write to its own deleted space", func(t *testing.T) {
+		sp := createSpace(t, r.alice, spaceOpts{})
+		mustOK(t, simplespaceDeleteSpace(t, r.alice, sp))
+		expectErr(t, doWrite(r.alice, sp, writeOpts{text: "revived?"}), 400, "SpaceNotFound")
+		// The tombstone survives the attempt.
+		if row := simplespaceSpaceRow(t, r.pds1, r.alice.did, sp); row == nil || row.DeletedAt == nil {
+			t.Fatalf("space row: %+v", row)
+		}
 	})
 
 	t.Run("notifies registered syncers", func(t *testing.T) {

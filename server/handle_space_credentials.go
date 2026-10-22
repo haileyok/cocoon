@@ -16,9 +16,10 @@ import (
 )
 
 // The space credential chain: a member's PDS mints a delegation token, and the
-// authority exchanges it for a space credential bound to the key that signed
-// the exchange (the reference's getDelegationToken.ts, getSpaceCredential.ts
-// and simplespace/manager.ts at bluesky-social/atproto 5b95b2f2).
+// authority issues a space credential bound to the key the request names,
+// given the delegation token and client attestation the space requires (the
+// reference's getDelegationToken.ts, getSpaceCredential.ts and
+// simplespace/manager.ts at bluesky-social/atproto ac0c9f15).
 
 func (s *Server) handleSpaceGetDelegationToken(e echo.Context) error {
 	body, err := func() (any, error) {
@@ -64,12 +65,10 @@ func (s *Server) assertSpaceHost(ctx context.Context, ref space.Ref) (*models.Re
 func (s *Server) handleSpaceGetSpaceCredential(e echo.Context) error {
 	body, err := func() (any, error) {
 		ctx := e.Request().Context()
-		d, err := s.verifyDelegationRequest(e)
-		if err != nil {
-			return nil, err
-		}
 		var in struct {
 			Space             string `json:"space"`
+			CredentialKid     string `json:"credentialKid"`
+			DelegationToken   string `json:"delegationToken"`
 			ClientAttestation string `json:"clientAttestation"`
 		}
 		if err := bindSpaceJSON(e, &in); err != nil {
@@ -79,8 +78,24 @@ func (s *Server) handleSpaceGetSpaceCredential(e echo.Context) error {
 		if err != nil {
 			return nil, err
 		}
-		if d.space != ref.String() {
-			return nil, errInvalid("InvalidDelegationToken", "Delegation token subject does not match requested space")
+		if in.CredentialKid == "" {
+			return nil, errInvalid("", "Input must have the property \"credentialKid\"")
+		}
+		if !space.IsP256DIDKey(in.CredentialKid) {
+			return nil, errInvalid("", "credentialKid must be a P-256 did:key")
+		}
+		// Empty when the request carries no delegation token, which only a
+		// space that does not gate on the user accepts.
+		userDid := ""
+		if in.DelegationToken != "" {
+			d, err := s.verifyDelegationToken(ctx, in.DelegationToken)
+			if err != nil {
+				return nil, err
+			}
+			if d.space != ref.String() {
+				return nil, errInvalid("InvalidDelegationToken", "Delegation token subject does not match requested space")
+			}
+			userDid = d.userDid
 		}
 		authority, err := s.assertSpaceHost(ctx, ref)
 		if err != nil {
@@ -97,6 +112,10 @@ func (s *Server) handleSpaceGetSpaceCredential(e echo.Context) error {
 		if err != nil {
 			return nil, err
 		}
+		// The durable signal that a space is gone: a syncer that missed
+		// notifySpaceDeleted learns it here, on its next renewal. Answered
+		// with or without a delegation token, since a public space's syncer
+		// may not have one.
 		if sp != nil && sp.DeletedAt != nil {
 			return nil, errInvalid("SpaceDeleted", "Space has been deleted")
 		}
@@ -104,14 +123,14 @@ func (s *Server) handleSpaceGetSpaceCredential(e echo.Context) error {
 		if err != nil {
 			return nil, err
 		}
-		if err := s.authorizeCredential(ctx, cfg, d.userDid, clientID); err != nil {
+		if err := s.authorizeCredential(ctx, cfg, userDid, clientID); err != nil {
 			return nil, err
 		}
 		key, err := s.accountSigner(authority.Repo)
 		if err != nil {
 			return nil, err
 		}
-		cred, err := space.CreateSpaceToken(space.TokenCredential, space.CreateTokenOpts{Iss: ref.Authority, Sub: ref.String(), KeyID: d.keyID}, key)
+		cred, err := space.CreateSpaceToken(space.TokenCredential, space.CreateTokenOpts{Iss: ref.Authority, Sub: ref.String(), KeyID: in.CredentialKid}, key)
 		if err != nil {
 			return nil, err
 		}
@@ -123,7 +142,14 @@ func (s *Server) handleSpaceGetSpaceCredential(e echo.Context) error {
 // authorizeCredential checks both perimeters a credential clears: the app
 // first, since it decides from the config alone, so a refused app is never
 // disclosed to a third-party managing app; then the user.
+//
+// userDid is empty when the request carries no delegation token, which only a
+// space with a public read policy accepts. Any other space answers as though
+// it does not exist, so a request without a token can't learn that it does.
 func (s *Server) authorizeCredential(ctx context.Context, cfg *models.SimplespaceConfig, userDid, clientID string) error {
+	if userDid == "" && cfg.ReadPolicy != policyPublic {
+		return errSpaceNotFound()
+	}
 	if cfg.AppAccessType == appAccessAllow {
 		var allowed []string
 		_ = json.Unmarshal([]byte(cfg.AppAllowed), &allowed)
@@ -134,6 +160,9 @@ func (s *Server) authorizeCredential(ctx context.Context, cfg *models.Simplespac
 		if !ok {
 			return errInvalid("AppNotAuthorized", "Application not authorized for this space")
 		}
+	}
+	if userDid == "" {
+		return nil
 	}
 	authorized, err := s.authorizeSpaceUser(ctx, cfg, userDid, "read", clientID)
 	if err != nil {
@@ -416,7 +445,8 @@ func (s *Server) handleSimplespaceDeleteSpace(e echo.Context) error {
 
 // deleteSpace deletes a governed space with the authority's own repo in it,
 // keeping the space row as a tombstone so getSpaceCredential answers
-// SpaceDeleted, then tells registered services, best effort.
+// SpaceDeleted, then tells every service registered at the time of deletion
+// (notifySpaceDeleted), queueing retryable failures.
 func (s *Server) deleteSpace(ctx context.Context, ref space.Ref) error {
 	uri := ref.String()
 	var recipients []models.SpaceCredentialRecipient
@@ -431,13 +461,8 @@ func (s *Server) deleteSpace(ctx context.Context, ref space.Ref) error {
 	if err != nil {
 		return err
 	}
-	const lxm = "com.atproto.space.notifySpaceDeleted"
 	s.goSpace(func(ctx context.Context) {
-		for _, r := range recipients {
-			if err := s.sendNotify(ctx, ref.Authority, r.ServiceDid, lxm, map[string]any{"space": uri}); err != nil {
-				s.logger.Warn("notify failed", "space", uri, "service", r.ServiceDid, "lxm", lxm, "err", err)
-			}
-		}
+		s.notifySpaceDeleted(ctx, ref, recipients)
 	})
 	return nil
 }

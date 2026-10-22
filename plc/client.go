@@ -74,8 +74,10 @@ func (c *Client) GetData(ctx context.Context, did string) (*identity.DidData, er
 	return &data, nil
 }
 
-func (c *Client) CreateDID(sigkey *atcrypto.PrivateKeyK256, recovery string, handle string) (string, *Operation, error) {
-	creds, err := c.CreateDidCredentials(sigkey, recovery, handle)
+// CreateDID formats and signs a genesis operation. kemKey, if set, is the
+// account's #atproto_kem did:key, published alongside its signing key.
+func (c *Client) CreateDID(sigkey *atcrypto.PrivateKeyK256, kemKey string, recovery string, handle string) (string, *Operation, error) {
+	creds, err := c.CreateDidCredentials(sigkey, kemKey, recovery, handle)
 	if err != nil {
 		return "", nil, err
 	}
@@ -101,7 +103,10 @@ func (c *Client) CreateDID(sigkey *atcrypto.PrivateKeyK256, recovery string, han
 	return did, &op, nil
 }
 
-func (c *Client) CreateDidCredentials(sigkey *atcrypto.PrivateKeyK256, recovery string, handle string) (*DidCredentials, error) {
+// CreateDidCredentials is the DID document an account on this PDS should
+// have. kemKey, if set, is its #atproto_kem did:key, which syncers use to
+// establish shared secrets for space repo MACs.
+func (c *Client) CreateDidCredentials(sigkey *atcrypto.PrivateKeyK256, kemKey string, recovery string, handle string) (*DidCredentials, error) {
 	pubsigkey, err := sigkey.PublicKey()
 	if err != nil {
 		return nil, err
@@ -138,6 +143,10 @@ func (c *Client) CreateDidCredentials(sigkey *atcrypto.PrivateKeyK256, recovery 
 				Endpoint: "https://" + c.pdsHostname,
 			},
 		},
+	}
+
+	if kemKey != "" {
+		creds.VerificationMethods["atproto_kem"] = kemKey
 	}
 
 	return &creds, nil
@@ -240,3 +249,15 @@ func DidFromOp(op *Operation) (string, error) {
 	b32 := strings.ToLower(base32.StdEncoding.EncodeToString(s[:]))
 	return "did:plc:" + b32[0:24], nil
 }
+
+// RotationKeyDID is the did:key of this PDS's PLC rotation key.
+func (c *Client) RotationKeyDID() (string, error) {
+	pub, err := c.rotationKey.PublicKey()
+	if err != nil {
+		return "", err
+	}
+	return pub.DIDKey(), nil
+}
+
+// PdsEndpoint is the atproto_pds endpoint of accounts on this PDS.
+func (c *Client) PdsEndpoint() string { return "https://" + c.pdsHostname }

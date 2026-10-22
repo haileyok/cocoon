@@ -173,6 +173,15 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		}
 	}
 
+	// Every account gets a dedicated #atproto_kem key for space repo MACs. A
+	// new DID publishes it in its genesis op; an account bringing its DID
+	// publishes it itself, from getRecommendedDidCredentials.
+	kemKey, kemDidKey, err := newKemKey()
+	if err != nil {
+		logger.Error("error creating kem key", "endpoint", "com.atproto.server.createAccount", "error", err)
+		return helpers.ServerError(e, nil)
+	}
+
 	if signupDid == "" {
 		if request.RecoveryKey != "" {
 			if _, err := atcrypto.ParsePublicDIDKey(request.RecoveryKey); err != nil {
@@ -180,7 +189,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 			}
 		}
 
-		did, op, err := s.plcClient.CreateDID(k, request.RecoveryKey, request.Handle)
+		did, op, err := s.plcClient.CreateDID(k, kemDidKey, request.RecoveryKey, request.Handle)
 		if err != nil {
 			logger.Error("error creating operation", "endpoint", "com.atproto.server.createAccount", "error", err)
 			return helpers.ServerError(e, nil)
@@ -206,6 +215,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		EmailVerificationCode: to.StringPtr(fmt.Sprintf("%s-%s", helpers.RandomVarchar(6), helpers.RandomVarchar(6))),
 		Password:              string(hashed),
 		SigningKey:            k.Bytes(),
+		KemKey:                kemKey.Bytes(),
 		Deactivated:           request.Did != nil,
 	}
 

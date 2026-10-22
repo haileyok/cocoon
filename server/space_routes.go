@@ -30,7 +30,8 @@ func (s *Server) addSpaceRoutes() {
 
 	// credentials
 	s.echo.GET("/xrpc/com.atproto.space.getDelegationToken", s.handleSpaceGetDelegationToken, session...)
-	// authenticated by the delegation token and request signature in the handler
+	// unauthenticated: a delegation token and client attestation, when the
+	// space requires them, arrive in the request body
 	s.echo.POST("/xrpc/com.atproto.space.getSpaceCredential", s.handleSpaceGetSpaceCredential)
 	// service auth from the space authority, verified in the handler
 	s.echo.POST("/xrpc/com.atproto.space.notifyCredentialRevoked", s.handleSpaceNotifyCredentialRevoked)

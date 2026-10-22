@@ -18,7 +18,7 @@ const (
 	tSpace     = "at://did:example:space/space/app.bsky.group/test"
 	tUser      = "did:example:alice"
 	tAuthority = "did:example:space"
-	tSpaceHost = tAuthority + "#atproto_space_host"
+	tSpaceHost = tAuthority + "#atproto_pds"
 	tClientID  = "https://app.example.com/client-metadata.json"
 )
 
@@ -32,7 +32,7 @@ func newP256(t *testing.T) *atcrypto.PrivateKeyP256 {
 }
 
 func keyFn(did string) SigningKeyFunc {
-	return func(string, string, bool) (string, error) { return did, nil }
+	return func(string, bool) (string, error) { return did, nil }
 }
 
 func tokenCode(t *testing.T, err error) string {
@@ -44,12 +44,16 @@ func tokenCode(t *testing.T, err error) string {
 	return te.Code
 }
 
-func retype(jwt, typ string) string {
+// withHeader overwrites fields in a token's header, leaving its payload and
+// signature alone.
+func withHeader(jwt string, fields map[string]any) string {
 	parts := strings.Split(jwt, ".")
 	h, _ := base64.RawURLEncoding.DecodeString(parts[0])
 	var m map[string]any
 	_ = json.Unmarshal(h, &m)
-	m["typ"] = typ
+	for k, v := range fields {
+		m[k] = v
+	}
 	b, _ := json.Marshal(m)
 	return base64.RawURLEncoding.EncodeToString(b) + "." + parts[1] + "." + parts[2]
 }
@@ -104,7 +108,7 @@ func TestDelegationToken(t *testing.T) {
 	if _, err := CreateSpaceToken(TokenDelegation, CreateTokenOpts{Iss: tUser, Sub: tSpace}, userKey); err == nil || !strings.Contains(err.Error(), `requires an "aud"`) {
 		t.Fatalf("aud not required: %v", err)
 	}
-	_, err = VerifySpaceToken(TokenDelegation, create(), VerifyTokenOpts{GetSigningKey: keyFn(didKeyOf(t, userKey)), Aud: "did:example:other#atproto_space_host"})
+	_, err = VerifySpaceToken(TokenDelegation, create(), VerifyTokenOpts{GetSigningKey: keyFn(didKeyOf(t, userKey)), Aud: "did:example:other#atproto_pds"})
 	if tokenCode(t, err) != "BadJwtAudience" {
 		t.Fatal(err)
 	}
@@ -119,6 +123,9 @@ func TestDelegationToken(t *testing.T) {
 	_, err = VerifySpaceToken(TokenCredential, create(), VerifyTokenOpts{GetSigningKey: keyFn(didKeyOf(t, userKey))})
 	if tokenCode(t, err) != "BadJwtType" {
 		t.Fatal(err)
+	}
+	if _, err := ParseSpaceToken(TokenDelegation, withHeader(create(), map[string]any{"kid": "#other_key"})); err == nil || !strings.Contains(err.Error(), `wrong token "kid"`) {
+		t.Fatalf("kid not checked: %v", err)
 	}
 }
 
@@ -205,29 +212,40 @@ func TestSpaceCredential(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = ParseSpaceToken(TokenCredential, retype(unbound, TokenSpecs[TokenCredential].Typ))
+		_, err = ParseSpaceToken(TokenCredential, withHeader(unbound, map[string]any{"typ": TokenSpecs[TokenCredential].Typ}))
 		if err == nil || !strings.Contains(err.Error(), `missing token "cnf.kid"`) {
 			t.Fatal(err)
 		}
 	})
-	t.Run("passes iss and kid to the key resolver, honouring a kid override", func(t *testing.T) {
-		for kid, want := range map[string]string{"": "#atproto", "#atproto_space": "#atproto_space"} {
-			var gotIss, gotKid string
-			var gotForce bool
-			_, err := VerifySpaceToken(TokenCredential, mustCreate(nil, kid), VerifyTokenOpts{GetSigningKey: func(iss, kid string, force bool) (string, error) {
-				gotIss, gotKid, gotForce = iss, kid, force
-				return authDid, nil
-			}})
-			if err != nil || gotIss != tAuthority || gotKid != want || gotForce {
-				t.Fatalf("%v %s %s %v", err, gotIss, gotKid, gotForce)
+	t.Run("cannot be minted with a kid other than #atproto", func(t *testing.T) {
+		if _, err := create(nil, "#other_key"); err == nil || !strings.Contains(err.Error(), `"kid" is always "#atproto"`) {
+			t.Fatal(err)
+		}
+	})
+	t.Run("is rejected when its kid is not #atproto", func(t *testing.T) {
+		for _, kid := range []any{"#other_key", "atproto", "#atproto_space", nil} {
+			jwt := withHeader(mustCreate(nil, ""), map[string]any{"kid": kid})
+			if _, err := ParseSpaceToken(TokenCredential, jwt); err == nil || !strings.Contains(err.Error(), `wrong token "kid"`) {
+				t.Fatalf("%v: %v", kid, err)
 			}
+		}
+	})
+	t.Run("passes iss to the key resolver", func(t *testing.T) {
+		var gotIss string
+		var gotForce bool
+		_, err := VerifySpaceToken(TokenCredential, mustCreate(nil, ""), VerifyTokenOpts{GetSigningKey: func(iss string, force bool) (string, error) {
+			gotIss, gotForce = iss, force
+			return authDid, nil
+		}})
+		if err != nil || gotIss != tAuthority || gotForce {
+			t.Fatalf("%v %s %v", err, gotIss, gotForce)
 		}
 	})
 	t.Run("retries with a freshly resolved key when the signing key has rotated", func(t *testing.T) {
 		rotated := newK256(t)
 		jwt, _ := CreateSpaceToken(TokenCredential, CreateTokenOpts{Iss: tAuthority, Sub: tSpace, KeyID: keyID}, rotated)
 		var calls []bool
-		tok, err := VerifySpaceToken(TokenCredential, jwt, VerifyTokenOpts{GetSigningKey: func(iss, kid string, force bool) (string, error) {
+		tok, err := VerifySpaceToken(TokenCredential, jwt, VerifyTokenOpts{GetSigningKey: func(iss string, force bool) (string, error) {
 			calls = append(calls, force)
 			if len(calls) == 1 {
 				return authDid, nil
@@ -241,7 +259,7 @@ func TestSpaceCredential(t *testing.T) {
 	t.Run("does not retry when the resolved key is unchanged", func(t *testing.T) {
 		jwt, _ := CreateSpaceToken(TokenCredential, CreateTokenOpts{Iss: tAuthority, Sub: tSpace, KeyID: keyID}, newK256(t))
 		n := 0
-		_, err := VerifySpaceToken(TokenCredential, jwt, VerifyTokenOpts{GetSigningKey: func(string, string, bool) (string, error) {
+		_, err := VerifySpaceToken(TokenCredential, jwt, VerifyTokenOpts{GetSigningKey: func(string, bool) (string, error) {
 			n++
 			return authDid, nil
 		}})
@@ -292,7 +310,7 @@ func TestMalformedTokens(t *testing.T) {
 			t.Fatalf("%q: %v", jwt, err)
 		}
 	}
-	h := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"ES256K","typ":"atproto-space-credential+jwt"}`))
+	h := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"ES256K","typ":"atproto-space-credential+jwt","kid":"#atproto"}`))
 	p := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"did:example:space"}`))
 	if _, err := ParseSpaceToken(TokenCredential, h+"."+p+".c2ln"); err == nil || !strings.Contains(err.Error(), `missing token "sub"`) {
 		t.Fatal(err)
@@ -335,7 +353,7 @@ func TestTokenResolverErrorsPropagate(t *testing.T) {
 	key := newK256(t)
 	jwt, _ := CreateSpaceToken(TokenDelegation, CreateTokenOpts{Iss: tUser, Sub: tSpace, Aud: tSpaceHost}, key)
 	sentinel := errors.New("no such key")
-	_, err := VerifySpaceToken(TokenDelegation, jwt, VerifyTokenOpts{GetSigningKey: func(string, string, bool) (string, error) { return "", sentinel }})
+	_, err := VerifySpaceToken(TokenDelegation, jwt, VerifyTokenOpts{GetSigningKey: func(string, bool) (string, error) { return "", sentinel }})
 	if !errors.Is(err, sentinel) {
 		t.Fatalf("resolver error lost: %v", err)
 	}
