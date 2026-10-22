@@ -238,6 +238,19 @@ func (st *spaceStore) applyWrites(ref space.Ref, writes []spaceWrite) (*spaceCom
 	if len(writes) == 0 {
 		return nil, nil
 	}
+	// A write to another authority's space creates the repo without checking
+	// that the space exists. The authority's own spaces must already exist: a
+	// write must neither conjure an ungoverned space nor revive a deleted one,
+	// which would end its SpaceDeleted answers and pending deletion notices.
+	if ref.Authority == st.did {
+		sp, err := st.getSpace(ref.String())
+		if err != nil {
+			return nil, err
+		}
+		if sp == nil || sp.DeletedAt != nil {
+			return nil, errSpaceNotFound()
+		}
+	}
 	if err := st.ensureSpace(ref); err != nil {
 		return nil, err
 	}
@@ -380,19 +393,16 @@ func (st *spaceStore) deleteSpace(uri string) error {
 	return st.gcBlobs(blobCids)
 }
 
-// buildSignedCommit signs the repo's current state for one reader. Nil when
-// the repo has never been written to.
-func buildSignedCommit(ref space.Ref, author string, state *models.SpaceRepo, key space.Signer) (*space.SignedCommit, error) {
+// buildCommit is the repo's current commit. Nil when the repo has never been
+// written to.
+func buildCommit(ref space.Ref, repo string, state *models.SpaceRepo) (*space.Commit, error) {
 	if state == nil || state.SetHash == nil || state.Rev == nil {
 		return nil, nil
 	}
-	repo, err := space.RepoCommitFromState(state.SetHash)
+	rc, err := space.RepoCommitFromState(state.SetHash)
 	if err != nil {
 		return nil, err
 	}
-	c, err := repo.Sign(space.CommitCtx{Space: ref.String(), Author: author, Rev: *state.Rev}, key)
-	if err != nil {
-		return nil, err
-	}
+	c := rc.ToCommit(space.CommitCtx{Space: ref.String(), Repo: repo, Rev: *state.Rev})
 	return &c, nil
 }

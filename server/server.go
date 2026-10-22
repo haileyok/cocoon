@@ -736,6 +736,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	go s.backupRoutine()
 	s.startSpaceWorkers()
+	go s.kemKeyBackfillRoutine(ctx)
 	go s.oauthTokenCleanupRoutine(ctx)
 
 	go func() {

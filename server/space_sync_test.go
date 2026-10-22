@@ -1,11 +1,11 @@
 package server
 
 // Ported from packages/pds/tests/space/sync.test.ts (bluesky-social/atproto
-// 5b95b2f2): how a syncing service follows a space. The oplog is the
+// ac0c9f15): how a syncing service follows a space. The oplog is the
 // incremental path (page forward from a cursor, apply each op to a local set
-// hash, check it against the repo's signed commit); listRecords +
-// getLatestCommit (or a getRepo CAR) rebuilds from full state when the oplog
-// no longer reaches back far enough.
+// hash, check it against the repo's commit); listRecords + getLatestCommit (or
+// a getRepo STAR archive) rebuilds from full state when the oplog no longer
+// reaches back far enough.
 
 import (
 	"context"
@@ -15,7 +15,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -23,6 +22,7 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/atproto/atcrypto"
+	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/haileyok/cocoon/identity"
 	"github.com/haileyok/cocoon/models"
@@ -144,15 +144,15 @@ func syncApplyOp(t *testing.T, rc *space.RepoCommit, op syncOp) {
 	rc.ApplyOp(ro)
 }
 
-// syncSignedCommit converts a wire commit object into space.SignedCommit,
-// asserting ver == 1 as the reference's asSignedCommit does.
-func syncSignedCommit(t *testing.T, m map[string]any) space.SignedCommit {
+// syncCommit converts a wire commit object into space.Commit, asserting
+// ver == 1.
+func syncCommit(t *testing.T, m map[string]any) space.Commit {
 	t.Helper()
 	raw, err := json.Marshal(m)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var c space.SignedCommit
+	var c space.Commit
 	if err := json.Unmarshal(raw, &c); err != nil {
 		t.Fatal(err)
 	}
@@ -162,48 +162,12 @@ func syncSignedCommit(t *testing.T, m map[string]any) space.SignedCommit {
 	return c
 }
 
-// syncDidKey returns a repo author's did:key, as the reference derives it
-// from the actor store's keypair: didDocFor(...)'s multibase key.
-func syncDidKey(t *testing.T, n *syncNet, a *actor) string {
-	t.Helper()
-	doc := n.net.dir.get(a.did)
-	if doc == nil || len(doc.VerificationMethods) == 0 {
-		t.Fatalf("no did doc for %s", a.did)
-	}
-	pub, err := atcrypto.ParsePublicMultibase(doc.VerificationMethods[0].PublicKeyMultibase)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pub.DIDKey()
-}
-
-// syncFetchRepoCar fetches a getRepo CAR with the credential, as the
+// syncFetchRepoStar fetches a getRepo archive with the credential, as the
 // reference's cred.fetch does for a raw download.
-func syncFetchRepoCar(t *testing.T, c *spaceCredential, p *spacePDS, params map[string]string) (int, string, []byte) {
+func syncFetchRepoStar(t *testing.T, c *spaceCredential, p *spacePDS, params map[string]string) (int, string, []byte) {
 	t.Helper()
-	v := url.Values{}
-	for k, x := range params {
-		v.Set(k, x)
-	}
-	u := p.url + "/xrpc/com.atproto.space.getRepo"
-	if len(v) > 0 {
-		u += "?" + v.Encode()
-	}
-	req, err := http.NewRequest(http.MethodGet, u, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for k, hv := range c.headers(t, params["repo"]) {
-		req.Header.Set(k, hv)
-	}
-	resp, err := p.net.http.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	ct := resp.Header.Get("Content-Type")
-	return resp.StatusCode, ct, raw
+	res := c.get(t, p, "com.atproto.space.getRepo", params)
+	return res.status, res.header.Get("Content-Type"), res.raw
 }
 
 // syncWriterDids reads the writer set as stored by the authority, as the
@@ -248,7 +212,7 @@ func syncNotifyBody(sp, repo, repoRev string, hash []byte) map[string]any {
 	if hash == nil {
 		hash = make([]byte, 32)
 	}
-	return map[string]any{"space": sp, "repo": repo, "repoRev": repoRev, "hash": space.LexBytes(hash)}
+	return map[string]any{"space": sp, "repo": repo, "repoRev": repoRev, "data": space.LexBytes(hash)}
 }
 
 // syncLtHashDigest is the hash a repo's set hash digests to, as listRepos
@@ -441,9 +405,9 @@ func TestSpaceSyncIncrementalCatchUp(t *testing.T) {
 	r := newSyncNet(t)
 	alice, dan, bob := r.alice, r.dan, r.bob
 
-	t.Run("replays the oplog to the repo signed commit", func(t *testing.T) {
+	t.Run("replays the oplog to the repo commit", func(t *testing.T) {
 		// The whole point of the oplog: a syncer that applies every op ends up
-		// with a set hash matching what the author signed.
+		// with a set hash matching the author's commit.
 		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
 		mustOK(t, doWrite(dan, sp, writeOpts{rkey: "one", text: "one"}))
 		mustOK(t, doPut(dan, sp, writeOpts{rkey: "two", text: "two"}))
@@ -455,6 +419,9 @@ func TestSpaceSyncIncrementalCatchUp(t *testing.T) {
 		commit, ok := res.body["commit"].(map[string]any)
 		if !ok {
 			t.Fatalf("no commit: %s", res.raw)
+		}
+		if !cred.verifyCommit(t, syncCommit(t, commit), sp, dan.did) {
+			t.Fatal("commit does not verify against its MAC")
 		}
 
 		local := space.NewRepoCommit()
@@ -468,8 +435,8 @@ func TestSpaceSyncIncrementalCatchUp(t *testing.T) {
 			}
 			syncApplyOp(t, local, op)
 		}
-		if !local.Matches(syncSignedCommit(t, commit)) {
-			t.Fatal("replayed oplog does not match the signed commit")
+		if !local.Matches(syncCommit(t, commit)) {
+			t.Fatal("replayed oplog does not match the commit")
 		}
 	})
 
@@ -499,7 +466,7 @@ func TestSpaceSyncIncrementalCatchUp(t *testing.T) {
 			}
 			syncApplyOp(t, local, op)
 		}
-		if local.Matches(syncSignedCommit(t, commit)) {
+		if local.Matches(syncCommit(t, commit)) {
 			t.Fatal("missed op still matched the commit")
 		}
 	})
@@ -553,7 +520,7 @@ func TestSpaceSyncIncrementalCatchUp(t *testing.T) {
 		if !ok {
 			t.Fatalf("no commit: %s", incremental.raw)
 		}
-		if applied.Matches(syncSignedCommit(t, commit)) {
+		if applied.Matches(syncCommit(t, commit)) {
 			t.Fatal("incremental diff matched the commit despite the pruned oplog")
 		}
 
@@ -588,7 +555,10 @@ func TestSpaceSyncIncrementalCatchUp(t *testing.T) {
 		if !ok {
 			t.Fatalf("no commit: %s", latest.raw)
 		}
-		if !space.RepoCommitFromRecords(refs).Matches(syncSignedCommit(t, latestCommit)) {
+		if !cred.verifyCommit(t, syncCommit(t, latestCommit), sp, bob.did) {
+			t.Fatal("latest commit does not verify against its MAC")
+		}
+		if !space.RepoCommitFromRecords(refs).Matches(syncCommit(t, latestCommit)) {
 			t.Fatal("rebuild from listRecords does not match the latest commit")
 		}
 	})
@@ -598,36 +568,33 @@ func TestSpaceSyncGetRepo(t *testing.T) {
 	r := newSyncNet(t)
 	alice, bob, carol := r.alice, r.bob, r.carol
 
-	t.Run("serves a verifiable CAR for full-state recovery", func(t *testing.T) {
+	t.Run("serves a verifiable STAR archive for full-state recovery", func(t *testing.T) {
 		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, carol}})
 		for _, collection := range []string{testCollection, testCollectionAlt} {
 			for i := 0; i < 2; i++ {
-				mustOK(t, doWrite(bob, sp, writeOpts{collection: collection, rkey: fmt.Sprintf("car-%d", i), text: fmt.Sprintf("car %d", i)}))
+				mustOK(t, doWrite(bob, sp, writeOpts{collection: collection, rkey: fmt.Sprintf("star-%d", i), text: fmt.Sprintf("star %d", i)}))
 			}
 		}
 
 		// Carol syncs bob's repo in full, as a syncing service would.
 		cred := credentialFor(t, carol, r.pds1, sp)
-		status, ct, car := syncFetchRepoCar(t, cred, r.pds2, map[string]string{"space": sp, "repo": bob.did})
+		status, ct, star := syncFetchRepoStar(t, cred, r.pds2, map[string]string{"space": sp, "repo": bob.did})
 		if status != 200 {
-			t.Fatalf("status %d: %s", status, car)
+			t.Fatalf("status %d: %s", status, star)
 		}
-		if !strings.Contains(ct, "application/vnd.ipld.car") {
+		if !strings.Contains(ct, "application/octet-stream") {
 			t.Fatalf("content-type %s", ct)
 		}
 
-		didKey := syncDidKey(t, r, bob)
 		state := repoState(t, bob, sp)
-		recovered, err := space.VerifyRepoCarFull(strings.NewReader(string(car)), space.VerifyRepoParams{Space: sp, Author: bob.did, DidKey: didKey})
+		secret, mac := cred.lastMacParams(t)
+		recovered, err := space.VerifyRepoStarFull(strings.NewReader(string(star)), space.VerifyRepoParams{Space: sp, Repo: bob.did, SharedSecret: secret, Mac: mac})
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		if len(recovered.Records) != 4 {
 			t.Fatalf("recovered %d records, want 4", len(recovered.Records))
-		}
-		if !recovered.Repo.Matches(recovered.Commit) {
-			t.Fatal("recovered repo does not match its commit")
 		}
 		if recovered.Commit.Rev != *state.Rev {
 			t.Fatalf("commit rev %s, want %s", recovered.Commit.Rev, *state.Rev)
@@ -636,7 +603,11 @@ func TestSpaceSyncGetRepo(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !recovered.Repo.SetHash.Equal(stored.SetHash) {
+		var refs []space.RecordRef
+		for _, rec := range recovered.Records {
+			refs = append(refs, space.RecordRef{Collection: rec.Collection, Rkey: rec.Rkey, Cid: rec.Cid})
+		}
+		if !space.RepoCommitFromRecords(refs).SetHash.Equal(stored.SetHash) {
 			t.Fatal("recovered set hash diverged from the stored set hash")
 		}
 
@@ -649,48 +620,17 @@ func TestSpaceSyncGetRepo(t *testing.T) {
 			}
 		}
 		sort.Strings(texts)
-		if strings.Join(texts, ",") != "car 0,car 1" {
+		if strings.Join(texts, ",") != "star 0,star 1" {
 			t.Fatalf("texts %v", texts)
 		}
 	})
 
-	t.Run("serves an index-only CAR with excludeValues", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, carol}})
-		for i := 0; i < 2; i++ {
-			mustOK(t, doWrite(bob, sp, writeOpts{rkey: fmt.Sprintf("idx-%d", i), text: fmt.Sprintf("idx %d", i)}))
-		}
-
-		cred := credentialFor(t, carol, r.pds1, sp)
-		status, _, car := syncFetchRepoCar(t, cred, r.pds2, map[string]string{"space": sp, "repo": bob.did, "excludeValues": "true"})
-		if status != 200 {
-			t.Fatalf("status %d: %s", status, car)
-		}
-
-		// The set hash folds from the index alone, so it still matches the
-		// commit with no record blocks present — which is what makes an
-		// index-only sync verifiable.
-		didKey := syncDidKey(t, r, bob)
-		recovered, err := space.VerifyRepoCarFull(strings.NewReader(string(car)), space.VerifyRepoParams{Space: sp, Author: bob.did, DidKey: didKey, IndexOnly: true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(recovered.Records) != 0 {
-			t.Fatalf("index-only CAR carried %d record blocks", len(recovered.Records))
-		}
-		if len(recovered.Index) != 2 {
-			t.Fatalf("index has %d entries, want 2", len(recovered.Index))
-		}
-		if !recovered.Repo.Matches(recovered.Commit) {
-			t.Fatal("index-only repo does not match its commit")
-		}
-	})
-
-	t.Run("refuses a CAR without a credential for that space", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{skey: "car-auth", members: []*actor{bob}})
-		other := createSpace(t, alice, spaceOpts{skey: "car-auth-other", members: []*actor{carol}})
+	t.Run("refuses a repo without a credential for that space", func(t *testing.T) {
+		sp := createSpace(t, alice, spaceOpts{skey: "star-auth", members: []*actor{bob}})
+		other := createSpace(t, alice, spaceOpts{skey: "star-auth-other", members: []*actor{carol}})
 
 		wrongCred := credentialFor(t, carol, r.pds1, other)
-		status, _, _ := syncFetchRepoCar(t, wrongCred, r.pds2, map[string]string{"space": sp, "repo": bob.did})
+		status, _, _ := syncFetchRepoStar(t, wrongCred, r.pds2, map[string]string{"space": sp, "repo": bob.did})
 		if status < 400 {
 			t.Fatalf("wrong-space credential accepted: %d", status)
 		}
@@ -769,12 +709,12 @@ func TestSpaceSyncWriterSet(t *testing.T) {
 			t.Fatalf("repoRev %v, want %s", entry["repoRev"], *state.Rev)
 		}
 		want := syncLtHashDigest(t, state.SetHash)
-		got, err := lexBytesOf(entry["hash"])
+		got, err := lexBytesOf(entry["data"])
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !bytesEqual(got, want) {
-			t.Fatalf("hash %v, want %v", entry["hash"], want)
+			t.Fatalf("data %v, want %v", entry["data"], want)
 		}
 	})
 
@@ -969,29 +909,28 @@ func TestSpaceSyncCatchUp(t *testing.T) {
 		}
 	})
 
-	t.Run("resolves a dedicated space host and falls back only when it is absent", func(t *testing.T) {
-		host := r.net.newMockService("atproto_space_host", nil)
+	t.Run("resolves a space host through the authority's #atproto_pds entry", func(t *testing.T) {
+		host := r.net.newMockService("atproto_space_syncer", nil)
 		s := bob.pds.s
 		resolve := func(service string) (string, bool) {
 			return s.resolveServiceEndpoint(context.Background(), service)
 		}
 		if got, ok := resolve(host.serviceRef()); !ok || got != host.url {
-			t.Fatalf("dedicated host resolved %q ok=%v, want %s", got, ok, host.url)
+			t.Fatalf("service resolved %q ok=%v, want %s", got, ok, host.url)
 		}
 		if got, ok := resolve(space.SpaceHostAud(alice.did)); !ok || got != alice.pds.url {
-			t.Fatalf("fallback resolved %q ok=%v, want %s", got, ok, alice.pds.url)
+			t.Fatalf("space host resolved %q ok=%v, want %s", got, ok, alice.pds.url)
 		}
-		// Publish an invalid dedicated space host: only then does resolution
-		// give up, as the reference's mocked did doc shows.
+		// A dedicated #atproto_space_host entry is ignored now.
 		doc := r.net.dir.get(alice.did)
 		withHost := *doc
 		withHost.Service = append(append([]identity.DidDocService{}, doc.Service...), identity.DidDocService{
-			Id: "#atproto_space_host", Type: "AtprotoSpaceHost", ServiceEndpoint: "invalid",
+			Id: "#atproto_space_host", Type: "AtprotoSpaceHost", ServiceEndpoint: "https://elsewhere.example",
 		})
 		r.net.dir.put(&withHost)
 		defer r.net.dir.put(doc)
-		if _, ok := resolve(space.SpaceHostAud(alice.did)); ok {
-			t.Fatal("resolved a dedicated space host that is invalid")
+		if got, ok := resolve(space.SpaceHostAud(alice.did)); !ok || got != alice.pds.url {
+			t.Fatalf("space host resolved %q ok=%v, want %s", got, ok, alice.pds.url)
 		}
 	})
 
@@ -1053,12 +992,12 @@ func TestSpaceSyncCatchUp(t *testing.T) {
 			t.Fatalf("repoRev %v, want %s", repos[0]["repoRev"], *state.Rev)
 		}
 		want := syncLtHashDigest(t, state.SetHash)
-		got, err := lexBytesOf(repos[0]["hash"])
+		got, err := lexBytesOf(repos[0]["data"])
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !bytesEqual(got, want) {
-			t.Fatalf("hash %v, want %v", repos[0]["hash"], want)
+			t.Fatalf("hash %v, want %v", repos[0]["data"], want)
 		}
 		// The retry is gone, so another pass is a no-op. The worker is stopped,
 		// so the pass runs without contending for it.
@@ -1131,12 +1070,12 @@ func TestSpaceSyncNotifyWrite(t *testing.T) {
 		if repos[0]["repoRev"] != newer.String() {
 			t.Fatalf("repoRev %v, want %s", repos[0]["repoRev"], newer)
 		}
-		got, err := lexBytesOf(repos[0]["hash"])
+		got, err := lexBytesOf(repos[0]["data"])
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !bytesEqual(got, h) {
-			t.Fatalf("hash %v, want %v", repos[0]["hash"], h)
+			t.Fatalf("hash %v, want %v", repos[0]["data"], h)
 		}
 	})
 
@@ -1317,4 +1256,184 @@ func sameJSON(t *testing.T, a, b []byte) bool {
 	ab, _ := json.Marshal(av)
 	bb, _ := json.Marshal(bv)
 	return string(ab) == string(bb)
+}
+
+// Ported from describe('MACs') in the reference's sync.test.ts.
+func TestSpaceSyncMacs(t *testing.T) {
+	r := newSyncNet(t)
+	alice, bob, carol := r.alice, r.bob, r.carol
+	latest := func(sp string, a *actor) map[string]string {
+		return map[string]string{"space": sp, "repo": a.did}
+	}
+
+	t.Run("publishes a KEM key for each account", func(t *testing.T) {
+		repo, err := bob.pds.s.getRepoActorByDid(context.Background(), bob.did)
+		if err != nil {
+			t.Fatal(err)
+		}
+		kem, err := accountKemDIDKey(repo.Repo)
+		if err != nil || kem == "" {
+			t.Fatalf("kem key %q: %v", kem, err)
+		}
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		cred := credentialFor(t, bob, r.pds1, sp)
+		if got := cred.kemKey(t, bob.did); got != kem {
+			t.Fatalf("published %s, want %s", got, kem)
+		}
+	})
+
+	t.Run("macs a record served to a syncer", func(t *testing.T) {
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, carol}})
+		mustOK(t, doWrite(bob, sp, writeOpts{rkey: "maced"}))
+
+		cred := credentialFor(t, carol, r.pds1, sp)
+		res := mustOK(t, cred.get(t, r.pds2, "com.atproto.space.getRecord", map[string]string{"space": sp, "repo": bob.did, "collection": testCollection, "rkey": "maced"}))
+		if cred.lastMac.typ != space.RecordMacType {
+			t.Fatalf("mac type %s", cred.lastMac.typ)
+		}
+		secret, mac := cred.lastMacParams(t)
+		uri := sp + "/" + bob.did + "/" + testCollection + "/maced"
+		value, _ := res.body["value"].(map[string]any)
+		rec, err := atdataFromJSON(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		params := space.VerifyRecordParams{URI: uri, SharedSecret: secret, Mac: mac}
+		if !space.VerifyRecord(res.str("uri"), res.str("cid"), rec, params) {
+			t.Fatal("record does not verify against its MAC")
+		}
+		// The MAC is bound to this one record.
+		params.URI = uri + "x"
+		if space.VerifyRecord(res.str("uri"), res.str("cid"), rec, params) {
+			t.Fatal("record verified as another")
+		}
+	})
+
+	t.Run("omits the MAC from an oplog page without a commit", func(t *testing.T) {
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		mustOK(t, doWrite(bob, sp, writeOpts{rkey: "page-0"}))
+		mustOK(t, doWrite(bob, sp, writeOpts{rkey: "page-1"}))
+
+		cred := credentialFor(t, bob, r.pds1, sp)
+		page := mustOK(t, cred.get(t, r.pds2, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": bob.did, "limit": "1"}))
+		if page.body["commit"] != nil {
+			t.Fatalf("commit on a partial page: %s", page.raw)
+		}
+		if len(cred.lastMac.header) != 0 {
+			t.Fatalf("mac on a page without a commit: %v", cred.lastMac.header)
+		}
+	})
+
+	t.Run("requires a MAC request with a space credential", func(t *testing.T) {
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		mustOK(t, doWrite(bob, sp, writeOpts{}))
+		cred := credentialFor(t, bob, r.pds1, sp)
+		sig := cred.headers(t, bob.did)
+		with := func(want string) map[string]string {
+			h := map[string]string{}
+			for k, v := range sig {
+				h[k] = v
+			}
+			if want != "" {
+				h[space.HeaderWantMac] = want
+			}
+			return h
+		}
+		for _, nsid := range []string{"com.atproto.space.getLatestCommit", "com.atproto.space.getRepo", "com.atproto.space.listRepoOps"} {
+			expectErr(t, r.pds2.get(nsid, latest(sp, bob), with("")), 400, "BadSpaceMac")
+		}
+		expectErr(t, r.pds2.get("com.atproto.space.getRecord", map[string]string{"space": sp, "repo": bob.did, "collection": testCollection, "rkey": "x"}, with("")), 400, "BadSpaceMac")
+
+		enc, err := space.Encapsulate(cred.kemKey(t, bob.did))
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A record MAC type on a method that returns a commit.
+		expectErr(t, r.pds2.get("com.atproto.space.getLatestCommit", latest(sp, bob), with(space.FormatWantMacHeader(space.RecordMacType, enc.KeyShare))), 400, "BadSpaceMac")
+		expectErr(t, r.pds2.get("com.atproto.space.getLatestCommit", latest(sp, bob), with(space.FormatWantMacHeader(space.CommitMacType, "did:key:nope"))), 400, "BadSpaceMac")
+		expectErr(t, r.pds2.get("com.atproto.space.getLatestCommit", latest(sp, bob), with(`type="atproto-space-repo", ver=2, key_share="`+enc.KeyShare+`"`)), 400, "BadSpaceMac")
+		// Even a page that turns out to have no commit.
+		expectErr(t, r.pds2.get("com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": bob.did, "limit": "1", "since": nextTID("")}, with("")), 400, "BadSpaceMac")
+		// Reads that carry no MAC don't need one.
+		mustOK(t, r.pds2.get("com.atproto.space.listRecords", latest(sp, bob), with("")))
+	})
+
+	t.Run("macs an account its own data only when asked", func(t *testing.T) {
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		mustOK(t, doWrite(bob, sp, writeOpts{}))
+
+		unasked := mustOK(t, bob.get("com.atproto.space.getLatestCommit", latest(sp, bob)))
+		if unasked.header.Get(space.HeaderMac) != "" {
+			t.Fatal("mac without a request")
+		}
+		if !strings.Contains(strings.ToLower(strings.Join(unasked.header.Values("Vary"), ",")), "atproto-space-want-mac") {
+			t.Fatalf("vary %v", unasked.header.Values("Vary"))
+		}
+
+		cred := credentialFor(t, bob, r.pds1, sp)
+		enc, err := space.Encapsulate(cred.kemKey(t, bob.did))
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := bob.auth()
+		h[space.HeaderWantMac] = space.FormatWantMacHeader(space.CommitMacType, enc.KeyShare)
+		asked := mustOK(t, r.pds2.get("com.atproto.space.getLatestCommit", latest(sp, bob), h))
+		if !strings.Contains(strings.ToLower(strings.Join(asked.header.Values("Access-Control-Expose-Headers"), ",")), "atproto-space-mac") {
+			t.Fatalf("expose headers %v", asked.header.Values("Access-Control-Expose-Headers"))
+		}
+		mac, err := space.ParseMacHeader(asked.header.Values(space.HeaderMac), space.CommitMacType)
+		if err != nil {
+			t.Fatal(err)
+		}
+		commit := syncCommit(t, asked.body["commit"].(map[string]any))
+		if !space.VerifyCommit(commit, space.VerifyCommitParams{Space: sp, Repo: bob.did, SharedSecret: enc.SharedSecret, Mac: mac}) {
+			t.Fatal("commit does not verify against its MAC")
+		}
+	})
+
+	t.Run("retries with a fresh key share after the KEM key rotates", func(t *testing.T) {
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, carol}})
+		mustOK(t, doWrite(bob, sp, writeOpts{}))
+		cred := credentialFor(t, carol, r.pds1, sp)
+		stale := cred.kemKey(t, bob.did)
+
+		// The repo host rotates bob's KEM key; the syncer still holds the old
+		// one, so its MAC fails until it refreshes the DID document.
+		newKem, err := atcrypto.GeneratePrivateKeyP256()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := bob.pds.s.db.Exec(context.Background(), "UPDATE repos SET kem_key = ? WHERE did = ?", nil, newKem.Bytes(), bob.did).Error; err != nil {
+			t.Fatal(err)
+		}
+		enc, err := space.Encapsulate(stale)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := cred.headers(t, bob.did)
+		h[space.HeaderWantMac] = space.FormatWantMacHeader(space.CommitMacType, enc.KeyShare)
+		res := mustOK(t, r.pds2.get("com.atproto.space.getLatestCommit", latest(sp, bob), h))
+		mac, err := space.ParseMacHeader(res.header.Values(space.HeaderMac), space.CommitMacType)
+		if err != nil {
+			t.Fatal(err)
+		}
+		commit := syncCommit(t, res.body["commit"].(map[string]any))
+		if space.VerifyCommit(commit, space.VerifyCommitParams{Space: sp, Repo: bob.did, SharedSecret: enc.SharedSecret, Mac: mac}) {
+			t.Fatal("verified under the stale KEM key")
+		}
+
+		r.net.dir.put(withKemKey(didDocFor(bob.did, bob.key, bob.pds.url), newKem))
+		res = mustOK(t, cred.get(t, r.pds2, "com.atproto.space.getLatestCommit", latest(sp, bob)))
+		if !cred.verifyCommit(t, syncCommit(t, res.body["commit"].(map[string]any)), sp, bob.did) {
+			t.Fatal("does not verify after refreshing the KEM key")
+		}
+	})
+}
+
+func atdataFromJSON(v map[string]any) (map[string]any, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return atdata.UnmarshalJSON(raw)
 }

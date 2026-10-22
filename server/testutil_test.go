@@ -158,6 +158,7 @@ type testAccount struct {
 	Email      string
 	Password   string
 	SigningKey []byte // raw secp256k1 (k256) private key bytes
+	KemKey     []byte // raw P-256 private key bytes of the #atproto_kem key
 }
 
 // createTestAccount inserts a Repo and Actor with a known password and a fresh
@@ -169,6 +170,11 @@ func (s *Server) createTestAccount(t *testing.T, handle string) *testAccount {
 	k, err := atcrypto.GeneratePrivateKeyK256()
 	if err != nil {
 		t.Fatalf("generate k256 key: %v", err)
+	}
+
+	kem, err := atcrypto.GeneratePrivateKeyP256()
+	if err != nil {
+		t.Fatalf("generate p256 key: %v", err)
 	}
 
 	did := "did:plc:" + strings.ToLower(helpers.RandomVarchar(24))
@@ -188,6 +194,7 @@ func (s *Server) createTestAccount(t *testing.T, handle string) *testAccount {
 		Email:         handle + "@test.invalid",
 		Password:      string(hashed),
 		SigningKey:    k.Bytes(),
+		KemKey:        kem.Bytes(),
 		TwoFactorType: models.TwoFactorTypeNone,
 	}
 	if err := s.db.Create(ctx, &repo, nil).Error; err != nil {
@@ -205,6 +212,7 @@ func (s *Server) createTestAccount(t *testing.T, handle string) *testAccount {
 		Email:      repo.Email,
 		Password:   password,
 		SigningKey: k.Bytes(),
+		KemKey:     kem.Bytes(),
 	}
 }
 

@@ -1,7 +1,7 @@
 package server
 
 // A multi-PDS test network for Spaces, the Go counterpart of the reference's
-// packages/pds/tests/_space.ts (bluesky-social/atproto 5b95b2f2): several PDSes
+// packages/pds/tests/_space.ts (bluesky-social/atproto ac0c9f15): several PDSes
 // sharing one in-memory DID directory, accounts with password sessions, and
 // helpers for the space write and credential flows.
 
@@ -161,6 +161,7 @@ type actor struct {
 	did    string
 	pds    *spacePDS
 	key    *atcrypto.PrivateKeyK256
+	kem    *atcrypto.PrivateKeyP256
 	access string
 	// oauth, when set, makes the actor's requests over a DPoP OAuth session.
 	oauth *dpopSession
@@ -185,6 +186,15 @@ func didDocFor(did string, key atcrypto.PrivateKey, endpoint string) *identity.D
 	return doc
 }
 
+// withKemKey publishes an #atproto_kem key in a DID document.
+func withKemKey(doc *identity.DidDoc, kem *atcrypto.PrivateKeyP256) *identity.DidDoc {
+	pub, _ := kem.PublicKey()
+	doc.VerificationMethods = append(doc.VerificationMethods, identity.DidDocVerificationMethod{
+		Id: doc.Id + "#atproto_kem", Type: "Multikey", Controller: doc.Id, PublicKeyMultibase: pub.Multibase(),
+	})
+	return doc
+}
+
 func (p *spacePDS) createActor(name string) *actor {
 	t := p.net.t
 	t.Helper()
@@ -193,7 +203,11 @@ func (p *spacePDS) createActor(name string) *actor {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p.net.dir.put(didDocFor(acct.Did, key, p.url))
+	kem, err := atcrypto.ParsePrivateBytesP256(acct.KemKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.net.dir.put(withKemKey(didDocFor(acct.Did, key, p.url), kem))
 	if _, _, err := p.s.initializeGenesisRepo(context.Background(), acct.Did, acct.SigningKey); err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +219,7 @@ func (p *spacePDS) createActor(name string) *actor {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &actor{name: name, did: acct.Did, pds: p, key: key, access: sess.AccessToken}
+	return &actor{name: name, did: acct.Did, pds: p, key: key, kem: kem, access: sess.AccessToken}
 }
 
 // xres is an XRPC response.

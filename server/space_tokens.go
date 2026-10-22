@@ -20,7 +20,7 @@ import (
 )
 
 // Space token, request signature and service auth verification, following
-// the reference PDS's auth-verifier.ts at bluesky-social/atproto 5b95b2f2.
+// the reference PDS's auth-verifier.ts at bluesky-social/atproto ac0c9f15.
 
 // fetchDidDoc resolves a DID document, bypassing any cache when fresh is set.
 func (s *Server) fetchDidDoc(ctx context.Context, did string, fresh bool) (*identity.DidDoc, error) {
@@ -60,24 +60,17 @@ func didDocService(doc *identity.DidDoc, id string) (string, bool) {
 	return "", false
 }
 
-// resolveSpaceKey resolves the key a space token's issuer signs with. A token
-// names the account key (#atproto) or a dedicated space key (#atproto_space).
+// resolveSpaceKey resolves the key a space token's issuer signs with: its
+// #atproto key, like any other account's.
 func (s *Server) resolveSpaceKey(ctx context.Context) space.SigningKeyFunc {
-	return func(iss, kid string, fresh bool) (string, error) {
-		if kid == "" {
-			return "", errAuthRequired("BadJwt", `missing token "kid"`)
-		}
-		keyID := strings.TrimPrefix(kid, "#")
-		if keyID != "atproto" && keyID != "atproto_space" {
-			return "", errAuthRequired("BadJwt", "unsupported space token \"kid\": %s", kid)
-		}
+	return func(iss string, fresh bool) (string, error) {
 		doc, err := s.fetchDidDoc(ctx, iss, fresh)
 		if err != nil {
 			return "", errAuthRequired("BadJwtIss", "could not resolve DID: %s", iss)
 		}
-		didKey, ok := didDocKey(doc, keyID)
+		didKey, ok := didDocKey(doc, "atproto")
 		if !ok {
-			return "", errAuthRequired("BadJwtIss", "missing or bad key (#%s) in did doc: %s", keyID, iss)
+			return "", errAuthRequired("BadJwtIss", "missing or bad key (#atproto) in did doc: %s", iss)
 		}
 		return didKey, nil
 	}
@@ -100,25 +93,13 @@ func (s *Server) verifySpaceToken(ctx context.Context, typ space.TokenType, jwt 
 	return tok, nil
 }
 
-// verifyRequestSignature checks a space request signature. keyID is a
-// credential's bound key; empty for a delegation exchange. It returns the
-// did:key that signed.
-func verifyRequestSignature(e echo.Context, keyID string) (string, error) {
-	h := e.Request().Header
-	names := []string{"Authorization"}
-	if keyID != "" {
-		names = append(names, space.HeaderSpaceAudience)
+// verifyRequestSignature checks the signature on a request presenting a
+// space credential, by the credential's bound key.
+func verifyRequestSignature(e echo.Context, keyID string) error {
+	if err := space.VerifyCredentialSig(e.Request().Header, keyID); err != nil {
+		return errAuthRequired("BadSpaceSignature", "%s", err.Error())
 	}
-	for _, n := range names {
-		if len(h.Values(n)) != 1 {
-			return "", errAuthRequired("BadSpaceSignature", "request requires exactly one %q field", strings.ToLower(n))
-		}
-	}
-	did, err := space.VerifySpaceSignature(h, keyID)
-	if err != nil {
-		return "", errAuthRequired("BadSpaceSignature", "%s", err.Error())
-	}
-	return did, nil
+	return nil
 }
 
 // authorizationToken splits an Authorization header into scheme and token.
@@ -143,7 +124,7 @@ func (s *Server) verifySpaceCredentialRequest(e echo.Context) (*spaceCredentialA
 	if err != nil {
 		return nil, err
 	}
-	if !strings.EqualFold(scheme, spaceCredentialScheme) || jwt == "" {
+	if !strings.EqualFold(scheme, space.CredentialScheme) || jwt == "" {
 		return nil, errAuthRequired("MissingJwt", "missing space credential")
 	}
 	tok, err := s.verifySpaceToken(ctx, space.TokenCredential, jwt)
@@ -161,7 +142,7 @@ func (s *Server) verifySpaceCredentialRequest(e echo.Context) (*spaceCredentialA
 	if _, err := syntax.ParseDID(audience); err != nil {
 		return nil, errAuthRequired("BadSpaceSignature", "missing or invalid space audience DID")
 	}
-	if _, err := verifyRequestSignature(e, tok.Payload.Cnf.Kid); err != nil {
+	if err := verifyRequestSignature(e, tok.Payload.Cnf.Kid); err != nil {
 		return nil, err
 	}
 	revoked, err := s.isSpaceCredentialRevoked(ctx, ref.String(), tok.Payload.Jti)
@@ -177,48 +158,46 @@ func (s *Server) verifySpaceCredentialRequest(e echo.Context) (*spaceCredentialA
 type delegationAuth struct {
 	userDid string
 	space   string
-	keyID   string
 }
 
-// verifyDelegationRequest verifies a delegation token exchange: the token,
-// the signature supplying the credential's key binding, and single use.
-func (s *Server) verifyDelegationRequest(e echo.Context) (*delegationAuth, error) {
-	ctx := e.Request().Context()
-	scheme, jwt, err := authorizationToken(e)
-	if err != nil {
-		return nil, err
+// verifyDelegationToken verifies a delegation token presented in a
+// getSpaceCredential request body: the token, its audience, and single use.
+// The token arrives in the body rather than as the request's authorization,
+// so a bad one is an invalid request (InvalidDelegationToken), not an auth
+// failure.
+func (s *Server) verifyDelegationToken(ctx context.Context, jwt string) (*delegationAuth, error) {
+	d, err := func() (*delegationAuth, error) {
+		tok, err := s.verifySpaceToken(ctx, space.TokenDelegation, jwt)
+		if err != nil {
+			return nil, err
+		}
+		ref, err := space.ParseRef(tok.Payload.Sub)
+		if err != nil {
+			return nil, errAuthRequired("BadJwtSub", "space token subject is not a space URI: %s", tok.Payload.Sub)
+		}
+		// This host answers for many authorities, so the audience is derived
+		// from the subject: a token minted for one authority can't be used at
+		// another.
+		if tok.Payload.Aud != ref.HostAud() {
+			return nil, errAuthRequired("BadJwtAudience", "delegation token audience does not match the space authority")
+		}
+		if _, err := syntax.ParseDID(tok.Payload.Iss); err != nil {
+			return nil, errAuthRequired("BadJwtIss", "delegation token issuer is not a DID")
+		}
+		unique, err := s.useSpaceTokenOnce(ctx, "delegation", tok.Payload.Iss, tok.Payload.Jti, tok.Payload.Exp)
+		if err != nil {
+			return nil, err
+		}
+		if !unique {
+			return nil, errAuthRequired("JwtReplayed", "delegation token has already been used")
+		}
+		return &delegationAuth{userDid: tok.Payload.Iss, space: ref.String()}, nil
+	}()
+	var xe *xrpcError
+	if errors.As(err, &xe) && xe.Status == 401 {
+		return nil, errInvalid("InvalidDelegationToken", "%s", xe.Message)
 	}
-	if !strings.EqualFold(scheme, "Bearer") || jwt == "" {
-		return nil, errAuthRequired("MissingJwt", "missing delegation token")
-	}
-	tok, err := s.verifySpaceToken(ctx, space.TokenDelegation, jwt)
-	if err != nil {
-		return nil, err
-	}
-	ref, err := space.ParseRef(tok.Payload.Sub)
-	if err != nil {
-		return nil, errAuthRequired("BadJwtSub", "space token subject is not a space URI: %s", tok.Payload.Sub)
-	}
-	// This host answers for many authorities, so the audience is derived from
-	// the subject: a token minted for one authority can't be used at another.
-	if tok.Payload.Aud != ref.HostAud() {
-		return nil, errAuthRequired("BadJwtAudience", "delegation token audience does not match the space authority")
-	}
-	if _, err := syntax.ParseDID(tok.Payload.Iss); err != nil {
-		return nil, errAuthRequired("BadJwtIss", "delegation token issuer is not a DID")
-	}
-	keyID, err := verifyRequestSignature(e, "")
-	if err != nil {
-		return nil, err
-	}
-	unique, err := s.useSpaceTokenOnce(ctx, "delegation", tok.Payload.Iss, tok.Payload.Jti, tok.Payload.Exp)
-	if err != nil {
-		return nil, err
-	}
-	if !unique {
-		return nil, errAuthRequired("JwtReplayed", "delegation token has already been used")
-	}
-	return &delegationAuth{userDid: tok.Payload.Iss, space: ref.String(), keyID: keyID}, nil
+	return d, err
 }
 
 // useSpaceTokenOnce records a single-use token's jti until it expires,
@@ -350,24 +329,13 @@ func (s *Server) verifyServiceAuth(e echo.Context, lxm string) (*serviceAuthClai
 
 // resolveServiceEndpoint resolves a service identifier (a DID with an
 // optional fragment) to its endpoint. A bare DID names an account, served by
-// its PDS. A #atproto_space_host target falls back to the PDS when the DID
-// publishes no dedicated space host.
+// its PDS. A space authority is reached at its PDS like any other account.
 func (s *Server) resolveServiceEndpoint(ctx context.Context, service string) (string, bool) {
 	did, frag, _ := strings.Cut(service, "#")
 	doc, err := s.fetchDidDoc(ctx, did, false)
 	if err != nil {
 		s.logger.Warn("could not resolve service did", "service", service, "err", err)
 		return "", false
-	}
-	if frag == "atproto_space_host" {
-		// Fall back to the PDS only when no dedicated host is published; a
-		// published but invalid one resolves to nothing.
-		for _, svc := range doc.Service {
-			if svc.Id == "#atproto_space_host" || svc.Id == service {
-				return didDocService(doc, "atproto_space_host")
-			}
-		}
-		return didDocService(doc, "atproto_pds")
 	}
 	if frag != "" {
 		return didDocService(doc, frag)

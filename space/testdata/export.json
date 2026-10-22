@@ -1,41 +1,38 @@
 {
-  "generatedBy": "gen-export.mjs: @atproto/space serializeRepo + RepoCommit.sign at the commit in SOURCE",
+  "generatedBy": "gen-vectors.mjs: @atproto/space serializeRepo at 0.0.0-spaces-alpha-20261022141228",
   "did": "did:plc:vlpdsspacesrefexport2345",
   "space": "at://did:plc:vlpdsspacesrefexport2345/space/com.example.group/refexport",
   "rev": "3mvzvh4fs222b",
-  "didKey": "did:key:zQ3shnbD7khZtpvbSg43frzdhKMxzGdouT3xtf9qMHk4h6pwL",
-  "privateKeyHex": "706db12b4b77eed65bdcfa1395368cf36e5e553c4ff58d092d973f0045e2c32c",
-  "hash": "27b5a15fbd6b04d3d01bf6e3db6ad877d0f0c5ced0c045c4ee1f0741152f167d",
-  "blob": {
-    "cid": "bafkreicolnfocmtylgp4dpek4lw32lxwckiaaaglzedqqgrixrdax7cp6m",
-    "bytesHex": "c289504e470d0a1a0a20766c70647320737061636573207265666572656e6365206578706f727420626c6f62",
-    "mimeType": "image/png"
-  },
+  "data": "aa6651ce0b290b81f8a02dc934f7144157d20e95e09c99ca43258a97d02bf62c",
+  "kemPrivateKey": "2b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfe",
+  "keyShare": "did:key:zDnaeojvaid3ay8FYu1pN939AiXYv9UrvAxPVfBWFtkudAfMj",
+  "sharedSecret": "e065b7f837ca53aa8e184708ab0d90fb3fb6983297cad30fbc27b82d6c784e3a",
+  "macHeader": "type=\"atproto-space-repo\", ver=1, mac=:XJja3Aya0jdqj8qLuFaiVDDiFZOI4a1JPZhB4j5VkFY=:",
   "records": [
-    {
-      "collection": "com.example.spaceRecord",
-      "rkey": "3lzzzzzzzzz22",
-      "cid": "bafyreidyb5endvknt7zzamrb3yut6e4u5bxaklpnbgxgdxfydigcuvgccu"
-    },
-    {
-      "collection": "com.example.spaceRecord",
-      "rkey": "a",
-      "cid": "bafyreihpcfvlwmqths67nr4d7up7m5grcynjknfazomc36lo3yjnrvijru"
-    },
-    {
-      "collection": "com.example.spaceRecord",
-      "rkey": "self",
-      "cid": "bafyreidlc3xrdsmdz74qlt5qm4trfdveosgfkcfffa5a5ftkqu7zpsb2s4"
-    },
     {
       "collection": "com.example.spaceNote",
       "rkey": "3lzzzzzzzzz23",
-      "cid": "bafyreicmm2fya2fotr6xkm6su66ijcyntmap7j6avopgcu2inemjnv5pba"
+      "cid": "bafyreiccfkmaidkxitw47moxzzeutrw2zh62bj6bpphfr3emntknn3xfbq"
     },
     {
       "collection": "com.example.spaceNote",
       "rkey": "longer-record-key-than-the-others",
-      "cid": "bafyreihfnmwfc5eb6edqnus4bp5qlnxnkhjshtls66kebeuhz4ua7jtdye"
+      "cid": "bafyreigzgjdsmf4774hjairhi472xsdtghfaft3kaw6jtoeo3gphqoq3zu"
+    },
+    {
+      "collection": "com.example.spaceRecord",
+      "rkey": "3lzzzzzzzzz22",
+      "cid": "bafyreicz5r3xcjnwv7tndzcj4kizhvzanp7ystbxtqd5simg3o2s2yaywu"
+    },
+    {
+      "collection": "com.example.spaceRecord",
+      "rkey": "a",
+      "cid": "bafyreihifmr5x6dkoml4lwudotqm3w6txeckxfwpw7l4qm26c4bcfbgc3q"
+    },
+    {
+      "collection": "com.example.spaceRecord",
+      "rkey": "self",
+      "cid": "bafyreib4dij4lf2v45xrhsv23aags4ctzumlnstccu54de5triebwr3k4m"
     }
   ]
 }

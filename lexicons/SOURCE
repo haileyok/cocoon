@@ -2,8 +2,9 @@ AT Protocol Spaces lexicons (the permissioned-data alpha), copied unmodified
 from the reference implementation:
 
   repo:   https://github.com/bluesky-social/atproto
-  branch: permissioned-data (PR #5187)
-  commit: 5b95b2f2723a2882824fbb0b819fd6aad884ef20
+  branch: permissioned-data-alpha (the October 22, 2026 alpha,
+          published as 0.0.0-spaces-alpha-20261022141228)
+  commit: ac0c9f15392f6f0298d71dc52aa88c05036150be
   paths:  lexicons/com/atproto/space/*.json        (20 methods + defs)
           lexicons/com/atproto/simplespace/*.json  (8 methods + defs)
 

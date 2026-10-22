@@ -49,8 +49,9 @@ const (
 )
 
 // SpaceHostAud is the audience a delegation token and a client attestation
-// name: the authority acting as space host.
-func SpaceHostAud(authority string) string { return authority + "#atproto_space_host" }
+// name: the authority acting as space host, which is its PDS like any other
+// atproto account.
+func SpaceHostAud(authority string) string { return authority + "#atproto_pds" }
 
 // TokenError is a token failure with an XRPC-style code.
 type TokenError struct {
@@ -107,7 +108,8 @@ type CreateTokenOpts struct {
 	KeyID string
 	// ExpiresInSec overrides the type's default lifetime.
 	ExpiresInSec *int64
-	// Kid overrides the type's default header kid.
+	// Kid is the header kid, only for a client attestation. Other token types
+	// always use #atproto.
 	Kid string
 	// Now overrides the clock.
 	Now time.Time
@@ -143,6 +145,9 @@ func CreateSpaceToken(typ TokenType, opts CreateTokenOpts, key atcrypto.PrivateK
 	}
 	if spec.RequireCnf && opts.KeyID == "" {
 		return "", tokErr("BadJwt", `a %s token requires a "keyId"`, typ)
+	}
+	if spec.Kid != "" && opts.Kid != "" {
+		return "", tokErr("BadJwt", `a %s token's "kid" is always "%s"`, typ, spec.Kid)
 	}
 	exp := spec.ExpiresInSec
 	if opts.ExpiresInSec != nil {
@@ -263,6 +268,9 @@ func ParseSpaceToken(typ TokenType, jwt string) (*ParsedToken, error) {
 	if t.Header.Alg == "" {
 		return nil, tokErr("BadJwt", `missing token "alg"`)
 	}
+	if spec.Kid != "" && t.Header.Kid != spec.Kid {
+		return nil, tokErr("BadJwt", `wrong token "kid": expected "%s", got "%s"`, spec.Kid, t.Header.Kid)
+	}
 	p := &t.Payload
 	if p.Iss, _ = strField(pm, "iss"); p.Iss == "" {
 		return nil, tokErr("BadJwtIss", `missing token "iss"`)
@@ -317,7 +325,7 @@ func ParseSpaceToken(typ TokenType, jwt string) (*ParsedToken, error) {
 
 // SigningKeyFunc resolves the did:key an issuer signs with. forceRefresh asks
 // for a fresh resolution, after a cached key failed to verify.
-type SigningKeyFunc func(iss, kid string, forceRefresh bool) (string, error)
+type SigningKeyFunc func(iss string, forceRefresh bool) (string, error)
 
 type VerifyTokenOpts struct {
 	GetSigningKey SigningKeyFunc
@@ -353,7 +361,7 @@ func VerifySpaceToken(typ TokenType, jwt string, opts VerifyTokenOpts) (*Token, 
 	if opts.Sub != "" && t.Payload.Sub != opts.Sub {
 		return nil, tokErr("BadJwtSub", "token subject does not match the requested space")
 	}
-	didKey, err := opts.GetSigningKey(t.Payload.Iss, t.Header.Kid, false)
+	didKey, err := opts.GetSigningKey(t.Payload.Iss, false)
 	if err != nil {
 		// Resolver errors propagate as they are, as in the reference.
 		return nil, err
@@ -365,7 +373,7 @@ func VerifySpaceToken(typ TokenType, jwt string, opts VerifyTokenOpts) (*Token, 
 	if ok {
 		return &t.Token, nil
 	}
-	fresh, err := opts.GetSigningKey(t.Payload.Iss, t.Header.Kid, true)
+	fresh, err := opts.GetSigningKey(t.Payload.Iss, true)
 	if err != nil {
 		// Resolver errors propagate as they are, as in the reference.
 		return nil, err

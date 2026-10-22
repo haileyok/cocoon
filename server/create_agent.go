@@ -78,7 +78,12 @@ func (s *Server) CreateAgent(ctx context.Context, args CreateAgentArgs) (*Create
 		return nil, err
 	}
 
-	did, op, err := s.plcClient.CreateDID(k, recovery, handle)
+	kemKey, kemDidKey, err := newKemKey()
+	if err != nil {
+		return nil, err
+	}
+
+	did, op, err := s.plcClient.CreateDID(k, kemDidKey, recovery, handle)
 	if err != nil {
 		logger.Error("error creating plc operation", "error", err)
 		return nil, err
@@ -95,6 +100,7 @@ func (s *Server) CreateAgent(ctx context.Context, args CreateAgentArgs) (*Create
 		EmailVerificationCode: nil, // no email to verify
 		Password:              string(hashed),
 		SigningKey:            k.Bytes(),
+		KemKey:                kemKey.Bytes(),
 	}
 	actor := models.Actor{Did: did, Handle: handle}
 	if err := s.db.Create(ctx, &urepo, nil).Error; err != nil {

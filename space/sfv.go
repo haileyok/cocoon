@@ -385,3 +385,19 @@ func serializeSFInnerList(l sfInnerList) string {
 	}
 	return "(" + strings.Join(parts, " ") + ")" + serializeSFParams(l.Params)
 }
+
+// sfDictMember is a dictionary member with a bare item value and no
+// parameters.
+type sfDictMember struct {
+	Key   string
+	Value any
+}
+
+// serializeSFDictionary serializes a dictionary of bare items, in order.
+func serializeSFDictionary(members []sfDictMember) string {
+	parts := make([]string, len(members))
+	for i, m := range members {
+		parts[i] = m.Key + "=" + serializeSFBareItem(m.Value)
+	}
+	return strings.Join(parts, ", ")
+}

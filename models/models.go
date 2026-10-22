@@ -33,10 +33,13 @@ type Repo struct {
 	Password                       string
 	SessionVersion                 int64 `gorm:"not null;default:0"`
 	SigningKey                     []byte
-	Rev                            string
-	Root                           []byte
-	Preferences                    []byte
-	Deactivated                    bool
+	// KemKey is the account's #atproto_kem P-256 private key, with which it
+	// establishes shared secrets for space repo MACs. Nil until created.
+	KemKey      []byte
+	Rev         string
+	Root        []byte
+	Preferences []byte
+	Deactivated bool
 	// TakedownRef marks an account taken down. Space data of a taken-down
 	// account is neither served nor written.
 	TakedownRef            *string

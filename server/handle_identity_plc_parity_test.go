@@ -131,7 +131,12 @@ func (s *Server) requiredCreds(t *testing.T, acct *testAccount) *plc.DidCredenti
 	if err != nil {
 		t.Fatalf("parse signing key: %v", err)
 	}
-	required, err := s.plcClient.CreateDidCredentials(k, "", acct.Handle)
+	kem, err := atcrypto.ParsePrivateBytesP256(acct.KemKey)
+	if err != nil {
+		t.Fatalf("parse kem key: %v", err)
+	}
+	kemPub, _ := kem.PublicKey()
+	required, err := s.plcClient.CreateDidCredentials(k, kemPub.DIDKey(), "", acct.Handle)
 	if err != nil {
 		t.Fatalf("create did credentials: %v", err)
 	}

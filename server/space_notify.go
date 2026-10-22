@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
+	"sort"
 	"sync"
 	"time"
 
@@ -22,7 +23,7 @@ import (
 
 // Write notifications, following the reference PDS's space-notifications.ts,
 // notifyWrite.ts, registerNotify.ts, unregisterNotify.ts and listRepos.ts at
-// bluesky-social/atproto 5b95b2f2.
+// bluesky-social/atproto ac0c9f15.
 //
 // A writer's PDS sends notifyWrite to the space authority right after each
 // commit. Retryable failures are coalesced per repo and space in
@@ -47,7 +48,7 @@ type notifyWriteBody struct {
 	Space        string         `json:"space"`
 	Repo         string         `json:"repo"`
 	RepoRev      string         `json:"repoRev"`
-	Hash         space.LexBytes `json:"hash"`
+	Data         space.LexBytes `json:"data"`
 	SpaceRev     string         `json:"spaceRev,omitempty"`
 	PrevSpaceRev string         `json:"prevSpaceRev,omitempty"`
 }
@@ -61,7 +62,7 @@ func (s *Server) notifySpaceWrite(ref space.Ref, did string, commit *spaceCommit
 		return err
 	}
 	d := h.Digest()
-	body := notifyWriteBody{Space: ref.String(), Repo: did, RepoRev: commit.Rev, Hash: d[:]}
+	body := notifyWriteBody{Space: ref.String(), Repo: did, RepoRev: commit.Rev, Data: d[:]}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return s.notifyAndQueue(ctx, body)
@@ -81,7 +82,7 @@ func (s *Server) notifyAndQueue(ctx context.Context, body notifyWriteBody) error
 		return nil
 	}
 	row := models.SpaceNotificationRetry{
-		Repo: body.Repo, Space: body.Space, RepoRev: body.RepoRev, Hash: body.Hash,
+		Repo: body.Repo, Space: body.Space, RepoRev: body.RepoRev, Data: body.Data,
 		Attempts: 1, RetryAt: nextRetryAt(1).UnixMilli(), ExpiresAt: time.Now().Add(notifyRetryWindow).UnixMilli(),
 	}
 	if err := s.db.Client().WithContext(ctx).Clauses(clause.OnConflict{
@@ -195,7 +196,7 @@ func (s *Server) processNotifyWrite(ctx context.Context, body notifyWriteBody) e
 	var seq *writerSequence
 	err = s.db.Client().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var err error
-		seq, err = s.spaceStore(tx, ref.Authority).recordWriter(ref.String(), body.Repo, body.RepoRev, body.Hash)
+		seq, err = s.spaceStore(tx, ref.Authority).recordWriter(ref.String(), body.Repo, body.RepoRev, body.Data)
 		return err
 	})
 	if err != nil || seq == nil {
@@ -220,7 +221,7 @@ type writerSequence struct {
 
 // recordWriter records a newer repo state for a writer and advances the
 // space's sequence. Nil when the state is not newer than the last.
-func (st *spaceStore) recordWriter(uri, writer, repoRev string, hash []byte) (*writerSequence, error) {
+func (st *spaceStore) recordWriter(uri, writer, repoRev string, data []byte) (*writerSequence, error) {
 	// Lock before reading to serialize the space sequence and avoid SQLite read-to-write upgrades.
 	if err := st.db.Model(&models.Space{}).Where("did = ? AND uri = ?", st.did, uri).UpdateColumn("uri", uri).Error; err != nil {
 		return nil, err
@@ -249,7 +250,7 @@ func (st *spaceStore) recordWriter(uri, writer, repoRev string, hash []byte) (*w
 		prev = latest[0].SpaceRev
 	}
 	rev := nextTID(prev)
-	row := models.SpaceWriter{Did: st.did, Space: uri, WriterDid: writer, RepoRev: repoRev, SpaceRev: rev, Hash: hash}
+	row := models.SpaceWriter{Did: st.did, Space: uri, WriterDid: writer, RepoRev: repoRev, SpaceRev: rev, Data: data}
 	if err := st.db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error; err != nil {
 		return nil, err
 	}
@@ -289,6 +290,9 @@ func (s *Server) handleSpaceNotifyWrite(e echo.Context) error {
 		if _, err := syntax.ParseTID(in.RepoRev); err != nil {
 			return nil, errInvalid("", "Input/repoRev must be a valid TID")
 		}
+		if in.Data == nil {
+			return nil, errInvalid("", "Input must have the property \"data\"")
+		}
 		claims, err := s.verifyServiceAuth(e, lxmNotifyWrite)
 		if err != nil {
 			return nil, err
@@ -318,6 +322,9 @@ func readBody(e echo.Context) ([]byte, error) {
 // credentialAuth requires a space credential for the request's space,
 // addressed to its authority.
 func (s *Server) credentialAuth(e echo.Context, ref space.Ref) (*spaceCredentialAuth, error) {
+	if err := checkAuthScheme(e); err != nil {
+		return nil, err
+	}
 	if !isSpaceCredentialRequest(e) {
 		return nil, errAuthRequired("MissingJwt", "missing space credential")
 	}
@@ -432,7 +439,7 @@ func (s *Server) handleSpaceListRepos(e echo.Context) error {
 		}
 		repos := make([]map[string]any, 0, len(rows))
 		for _, w := range rows {
-			repos = append(repos, map[string]any{"did": w.WriterDid, "repoRev": w.RepoRev, "hash": space.LexBytes(w.Hash), "spaceRev": w.SpaceRev})
+			repos = append(repos, map[string]any{"did": w.WriterDid, "repoRev": w.RepoRev, "data": space.LexBytes(w.Data), "spaceRev": w.SpaceRev})
 		}
 		res := map[string]any{"repos": repos}
 		if len(rows) > 0 {
@@ -448,11 +455,7 @@ func (s *Server) handleSpaceGetRepo(e echo.Context) error {
 	if err != nil {
 		return writeSpaceResult(e, nil, err)
 	}
-	excludeValues, err := parseBoolParam(e.QueryParam("excludeValues"))
-	if err != nil {
-		return writeSpaceResult(e, nil, err)
-	}
-	repoActor, err := s.getRepoActorByDid(e.Request().Context(), p.repo)
+	secret, err := s.spaceMacSecret(e, p, space.CommitMacType)
 	if err != nil {
 		return writeSpaceResult(e, nil, err)
 	}
@@ -461,11 +464,7 @@ func (s *Server) handleSpaceGetRepo(e echo.Context) error {
 	if err != nil {
 		return writeSpaceResult(e, nil, err)
 	}
-	key, err := s.accountSigner(repoActor.Repo)
-	if err != nil {
-		return writeSpaceResult(e, nil, err)
-	}
-	commit, err := buildSignedCommit(p.ref, p.repo, state, key)
+	commit, err := buildCommit(p.ref, p.repo, state)
 	if err != nil {
 		return writeSpaceResult(e, nil, err)
 	}
@@ -484,11 +483,17 @@ func (s *Server) handleSpaceGetRepo(e echo.Context) error {
 		}
 		recs = append(recs, space.SerializedRecord{Collection: r.Collection, Rkey: r.Rkey, Cid: c, Bytes: r.Value})
 	}
+	// The archive needs strict path order. Sorting here rather than in SQL
+	// keeps the order bytewise whatever the database's collation.
+	sort.Slice(recs, func(i, j int) bool {
+		return space.FormatRecordPath(recs[i].Collection, recs[i].Rkey) < space.FormatRecordPath(recs[j].Collection, recs[j].Rkey)
+	})
 	var buf bytes.Buffer
-	if err := space.SerializeRepo(&buf, *commit, recs, excludeValues); err != nil {
+	if err := space.SerializeRepo(&buf, *commit, recs); err != nil {
 		return writeSpaceResult(e, nil, err)
 	}
-	return e.Blob(http.StatusOK, "application/vnd.ipld.car", buf.Bytes())
+	setCommitMac(e, secret, *commit)
+	return e.Blob(http.StatusOK, "application/octet-stream", buf.Bytes())
 }
 
 // The retry worker -------------------------------------------------------
@@ -538,6 +543,7 @@ func (s *Server) stopSpaceWorkers() {
 func (s *Server) retrySpaceNotifications(ctx context.Context) {
 	s.spaceWorker.mu.Lock()
 	defer s.spaceWorker.mu.Unlock()
+	s.retrySpaceDeletedNotifications(ctx)
 	for {
 		var due []models.SpaceNotificationRetry
 		if err := s.db.Client().WithContext(ctx).Where("retry_at <= ?", time.Now().UnixMilli()).Order("retry_at").Limit(5).Find(&due).Error; err != nil || len(due) == 0 {
@@ -565,7 +571,7 @@ func (s *Server) retryNotifyOne(ctx context.Context, r models.SpaceNotificationR
 		s.rescheduleNotify(ctx, r)
 		return
 	}
-	body := notifyWriteBody{Space: r.Space, Repo: r.Repo, RepoRev: r.RepoRev, Hash: r.Hash}
+	body := notifyWriteBody{Space: r.Space, Repo: r.Repo, RepoRev: r.RepoRev, Data: r.Data}
 	if err := s.deliverNotify(ctx, body); err != nil {
 		if !isRetryableNotify(err) {
 			s.clearNotifyRetry(ctx, r.Repo, r.Space, r.RepoRev)

@@ -238,8 +238,29 @@ func TestSpaceAuthCredentials(t *testing.T) {
 		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.carol}})
 		cred := credentialFor(t, r.carol, r.pds1, sp)
 
-		res := r.pds1.get("com.atproto.space.getLatestCommit", map[string]string{"space": sp, "repo": r.alice.did}, map[string]string{"Authorization": "Atproto-Space " + cred.credential})
+		res := r.pds1.get("com.atproto.space.getLatestCommit", map[string]string{"space": sp, "repo": r.alice.did}, map[string]string{"Authorization": "Atproto-Space-Credential " + cred.credential})
 		expectErr(t, res, 401, "BadSpaceSignature")
+	})
+
+	t.Run("recognizes the credential scheme regardless of case", func(t *testing.T) {
+		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.carol}})
+		mustOK(t, doWrite(r.alice, sp, writeOpts{}))
+		cred := credentialFor(t, r.carol, r.pds1, sp)
+		headers, err := space.CreateSpaceSigHeaders(cred.key, "atproto-space-credential "+cred.credential, r.alice.did)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustOK(t, r.pds1.get("com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.alice.did}, headers))
+	})
+
+	t.Run("refuses the Atproto-Space scheme of the October 1 alpha", func(t *testing.T) {
+		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.carol}})
+		mustOK(t, doWrite(r.alice, sp, writeOpts{}))
+		cred := credentialFor(t, r.carol, r.pds1, sp)
+		headers := cred.headers(t, r.alice.did)
+		headers["authorization"] = "Atproto-Space " + cred.credential
+		authExpectMsg(t, r.pds1.get("com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.alice.did}, headers), 400, "InvalidToken", "Unsupported authorization type")
+		authExpectMsg(t, r.pds1.get("com.atproto.space.listRepos", map[string]string{"space": sp}, headers), 400, "InvalidToken", "Unsupported authorization type")
 	})
 
 	t.Run("responds 401 to repeated authorization fields", func(t *testing.T) {
@@ -260,7 +281,7 @@ func TestSpaceAuthCredentials(t *testing.T) {
 		mustOK(t, doWrite(r.alice, sp, writeOpts{text: "not yours to read"}))
 
 		cred := credentialFor(t, r.carol, r.pds1, sp)
-		rebound := &spaceCredential{credential: cred.credential, key: newP256Key(t)}
+		rebound := &spaceCredential{credential: cred.credential, key: newP256Key(t), dir: cred.dir}
 		res := rebound.get(t, r.pds1, "com.atproto.space.getLatestCommit", map[string]string{"space": sp, "repo": r.alice.did})
 		authExpectMsg(t, res, 401, "BadSpaceSignature", "invalid HTTP message signature")
 	})
@@ -286,9 +307,9 @@ func TestSpaceAuthCredentials(t *testing.T) {
 		cred := credentialFor(t, r.carol, r.pds1, sp)
 		headers := cred.headers(t, r.alice.did)
 		for i := 0; i < 2; i++ {
-			mustOK(t, r.pds1.get("com.atproto.space.getLatestCommit", map[string]string{"space": sp, "repo": r.alice.did}, headers))
+			mustOK(t, r.pds1.get("com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.alice.did}, headers))
 		}
-		mustOK(t, r.pds1.get("com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.alice.did}, headers))
+		mustOK(t, r.pds1.get("com.atproto.space.listBlobs", map[string]string{"space": sp, "repo": r.alice.did}, headers))
 		mustOK(t, r.pds1.post("com.atproto.space.registerNotify", map[string]any{"space": sp, "service": r.alice.did}, headers))
 	})
 
@@ -343,7 +364,7 @@ func TestSpaceAuthCredentials(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		asForged := &spaceCredential{credential: forged, key: key}
+		asForged := &spaceCredential{credential: forged, key: key, dir: r.net.dir}
 
 		res := asForged.get(t, r.pds1, "com.atproto.space.getLatestCommit", map[string]string{"space": sp, "repo": r.alice.did})
 		authExpectMsg(t, res, 401, "BadJwtIss", "issuer is not the space authority")
@@ -351,29 +372,6 @@ func TestSpaceAuthCredentials(t *testing.T) {
 		// listRepos authorizes off the credential too, on a separate path.
 		res = asForged.get(t, r.pds1, "com.atproto.space.listRepos", map[string]string{"space": sp})
 		authExpectMsg(t, res, 401, "BadJwtIss", "issuer is not the space authority")
-	})
-
-	t.Run("refuses one whose kid names a key the authority does not publish", func(t *testing.T) {
-		// The authority signs with its #atproto key and says so. A credential
-		// claiming #atproto_space must be verified against that key, which
-		// alice does not publish — so it cannot pass by falling back to
-		// #atproto.
-		sp := createSpace(t, r.alice, spaceOpts{})
-		key := newP256Key(t)
-		mismatched, err := space.CreateSpaceToken(space.TokenCredential, space.CreateTokenOpts{
-			Iss:   r.alice.did,
-			Sub:   sp,
-			KeyID: authKeyDid(t, key),
-			Kid:   "#atproto_space",
-		}, r.alice.key)
-		if err != nil {
-			t.Fatal(err)
-		}
-		res := (&spaceCredential{credential: mismatched, key: key}).get(t, r.pds1, "com.atproto.space.getLatestCommit", map[string]string{"space": sp, "repo": r.alice.did})
-		// The reference pins only the message here, not the XRPC error name.
-		if res.status != 401 || !strings.Contains(res.message(), "missing or bad key") {
-			t.Fatalf("want 401 with message containing \"missing or bad key\", got %d: %s", res.status, res.raw)
-		}
 	})
 
 	t.Run("refuses one for a revoked member", func(t *testing.T) {
@@ -407,7 +405,7 @@ func authRepeatedHeaderCase(t *testing.T, r *authNet, name, extra string, expect
 	}
 	h.Add(name, dup)
 
-	status := authRawGet(t, r.pds1.url, "com.atproto.space.getLatestCommit", map[string]string{"space": sp, "repo": r.alice.did}, h)
+	status := authRawGet(t, r.pds1.url, "com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.alice.did}, h)
 	if status != expectedStatus {
 		t.Fatalf("repeated %s: want %d, got %d", name, expectedStatus, status)
 	}
@@ -510,15 +508,7 @@ func TestSpaceAuthDelegationTokens(t *testing.T) {
 		expectErr(t, exchange(t, r.pds2, sp, token, key, ""), 400, "SpaceNotFound")
 	})
 
-	t.Run("requires proof of possession when exchanging a delegation token", func(t *testing.T) {
-		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.carol}})
-		token := delegationTokenFor(t, r.carol, sp)
-
-		res := r.pds1.post("com.atproto.space.getSpaceCredential", map[string]any{"space": sp}, map[string]string{"Authorization": "Bearer " + token})
-		expectErr(t, res, 401, "BadSpaceSignature")
-	})
-
-	t.Run("binds the credential to the key that signed the exchange", func(t *testing.T) {
+	t.Run("binds the credential to the requested key", func(t *testing.T) {
 		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.carol}})
 		token := delegationTokenFor(t, r.carol, sp)
 		key := newP256Key(t)
@@ -530,32 +520,32 @@ func TestSpaceAuthDelegationTokens(t *testing.T) {
 		}
 	})
 
-	t.Run("binds the exchange signature to the delegation token", func(t *testing.T) {
+	t.Run("refuses to bind the credential to a key that is not P-256", func(t *testing.T) {
 		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.carol}})
 		token := delegationTokenFor(t, r.carol, sp)
-		otherToken := delegationTokenFor(t, r.carol, sp)
-		key := newP256Key(t)
-		headers, err := space.CreateSpaceSigHeaders(key, "Bearer "+token, "")
+		k256, err := atcrypto.GeneratePrivateKeyK256()
 		if err != nil {
 			t.Fatal(err)
 		}
-		headers["authorization"] = "Bearer " + otherToken
-		expectErr(t, r.pds1.post("com.atproto.space.getSpaceCredential", map[string]any{"space": sp}, headers), 401, "BadSpaceSignature")
+		pub, _ := k256.PublicKey()
+		res := r.pds1.post("com.atproto.space.getSpaceCredential", map[string]any{"space": sp, "credentialKid": pub.DIDKey(), "delegationToken": token}, nil)
+		authExpectMsg(t, res, 400, "InvalidRequest", "P-256")
 	})
 
-	t.Run("refuses a replayed credential exchange", func(t *testing.T) {
+	t.Run("no longer reads a delegation token from the authorization header", func(t *testing.T) {
 		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.carol}})
 		token := delegationTokenFor(t, r.carol, sp)
-		key := newP256Key(t)
-		headers, err := space.CreateSpaceSigHeaders(key, "Bearer "+token, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		exchangeReq := func() xres {
-			return r.pds1.post("com.atproto.space.getSpaceCredential", map[string]any{"space": sp}, headers)
-		}
-		mustOK(t, exchangeReq())
-		expectErr(t, exchangeReq(), 401, "JwtReplayed")
+		res := r.pds1.post("com.atproto.space.getSpaceCredential", map[string]any{"space": sp, "credentialKid": authKeyDid(t, newP256Key(t))}, map[string]string{"Authorization": "Bearer " + token})
+		expectErr(t, res, 400, "SpaceNotFound")
+	})
+
+	t.Run("refuses an invalid delegation token as an invalid request", func(t *testing.T) {
+		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.carol}})
+		token := delegationTokenFor(t, r.carol, sp)
+		parts := strings.Split(token, ".")
+		parts[2] = parts[2][:len(parts[2])-4] + "AAAA"
+		authExpectMsg(t, exchange(t, r.pds1, sp, strings.Join(parts, "."), newP256Key(t), ""), 400, "InvalidDelegationToken", "signature")
+		expectErr(t, exchange(t, r.pds1, sp, "not-a-jwt", newP256Key(t), ""), 400, "InvalidDelegationToken")
 	})
 
 	t.Run("are refused when the audience names another authority", func(t *testing.T) {
@@ -571,7 +561,7 @@ func TestSpaceAuthDelegationTokens(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		authExpectMsg(t, exchange(t, r.pds1, sp, misaddressed, newP256Key(t), ""), 401, "BadJwtAudience", "audience does not match the space authority")
+		authExpectMsg(t, exchange(t, r.pds1, sp, misaddressed, newP256Key(t), ""), 400, "InvalidDelegationToken", "audience does not match the space authority")
 	})
 
 	t.Run("are single-use — a replayed jti is refused", func(t *testing.T) {
@@ -581,7 +571,7 @@ func TestSpaceAuthDelegationTokens(t *testing.T) {
 			return exchange(t, r.pds1, sp, token, newP256Key(t), "")
 		}
 		mustOK(t, exchangeOnce())
-		authExpectMsg(t, exchangeOnce(), 401, "JwtReplayed", "already been used")
+		authExpectMsg(t, exchangeOnce(), 400, "InvalidDelegationToken", "already been used")
 	})
 
 	t.Run("are refused for a space other than their subject", func(t *testing.T) {

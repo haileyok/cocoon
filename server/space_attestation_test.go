@@ -218,7 +218,7 @@ func TestClientAttestationVerification(t *testing.T) {
 
 	t.Run("refuses an attestation addressed to another space host", func(t *testing.T) {
 		sp := a.attestSpace(t, a.app.clientID)
-		attestRejected(t, a.attestExchange(t, sp, a.app.attest(t, "did:plc:elsewhere#atproto_space_host", attestOpts{})), "Invalid client attestation")
+		attestRejected(t, a.attestExchange(t, sp, a.app.attest(t, "did:plc:elsewhere#atproto_pds", attestOpts{})), "Invalid client attestation")
 	})
 
 	t.Run("refuses an expired attestation", func(t *testing.T) {

@@ -89,7 +89,9 @@ type SpaceWriter struct {
 	WriterDid string `gorm:"primaryKey"`
 	RepoRev   string `gorm:"not null"`
 	SpaceRev  string `gorm:"not null;index:idx_space_writer_space_rev,priority:2"`
-	Hash      []byte `gorm:"not null"`
+	// Data is the commit data (the set hash digest) last reported. The column
+	// keeps its name from before the protocol renamed the field from hash.
+	Data []byte `gorm:"column:hash;not null"`
 }
 
 // SpaceCredentialRecipient is a service registered (registerNotify) to receive
@@ -105,10 +107,23 @@ type SpaceCredentialRecipient struct {
 // SpaceNotificationRetry is a writer's notifyWrite that failed and waits to be
 // resent to the authority, one per repo and space.
 type SpaceNotificationRetry struct {
-	Repo      string `gorm:"primaryKey"`
+	Repo    string `gorm:"primaryKey"`
+	Space   string `gorm:"primaryKey"`
+	RepoRev string `gorm:"not null"`
+	// Data is the commit data to notify. The column keeps its name from
+	// before the protocol renamed the field from hash.
+	Data      []byte `gorm:"column:hash;not null"`
+	Attempts  int    `gorm:"not null"`
+	RetryAt   int64  `gorm:"not null;index"`
+	ExpiresAt int64  `gorm:"not null"`
+}
+
+// SpaceDeletedNotificationRetry is a notifySpaceDeleted to a registered
+// service that failed and waits to be resent, until it succeeds or the
+// service's registration expires.
+type SpaceDeletedNotificationRetry struct {
 	Space     string `gorm:"primaryKey"`
-	RepoRev   string `gorm:"not null"`
-	Hash      []byte `gorm:"not null"`
+	Service   string `gorm:"primaryKey"`
 	Attempts  int    `gorm:"not null"`
 	RetryAt   int64  `gorm:"not null;index"`
 	ExpiresAt int64  `gorm:"not null"`
@@ -136,6 +151,7 @@ func SpaceModels() []any {
 		&Space{}, &SimplespaceConfig{}, &SimplespaceMember{}, &SpaceRecord{},
 		&SpaceRecordBlob{}, &SpaceRepo{}, &SpaceRecordOplog{}, &SpaceWriter{},
 		&SpaceCredentialRecipient{}, &SpaceNotificationRetry{},
+		&SpaceDeletedNotificationRetry{},
 		&RevokedSpaceCredential{}, &SpaceUsedJti{},
 	}
 }

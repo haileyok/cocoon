@@ -83,7 +83,7 @@ func (s *Server) validAccountDID(ctx context.Context, repo *models.RepoActor) bo
 	if err != nil {
 		return false
 	}
-	creds, err := s.plcClient.CreateDidCredentials(key, "", repo.Handle)
+	creds, err := s.plcClient.CreateDidCredentials(key, "", "", repo.Handle)
 	if err != nil {
 		return false
 	}
