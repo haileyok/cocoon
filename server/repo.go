@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -109,9 +110,11 @@ type Op struct {
 	Collection string          `json:"collection"`
 	Rkey       *string         `json:"rkey,omitempty"`
 	Validate   *bool           `json:"validate,omitempty"`
-	SwapRecord *string         `json:"swapRecord,omitempty"`
+	SwapRecord *cid.Cid        `json:"-"` // nil: unchecked; undefined CID: must not exist
 	Record     *MarshalableMap `json:"record,omitempty"`
 }
+
+var errInvalidSwap = errors.New("InvalidSwap")
 
 type MarshalableMap map[string]any
 
@@ -348,8 +351,7 @@ func (s *Server) lockRepoWrite(did string) func() {
 	return mu.Unlock
 }
 
-// TODO make use of swap commit
-func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []Op, swapCommit *string, authorize func(collection, action string) error) ([]ApplyWriteResult, error) {
+func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []Op, swapCommit *cid.Cid, authorize func(collection, action string) error) ([]ApplyWriteResult, error) {
 	unlock := rm.s.lockRepoWrite(urepo.Did)
 	defer unlock()
 	// A taken-down account cannot write, and writes within this process are
@@ -365,6 +367,9 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 	rootcid, err := cid.Cast(urepo.Root)
 	if err != nil {
 		return nil, err
+	}
+	if swapCommit != nil && !swapCommit.Equals(rootcid) {
+		return nil, errInvalidSwap
 	}
 
 	dbs := rm.s.getBlockstore(urepo.Did)
@@ -418,6 +423,15 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 			if authorize != nil {
 				if err := authorize(op.Collection, action); err != nil {
 					return cid.Undef, err
+				}
+			}
+			if op.SwapRecord != nil {
+				existing, err := r.MST.Get([]byte(path))
+				if err != nil {
+					return cid.Undef, err
+				}
+				if (existing == nil && op.SwapRecord.Defined()) || (existing != nil && !op.SwapRecord.Equals(*existing)) {
+					return cid.Undef, errInvalidSwap
 				}
 			}
 			present[path] = op.Type != OpTypeDelete
