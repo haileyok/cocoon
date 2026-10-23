@@ -143,7 +143,7 @@ func (n *spaceNet) newPDS() *spacePDS {
 		DpopManagerArgs: dpop.ManagerArgs{Hostname: host, NonceSecret: []byte("0123456789abcdef0123456789abcdef"), Logger: s.logger},
 	})
 	s.repoman = NewRepoMan(s)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.echo = echo.New()
 	s.echo.Validator = newTestValidator()
 	s.addRoutes()

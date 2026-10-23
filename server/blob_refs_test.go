@@ -68,7 +68,7 @@ func TestImportedBlobReferences(t *testing.T) {
 		t.Run(order, func(t *testing.T) {
 			s := newTestServer(t)
 			s.repoman = NewRepoMan(s)
-			s.evtman = newTestEvtman(t)
+			s.evtman = s.newTestEvtman(t)
 			account := s.createTestAccount(t, "blob-import.pds.test")
 			other := s.createTestAccount(t, "other-blob.pds.test")
 			const payload = "shared imported image"
@@ -132,6 +132,7 @@ func TestImportedBlobReferences(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = pool.Close() })
 			s.repoman = NewRepoMan(s)
+			s.evtman = s.newTestEvtman(t)
 			assertBlobRefs(t, s, account.Did, blobCID, 2)
 			mustApply(t, s, account.Did, Op{Type: OpTypeDelete, Collection: "app.bsky.feed.post", Rkey: strPtr("one")})
 			assertBlobRefs(t, s, account.Did, blobCID, 1)
@@ -172,7 +173,7 @@ func TestBlobReferenceExtraction(t *testing.T) {
 func TestBlobCleanupChecksExistingRecords(t *testing.T) {
 	s := newTestServer(t)
 	s.repoman = NewRepoMan(s)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	account := s.createTestAccount(t, "old-refs.pds.test")
 	s.seedGenesisRepo(t, account.Did, account.SigningKey)
 	c, rec := blobRecord(t, "old payload")
@@ -192,7 +193,7 @@ func TestImportBlobRefsRollbackAndReplacement(t *testing.T) {
 		t.Run(fail, func(t *testing.T) {
 			s := newTestServer(t)
 			s.repoman = NewRepoMan(s)
-			s.evtman = newTestEvtman(t)
+			s.evtman = s.newTestEvtman(t)
 			account := s.createTestAccount(t, "rollback-blobs.pds.test")
 			s.seedGenesisRepo(t, account.Did, account.SigningKey)
 			oldCID, old := blobRecord(t, "old")
@@ -231,7 +232,7 @@ func TestImportBlobRefsRollbackAndReplacement(t *testing.T) {
 func TestBlobReferencesWithinWriteBatch(t *testing.T) {
 	s := newTestServer(t)
 	s.repoman = NewRepoMan(s)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	account := s.createTestAccount(t, "batch-blobs.pds.test")
 	s.seedGenesisRepo(t, account.Did, account.SigningKey)
 	c, rec := blobRecord(t, "moved blob")
@@ -291,7 +292,7 @@ func TestIndexRecordsConcurrentSQLiteWriter(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.repoman.indexRecords(ctx, account.Did, []models.Record{{Did: account.Did, Nsid: "app.bsky.feed.post", Rkey: "one", Cid: c.String(), Value: raw}})
+		_, err := indexRecords(ctx, s.db, account.Did, []models.Record{{Did: account.Did, Nsid: "app.bsky.feed.post", Rkey: "one", Cid: c.String(), Value: raw}})
 		done <- err
 	}()
 	select {

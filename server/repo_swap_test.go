@@ -45,7 +45,7 @@ func TestRepoSwapPreconditions(t *testing.T) {
 						t.Fatalf("import: %d %s", code, msg)
 					}
 					uploadTestBlob(t, s, account, "original media")
-					manager, persister := newTestEvtmanPersister(t)
+					manager, persister := s.newTestEvtmanPersister(t)
 					s.evtman = manager
 					session, err := s.createSession(context.Background(), &mustRepoActor(t, s, account.Did).Repo)
 					if err != nil {
@@ -152,7 +152,7 @@ func TestRepoSwapConcurrentWrites(t *testing.T) {
 		t.Run(field, func(t *testing.T) {
 			s, account := endpointTestServer(t)
 			s.repoman = NewRepoMan(s)
-			s.evtman = newTestEvtman(t)
+			s.evtman = s.newTestEvtman(t)
 			s.seedGenesisRepo(t, account.Did, account.SigningKey)
 			mustApply(t, s, account.Did, Op{Type: OpTypeCreate, Collection: "app.bsky.feed.post", Rkey: strPtr("existing"), Record: rmPostRecord("original")})
 			expected := currentRoot(t, s, account.Did)
