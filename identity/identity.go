@@ -165,8 +165,12 @@ func FetchDidDoc(ctx context.Context, cli *http.Client, plcURL, did string) (*Di
 		return nil, fmt.Errorf("unable to find did doc at url. did: %s. url: %s", did, ustr)
 	}
 
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
 	var diddoc DidDoc
-	if err := json.NewDecoder(resp.Body).Decode(&diddoc); err != nil {
+	if err := json.Unmarshal(body, &diddoc); err != nil {
 		return nil, err
 	}
 
