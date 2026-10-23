@@ -40,7 +40,7 @@ func adminCall(t *testing.T, s *Server, method, target, body string) (int, strin
 func TestAdminUpdateSubjectStatus(t *testing.T) {
 	t.Run("repo takedown and untakedown", func(t *testing.T) {
 		s := newTestServer(t)
-		s.evtman = newTestEvtman(t)
+		s.evtman = s.newTestEvtman(t)
 		s.repoman = NewRepoMan(s)
 		acct := s.createTestAccount(t, "alice.pds.test")
 		s.seedGenesisRepo(t, acct.Did, acct.SigningKey)

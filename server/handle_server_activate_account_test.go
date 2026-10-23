@@ -76,7 +76,7 @@ func TestAccountStatusWaitsForRepoWrite(t *testing.T) {
 		t.Run(map[bool]string{true: "activate", false: "deactivate"}[activate], func(t *testing.T) {
 			s := newTestServer(t)
 			s.repoman = NewRepoMan(s)
-			manager, persister := newTestEvtmanPersister(t)
+			manager, persister := s.newTestEvtmanPersister(t)
 			s.evtman = manager
 			account := s.createTestAccount(t, "status.pds.test")
 			s.seedGenesisRepo(t, account.Did, account.SigningKey)
