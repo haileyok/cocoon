@@ -29,7 +29,7 @@ require (
 	github.com/labstack/echo-contrib v0.50.1
 	github.com/labstack/echo/v4 v4.15.3
 	github.com/lestrrat-go/jwx/v2 v2.1.6
-	github.com/mattn/go-sqlite3 v1.14.34
+	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/multiformats/go-multihash v0.2.3
 	github.com/prometheus/client_golang v1.23.2
 	github.com/samber/slog-echo v1.21.0
