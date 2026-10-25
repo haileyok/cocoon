@@ -291,7 +291,7 @@ func TestIndexRecordsConcurrentSQLiteWriter(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := s.repoman.indexRecords(ctx, account.Did, []models.Record{{Did: account.Did, Nsid: "app.bsky.feed.post", Rkey: "one", Cid: c.String(), Value: raw}})
+		_, err := indexRecords(ctx, s.db, account.Did, []models.Record{{Did: account.Did, Nsid: "app.bsky.feed.post", Rkey: "one", Cid: c.String(), Value: raw}})
 		done <- err
 	}()
 	select {

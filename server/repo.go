@@ -24,6 +24,7 @@ import (
 	"github.com/haileyok/cocoon/metrics"
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/recording_blockstore"
+	"github.com/haileyok/cocoon/sqlite_blockstore"
 	blocks "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
@@ -372,7 +373,8 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		return nil, errInvalidSwap
 	}
 
-	dbs := rm.s.getBlockstore(urepo.Did)
+	// Stage blocks in memory until the whole batch is ready to commit.
+	dbs := sqlite_blockstore.NewReadOnly(urepo.Did, rm.db)
 	bs := recording_blockstore.New(dbs)
 
 	// Capture the previous commit's MST root so the firehose can advertise it as
@@ -594,12 +596,6 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		return nil, err
 	}
 
-	for _, result := range results {
-		if result.Type != nil {
-			metrics.RepoOperations.WithLabelValues(*result.Type).Inc()
-		}
-	}
-
 	// create a buffer for dumping our new cbor into
 	buf := new(bytes.Buffer)
 
@@ -673,9 +669,32 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		}
 	}
 
-	blobs, err := rm.indexRecords(ctx, urepo.Did, entries)
+	var blobs []lexutil.LexLink
+	err = rm.db.Transaction(ctx, func(tx *db.DB) error {
+		persisted := sqlite_blockstore.New(urepo.Did, tx)
+		for _, block := range bs.GetWriteLog() {
+			if err := persisted.Put(ctx, block); err != nil {
+				return err
+			}
+		}
+		var err error
+		blobs, err = indexRecords(ctx, tx, urepo.Did, entries)
+		if err != nil {
+			return err
+		}
+		if err := tx.Exec(ctx, "UPDATE repos SET root = ?, rev = ? WHERE did = ?", nil, newroot.Bytes(), rev, urepo.Did).Error; err != nil {
+			return err
+		}
+		return persisted.DeleteMany(ctx, removedCids)
+	})
 	if err != nil {
 		return nil, err
+	}
+
+	for _, result := range results {
+		if result.Type != nil {
+			metrics.RepoOperations.WithLabelValues(*result.Type).Inc()
+		}
 	}
 
 	if urepo.Active() {
@@ -693,30 +712,6 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 				TooBig:   false,
 			},
 		})
-	}
-
-	if err := rm.s.UpdateRepo(ctx, urepo.Did, newroot, rev); err != nil {
-		return nil, err
-	}
-
-	// Delete the blocks superseded by this commit, matching the reference PDS
-	// (which deletes commit.removedCids alongside applying the new blocks).
-	// This runs after the firehose event is built and published: the event CAR
-	// embeds the removed record blocks so consumers can apply the ops.
-	//
-	// TODO: this delete is not atomic with the block insert above; a crash
-	// between the two leaves a superseded block stranded in storage (bloat,
-	// not corruption).
-	if len(removedCids) > 0 {
-		dm, ok := dbs.(interface {
-			DeleteMany(context.Context, []cid.Cid) error
-		})
-		if !ok {
-			return nil, fmt.Errorf("blockstore does not support deleting superseded blocks")
-		}
-		if err := dm.DeleteMany(ctx, removedCids); err != nil {
-			return nil, fmt.Errorf("deleting superseded blocks: %w", err)
-		}
 	}
 
 	for i := range results {
@@ -865,9 +860,9 @@ func countBlobRefs(records []models.Record) (map[cid.Cid]int, error) {
 	return refs, nil
 }
 
-func (rm *RepoMan) indexRecords(ctx context.Context, did string, entries []models.Record) ([]lexutil.LexLink, error) {
+func indexRecords(ctx context.Context, database *db.DB, did string, entries []models.Record) ([]lexutil.LexLink, error) {
 	var blobs []lexutil.LexLink
-	err := rm.db.Transaction(ctx, func(tx *db.DB) error {
+	err := database.Transaction(ctx, func(tx *db.DB) error {
 		if tx.Client().Dialector.Name() == "sqlite" {
 			// Reserve write intent before reading a WAL snapshot; no rows change.
 			if err := tx.Exec(ctx, "UPDATE records SET rkey = rkey WHERE 1 = 0", nil).Error; err != nil {
