@@ -437,7 +437,7 @@ func TestPasswordRecoveryOAuthExchange(t *testing.T) {
 				}
 				form := url.Values{"client_id": {"http://localhost"}, "grant_type": {grant}}
 				if grant == "authorization_code" {
-					auth := provider.OauthAuthorizationRequest{RequestId: "recovery-auth", ClientId: "http://localhost", Parameters: params, ExpiresAt: time.Now().Add(time.Hour)}
+					auth := provider.OauthAuthorizationRequest{RequestId: "recovery-auth", ClientId: "http://localhost", ClientAuth: provider.ClientAuth{Method: "none"}, Parameters: params, ExpiresAt: time.Now().Add(time.Hour)}
 					if err := s.db.Create(ctx, &auth, nil).Error; err != nil {
 						t.Fatal(err)
 					}

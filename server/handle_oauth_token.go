@@ -13,6 +13,7 @@ import (
 
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/oauth"
 	"github.com/haileyok/cocoon/oauth/constants"
@@ -90,13 +91,26 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		var authReq provider.OauthAuthorizationRequest
-		// get the lil guy and delete him
-		if err := s.db.Raw(ctx, "DELETE FROM oauth_authorization_requests WHERE code = ? RETURNING *", nil, *req.Code).Scan(&authReq).Error; err != nil {
+		if err := s.db.Raw(ctx, "SELECT * FROM oauth_authorization_requests WHERE code = ?", nil, *req.Code).Scan(&authReq).Error; err != nil {
 			logger.Error("error finding authorization request", "error", err)
 			return helpers.ServerError(e, nil)
 		}
-		if authReq.Sub == nil || authReq.Code == nil {
+		if authReq.Sub == nil || authReq.Code == nil || !time.Now().Before(authReq.ExpiresAt) {
 			return helpers.InvalidGrantError(e, "Invalid authorization code")
+		}
+
+		if client.Metadata.ClientID != authReq.ClientId || clientAuth.Method != authReq.ClientAuth.Method {
+			return helpers.InvalidGrantError(e, "Authorization code was issued to a different client or authentication method")
+		}
+		if !dpopJktMatches(authReq.Parameters.DpopJkt, proof) {
+			return helpers.InvalidGrantError(e, "DPoP proof does not match authorization code")
+		}
+		if client.Metadata.DpopBoundAccessTokens && proof == nil {
+			return e.JSON(400, map[string]string{"error": "invalid_dpop_proof"})
+		}
+		// Standard authorization can bind the key at the token endpoint.
+		if authReq.Parameters.DpopJkt == nil && proof != nil {
+			authReq.Parameters.DpopJkt = to.StringPtr(proof.JKT)
 		}
 
 		if req.RedirectURI == nil || *req.RedirectURI != authReq.Parameters.RedirectURI {
@@ -113,7 +127,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			}
 
 			if err := verifyPKCE(*authReq.Parameters.CodeChallenge, authReq.Parameters.CodeChallengeMethod, *req.CodeVerifier); err != nil {
-				return helpers.InputError(e, to.StringPtr(err.Error()))
+				return helpers.InvalidGrantError(e, err.Error())
 			}
 		} else if req.CodeVerifier != nil {
 			return helpers.InputError(e, to.StringPtr("code_challenge parameter wasn't provided"))
@@ -151,7 +165,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		if authReq.Parameters.DpopJkt != nil {
-			accessClaims["cnf"] = *authReq.Parameters.DpopJkt
+			accessClaims["cnf"] = map[string]string{"jkt": *authReq.Parameters.DpopJkt}
 		}
 
 		accessToken := jwt.NewWithClaims(jwt.SigningMethodES256, accessClaims)
@@ -161,24 +175,41 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return err
 		}
 
-		if err := s.db.Create(ctx, &provider.OauthToken{
-			ClientId:       authReq.ClientId,
-			ClientAuth:     *clientAuth,
-			Parameters:     authReq.Parameters,
-			ExpiresAt:      eat,
-			DeviceId:       "",
-			Sub:            repo.Repo.Did,
-			SessionVersion: authReq.SessionVersion,
-			Code:           *authReq.Code,
-			Token:          accessString,
-			RefreshToken:   refreshToken,
-			Ip:             authReq.Ip,
-		}, nil).Error; err != nil {
+		invalidCode := errors.New("authorization code is no longer valid")
+		err = s.db.Transaction(ctx, func(tx *db.DB) error {
+			// Scope resolution may take time; recheck expiry and revocation while consuming once.
+			result := tx.Exec(ctx, `DELETE FROM oauth_authorization_requests
+				WHERE request_id = ? AND code = ? AND expires_at > ?
+				AND EXISTS (SELECT 1 FROM repos WHERE did = ? AND session_version = ?)`,
+				nil, authReq.RequestId, *authReq.Code, time.Now(), *authReq.Sub, authReq.SessionVersion)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return invalidCode
+			}
+			return tx.Create(ctx, &provider.OauthToken{
+				ClientId:       authReq.ClientId,
+				ClientAuth:     *clientAuth,
+				Parameters:     authReq.Parameters,
+				ExpiresAt:      eat,
+				DeviceId:       "",
+				Sub:            repo.Repo.Did,
+				SessionVersion: authReq.SessionVersion,
+				Code:           *authReq.Code,
+				Token:          accessString,
+				RefreshToken:   refreshToken,
+				Ip:             authReq.Ip,
+			}, nil).Error
+		})
+		if errors.Is(err, invalidCode) {
+			return helpers.InvalidGrantError(e, "Invalid authorization code")
+		}
+		if err != nil {
 			logger.Error("error creating token in db", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 
-		// prob not needed
 		tokenType := "Bearer"
 		if authReq.Parameters.DpopJkt != nil {
 			tokenType = "DPoP"
