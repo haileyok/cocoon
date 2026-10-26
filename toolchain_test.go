@@ -8,7 +8,18 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/mattn/go-sqlite3"
 )
+
+func TestSQLiteVersionIncludesWALResetUpdate(t *testing.T) {
+	version, number, _ := sqlite3.Version()
+	// SQLite 3.51.3 addresses the WAL-reset race: https://sqlite.org/wal.html
+	if number < 3051003 {
+		t.Fatalf("linked SQLite %s predates the WAL-reset update in 3.51.3", version)
+	}
+	t.Logf("linked SQLite %s", version)
+}
 
 // minPatchedGo is the oldest Go release that contains the crypto/x509
 // mitigation for CVE-2026-111943, which distrusted the eight eMudhra
