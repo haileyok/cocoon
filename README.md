@@ -1,9 +1,6 @@
 # Cocoon
 
-> [!WARNING]
-> I migrated and have been running my main account on this PDS for months now without issue, however, I am still not responsible if things go awry, particularly during account migration. Please use caution.
-
-Cocoon is a PDS implementation in Go. It is highly experimental, and is not ready for any production use.
+Cocoon is a PDS implementation in Go.
 
 ## Quick Start with Docker Compose
 
