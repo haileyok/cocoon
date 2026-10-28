@@ -669,24 +669,41 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		}
 	}
 
-	var blobs []lexutil.LexLink
-	err = rm.db.Transaction(ctx, func(tx *db.DB) error {
+	event := &events.XRPCStreamEvent{
+		RepoCommit: &atproto.SyncSubscribeRepos_Commit{
+			Repo:     urepo.Did,
+			Blocks:   buf.Bytes(),
+			Rev:      rev,
+			Since:    &urepo.Rev,
+			Commit:   lexutil.LexLink(newroot),
+			PrevData: &prevDataLink,
+			Time:     time.Now().Format(time.RFC3339Nano),
+			Ops:      repoOps,
+			TooBig:   false,
+		},
+	}
+	write := func(tx *db.DB) error {
 		persisted := sqlite_blockstore.New(urepo.Did, tx)
 		for _, block := range bs.GetWriteLog() {
 			if err := persisted.Put(ctx, block); err != nil {
 				return err
 			}
 		}
-		var err error
-		blobs, err = indexRecords(ctx, tx, urepo.Did, entries)
+		blobs, err := indexRecords(ctx, tx, urepo.Did, entries)
 		if err != nil {
 			return err
 		}
+		event.RepoCommit.Blobs = blobs
 		if err := tx.Exec(ctx, "UPDATE repos SET root = ?, rev = ? WHERE did = ?", nil, newroot.Bytes(), rev, urepo.Did).Error; err != nil {
 			return err
 		}
 		return persisted.DeleteMany(ctx, removedCids)
-	})
+	}
+	if urepo.Active() {
+		err = rm.s.evtpersister.persistWith(ctx, event, write)
+	} else {
+		err = rm.db.Transaction(ctx, write)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -695,23 +712,6 @@ func (rm *RepoMan) applyWrites(ctx context.Context, urepo models.Repo, writes []
 		if result.Type != nil {
 			metrics.RepoOperations.WithLabelValues(*result.Type).Inc()
 		}
-	}
-
-	if urepo.Active() {
-		rm.s.evtman.AddEvent(context.Background(), &events.XRPCStreamEvent{
-			RepoCommit: &atproto.SyncSubscribeRepos_Commit{
-				Repo:     urepo.Did,
-				Blocks:   buf.Bytes(),
-				Blobs:    blobs,
-				Rev:      rev,
-				Since:    &urepo.Rev,
-				Commit:   lexutil.LexLink(newroot),
-				PrevData: &prevDataLink,
-				Time:     time.Now().Format(time.RFC3339Nano),
-				Ops:      repoOps,
-				TooBig:   false,
-			},
-		})
 	}
 
 	for i := range results {

@@ -29,7 +29,7 @@ func TestCreateAgent(t *testing.T) {
 		s := newTestServer(t)
 		p := newPlcTestServer(t)
 		s.attachPlcClient(t, p)
-		s.evtman = newTestEvtman(t)
+		s.evtman = s.newTestEvtman(t)
 		s.repoman = NewRepoMan(s)
 		return s, p
 	}

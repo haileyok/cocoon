@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/events"
 	"github.com/haileyok/cocoon/internal/db"
@@ -19,7 +20,7 @@ import (
 )
 
 func TestRepoWriteAtomicity(t *testing.T) {
-	for _, failure := range []string{"record", "head", "blob-cleanup", "block-cleanup", "commit", "cancel", "late-invalid-record", "none"} {
+	for _, failure := range []string{"record", "head", "blob-cleanup", "block-cleanup", "commit", "event-insert", "event-commit", "cancel", "late-invalid-record", "no-broadcast", "none"} {
 		t.Run(failure, func(t *testing.T) {
 			s, account := endpointTestServer(t)
 			s.repoman = NewRepoMan(s)
@@ -41,6 +42,8 @@ func TestRepoWriteAtomicity(t *testing.T) {
 				t.Fatal(err)
 			}
 			s.evtman = events.NewEventManager(persister)
+			s.evtpersister = persister
+			cursor := persister.Seq
 			var published []string
 			broadcast := persister.Broadcast
 			persister.Broadcast = func(evt *events.XRPCStreamEvent) {
@@ -52,6 +55,9 @@ func TestRepoWriteAtomicity(t *testing.T) {
 					published = append(published, current.String())
 				}
 				broadcast(evt)
+			}
+			if failure == "no-broadcast" {
+				persister.Broadcast = nil
 			}
 			session, err := s.createSession(context.Background(), &mustRepoActor(t, s, account.Did).Repo)
 			if err != nil {
@@ -71,12 +77,18 @@ func TestRepoWriteAtomicity(t *testing.T) {
 				queries = []string{"CREATE TRIGGER fail_atomic BEFORE DELETE ON blob_parts BEGIN SELECT RAISE(ABORT, 'test failure'); END"}
 			case "block-cleanup":
 				queries = []string{"CREATE TRIGGER fail_atomic BEFORE DELETE ON blocks BEGIN SELECT RAISE(ABORT, 'test failure'); END"}
-			case "commit":
+			case "event-insert":
+				queries = []string{"CREATE TRIGGER fail_atomic BEFORE INSERT ON event_records BEGIN SELECT RAISE(ABORT, 'test failure'); END"}
+			case "commit", "event-commit":
+				table := "records"
+				if failure == "event-commit" {
+					table = "event_records"
+				}
 				queries = []string{
 					"PRAGMA foreign_keys = ON",
 					"CREATE TABLE atomic_parent (id INTEGER PRIMARY KEY)",
 					"CREATE TABLE atomic_guard (id INTEGER REFERENCES atomic_parent(id) DEFERRABLE INITIALLY DEFERRED)",
-					"CREATE TRIGGER fail_atomic AFTER INSERT ON records BEGIN INSERT INTO atomic_guard VALUES (1); END",
+					"CREATE TRIGGER fail_atomic AFTER INSERT ON " + table + " BEGIN INSERT INTO atomic_guard VALUES (1); END",
 				}
 			case "cancel":
 				if err := s.db.Client().Callback().Raw().Before("gorm:raw").Register("cancel-atomic-head", func(tx *gorm.DB) {
@@ -108,7 +120,7 @@ func TestRepoWriteAtomicity(t *testing.T) {
 				return w
 			}
 			w := request(ctx, failure == "late-invalid-record")
-			if failure != "none" {
+			if failure != "none" && failure != "no-broadcast" {
 				if w.Code < 400 {
 					t.Fatalf("expected write failure: %d %s", w.Code, w.Body.String())
 				}
@@ -132,7 +144,11 @@ func TestRepoWriteAtomicity(t *testing.T) {
 				// Retry with the same head to exercise the cached tree after rollback.
 				w = request(context.Background(), false)
 			}
-			if w.Code != 200 || len(published) != 1 {
+			wantPublished := 1
+			if failure == "no-broadcast" {
+				wantPublished = 0
+			}
+			if w.Code != 200 || len(published) != wantPublished {
 				t.Fatalf("successful write: %d %s; events: %v", w.Code, w.Body.String(), published)
 			}
 			leaves := walkMstLeaves(t, s, account.Did)
@@ -190,10 +206,125 @@ func TestRepoWriteAtomicity(t *testing.T) {
 			if !reflect.DeepEqual(saved, importState(t, s, account.Did)) {
 				t.Fatal("committed state changed after reopening database")
 			}
+			restarted, err := NewDbPersister(reopened, time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var replayed []*events.XRPCStreamEvent
+			if err := restarted.Playback(context.Background(), cursor, func(evt *events.XRPCStreamEvent) error {
+				replayed = append(replayed, evt)
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(replayed) != 1 || replayed[0].RepoCommit == nil {
+				t.Fatalf("expected one retained commit after restart, got %v", replayed)
+			}
+			commit := replayed[0].RepoCommit
+			if commit.Repo != account.Did || !cid.Cid(commit.Commit).Equals(currentRoot(t, s, account.Did)) || commit.Seq <= cursor || len(commit.Ops) != 3 || len(commit.Blocks) == 0 {
+				t.Fatalf("retained event does not describe the committed write: %+v", commit)
+			}
+			if err := restarted.Playback(context.Background(), commit.Seq, func(*events.XRPCStreamEvent) error {
+				t.Error("replayed an event at or before the cursor")
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
 			blobContext, blobResponse := newRequestContext("GET", fmt.Sprintf("/xrpc/com.atproto.sync.getBlob?did=%s&cid=%s", account.Did, newCID), "", nil)
 			if err := s.handleSyncGetBlob(blobContext); err != nil || blobResponse.Code != 200 || blobResponse.Body.String() != "new payload" {
 				t.Fatalf("public blob after restart: %d %q %v", blobResponse.Code, blobResponse.Body.String(), err)
 			}
 		})
+	}
+}
+
+func TestRepoWriteEventOrdering(t *testing.T) {
+	s, alice := endpointTestServer(t)
+	s.repoman = NewRepoMan(s)
+	s.evtman = s.newTestEvtman(t)
+	bob := s.createTestAccount(t, "bob.pds.test")
+	pool, err := s.db.Client().DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.SetMaxOpenConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	live, unsubscribe, err := s.evtman.Subscribe(ctx, "ordering", func(*events.XRPCStreamEvent) bool { return true }, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unsubscribe()
+	var writes []func() error
+	for _, account := range []*testAccount{alice, bob} {
+		s.seedGenesisRepo(t, account.Did, account.SigningKey)
+		session, err := s.createSession(ctx, &mustRepoActor(t, s, account.Did).Repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := repoSwapRequest(t, account.Did, session.AccessToken, "createRecord", map[string]any{
+			"collection": "app.bsky.feed.post", "rkey": "one", "record": postRecord(account.Handle),
+		}).WithContext(ctx)
+		writes = append(writes, func() error {
+			w := httptest.NewRecorder()
+			s.echo.ServeHTTP(w, req)
+			if w.Code != 200 {
+				return fmt.Errorf("write: %d %s", w.Code, w.Body.String())
+			}
+			return nil
+		})
+	}
+	writes = append(writes, func() error {
+		return s.evtpersister.Persist(ctx, &events.XRPCStreamEvent{RepoAccount: &atproto.SyncSubscribeRepos_Account{
+			Did: alice.Did, Active: true, Time: time.Now().Format(time.RFC3339Nano),
+		}})
+	})
+	start, done := make(chan struct{}), make(chan error, len(writes))
+	for _, write := range writes {
+		go func() {
+			<-start
+			done <- write()
+		}()
+	}
+	close(start)
+	for range writes {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Error(err)
+			}
+		case <-ctx.Done():
+			t.Fatal("concurrent writes did not finish")
+		}
+	}
+	var replayed []*events.XRPCStreamEvent
+	if err := s.evtpersister.Playback(ctx, 0, func(evt *events.XRPCStreamEvent) error {
+		replayed = append(replayed, evt)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(replayed) != len(writes) {
+		t.Fatalf("retained %d events for %d successful writes", len(replayed), len(writes))
+	}
+	var previous int64
+	for _, retained := range replayed {
+		select {
+		case evt := <-live:
+			if evt.Sequence() <= previous || evt.Sequence() != retained.Sequence() {
+				t.Fatalf("live/playback sequence mismatch: previous=%d live=%d retained=%d", previous, evt.Sequence(), retained.Sequence())
+			}
+			previous = evt.Sequence()
+			got, err := serializeEvent(evt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := serializeEvent(retained)
+			if err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("live/playback payload mismatch: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatal("missing live event")
+		}
 	}
 }

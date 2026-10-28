@@ -14,6 +14,7 @@ import (
 	cbg "github.com/whyrusleeping/cbor-gen"
 	"gorm.io/gorm"
 
+	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/models"
 )
 
@@ -66,9 +67,30 @@ func (p *DbPersister) SetEventBroadcaster(brc func(*events.XRPCStreamEvent)) {
 }
 
 func (p *DbPersister) Persist(ctx context.Context, e *events.XRPCStreamEvent) error {
+	return p.persistWith(ctx, e, func(*db.DB) error { return nil })
+}
+
+// Take the sequence lock before database write locks, and retain it through
+// commit and broadcast so other event writers cannot publish out of order.
+func (p *DbPersister) persistWith(ctx context.Context, e *events.XRPCStreamEvent, write func(*db.DB) error) error {
 	p.Lk.Lock()
 	defer p.Lk.Unlock()
 
+	if err := db.NewDB(p.Db).Transaction(ctx, func(tx *db.DB) error {
+		if err := write(tx); err != nil {
+			return err
+		}
+		return p.insertEvent(ctx, tx, e)
+	}); err != nil {
+		return err
+	}
+	if p.Broadcast != nil {
+		p.Broadcast(e)
+	}
+	return nil
+}
+
+func (p *DbPersister) insertEvent(ctx context.Context, tx *db.DB, e *events.XRPCStreamEvent) error {
 	p.Seq++
 	seq := p.Seq
 
@@ -109,12 +131,8 @@ func (p *DbPersister) Persist(ctx context.Context, e *events.XRPCStreamEvent) er
 		Data:      data,
 	}
 
-	if err := p.Db.Create(rec).Error; err != nil {
+	if err := tx.Create(ctx, rec, nil).Error; err != nil {
 		return fmt.Errorf("failed to persist event: %w", err)
-	}
-
-	if p.Broadcast != nil {
-		p.Broadcast(e)
 	}
 
 	return nil
