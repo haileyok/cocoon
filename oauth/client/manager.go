@@ -18,6 +18,8 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwk"
 )
 
+const userAgent = "Cocoon (+https://github.com/haileyok/cocoon)"
+
 type Manager struct {
 	cli           *http.Client
 	logger        *slog.Logger
@@ -108,6 +110,7 @@ func (cm *Manager) getClientMetadata(ctx context.Context, clientId string) (*Met
 		if err != nil {
 			return nil, err
 		}
+		req.Header.Set("User-Agent", userAgent)
 
 		resp, err := cm.cli.Do(req)
 		if err != nil {
@@ -145,6 +148,7 @@ func (cm *Manager) getClientJwks(ctx context.Context, clientId, jwksUri string) 
 		if err != nil {
 			return nil, err
 		}
+		req.Header.Set("User-Agent", userAgent)
 
 		resp, err := cm.cli.Do(req)
 		if err != nil {
