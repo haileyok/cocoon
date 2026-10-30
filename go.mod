@@ -2,6 +2,8 @@ module github.com/haileyok/cocoon
 
 go 1.26.10
 
+godebug multipathtcp=0
+
 require (
 	github.com/Azure/go-autorest/autorest/to v0.4.1
 	github.com/aws/aws-sdk-go v1.55.8
