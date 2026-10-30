@@ -122,6 +122,9 @@ services:
       - caddy_config:/config
     restart: unless-stopped
     environment:
+      # Caddy is built from its own module, so cocoon's go.mod godebug
+      # directive cannot reach its internet-facing listeners.
+      GODEBUG: multipathtcp=0
       COCOON_HOSTNAME: ${COCOON_HOSTNAME}
       CADDY_ACME_EMAIL: ${COCOON_CONTACT_EMAIL:-}
 
