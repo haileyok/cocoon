@@ -66,6 +66,8 @@ func newTestServer(t *testing.T) *Server {
 		&models.ReservedKey{},
 		&models.TwoFactorCredential{},
 		&models.TwoFactorBackupCode{},
+		&models.AuthKey{},
+		&models.AuthKeyAssertion{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
 	); err != nil {

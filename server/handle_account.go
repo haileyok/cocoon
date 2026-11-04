@@ -38,9 +38,17 @@ func (s *Server) handleAccount(e echo.Context) error {
 		logger.Error("counting two factor methods", "did", repo.Repo.Did, "error", err)
 	}
 
+	authKeys, err := s.loadAccountAuthKeys(ctx, repo.Repo.Did, time.Now())
+	if err != nil {
+		logger.Error("couldnt fetch sign-in keys for account", "did", repo.Repo.Did, "error", err)
+		sess.AddFlash("Unable to load your sign-in keys. See server logs for more details.", "error")
+		authKeys = nil
+	}
+
 	return e.Render(200, "account.html", map[string]any{
 		"Repo":             repo,
 		"Apps":             apps,
+		"AuthKeys":         authKeys,
 		"SessionCount":     sessionCount,
 		"TwoFactorMethods": twoFactorMethods,
 		"EmailTwoFactor":   repo.TwoFactorType != models.TwoFactorTypeNone,

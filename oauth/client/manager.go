@@ -257,7 +257,7 @@ func validateAndParseMetadata(clientId string, b []byte) (*Metadata, error) {
 		switch gt {
 		case "implicit":
 			return nil, errors.New("grantg type `implicit` is not allowed")
-		case "authorization_code", "refresh_token":
+		case "authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer":
 			// TODO check if this grant type is supported
 		default:
 			return nil, fmt.Errorf("grant tyhpe `%s` is not supported", gt)
@@ -438,7 +438,7 @@ func buildLocalhostVirtualMetadata(clientId string) (*Metadata, error) {
 		ClientName:              "Development client",
 		ClientURI:               "http://localhost",
 		RedirectURIs:            redirectURIs,
-		GrantTypes:              []string{"authorization_code", "refresh_token"},
+		GrantTypes:              []string{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"},
 		ResponseTypes:           []string{"code"},
 		ApplicationType:         "native",
 		DpopBoundAccessTokens:   true,

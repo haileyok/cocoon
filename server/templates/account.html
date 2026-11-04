@@ -88,6 +88,34 @@
       </section>
       {{ end }}
 
+      {{ if .AuthKeys }}
+      <div class="section-title" id="sign-in-keys">
+        <h2>Sign-in keys</h2>
+        <span class="muted small">Keys this account can sign in with</span>
+      </div>
+      <section class="card card-flush">
+        <ul class="list">
+          {{ range .AuthKeys }}
+          <li>
+            <div class="session">
+              <dl class="session-meta">
+                <div><dt>Key</dt><dd class="mono">{{ .DidKey }}</dd></div>
+                <div><dt>Added</dt><dd>{{ .CreatedAgo }}{{ if ne .CreatedAgo "just now" }} ago{{ end }}</dd></div>
+                {{ if .Revoked }}<div><dt>Status</dt><dd>revoked</dd></div>{{ end }}
+              </dl>
+              {{ if not .Revoked }}
+              <form action="/account/auth-keys/revoke" method="post">
+                <input type="hidden" name="did_key" value="{{ .DidKey }}" />
+                <button class="small danger" type="submit">Revoke key</button>
+              </form>
+              {{ end }}
+            </div>
+          </li>
+          {{ end }}
+        </ul>
+      </section>
+      {{ end }}
+
       <div class="section-title" id="apps">
         <h2>Connected apps</h2>
         <span class="muted small">Apps you've signed in to with this account</span>

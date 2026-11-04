@@ -24,15 +24,22 @@ import (
 )
 
 type ComAtprotoServerCreateAccountRequest struct {
-	Email      string  `json:"email" validate:"required,email"`
-	Handle     string  `json:"handle" validate:"required,atproto-handle"`
-	Did        *string `json:"did" validate:"atproto-did"`
-	Password   string  `json:"password" validate:"required"`
-	InviteCode string  `json:"inviteCode" validate:"omitempty"`
+	Email  string  `json:"email" validate:"required,email"`
+	Handle string  `json:"handle" validate:"required,atproto-handle"`
+	Did    *string `json:"did" validate:"atproto-did"`
+	// Password is required unless AuthKey is supplied: an account that signs
+	// in with a key has no password, and password sign-in always fails for it.
+	Password   string `json:"password" validate:"omitempty"`
+	InviteCode string `json:"inviteCode" validate:"omitempty"`
 	// RecoveryKey is an optional did:key that is placed FIRST in the genesis
 	// PLC operation's rotationKeys, before the PDS's own rotation key, so its
 	// holder outranks the PDS for identity recovery.
 	RecoveryKey string `json:"recoveryKey" validate:"omitempty"`
+	// AuthKey is an optional did:key (K-256 or P-256) the account signs in
+	// with, through the jwt-bearer OAuth grant. With it set, Password may be
+	// omitted and no legacy session is created: accessJwt and refreshJwt in
+	// the response are empty strings.
+	AuthKey string `json:"authKey" validate:"omitempty"`
 }
 
 type ComAtprotoServerCreateAccountResponse struct {
@@ -77,6 +84,19 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 				return helpers.InputError(e, to.StringPtr("InvalidInviteCode"))
 			}
 		}
+	}
+
+	// Validate the sign-in key before any PLC operation, so an invalid key
+	// never burns an invite use or creates an identity.
+	authKey := ""
+	if strings.TrimSpace(request.AuthKey) != "" {
+		if _, err := atcrypto.ParsePublicDIDKey(request.AuthKey); err != nil {
+			return helpers.InputError(e, to.StringPtr("InvalidRequest"))
+		}
+		authKey = strings.TrimSpace(request.AuthKey)
+	}
+	if request.Password == "" && authKey == "" {
+		return helpers.InputError(e, to.StringPtr("InvalidPassword"))
 	}
 
 	var signupDid string
@@ -202,10 +222,17 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		signupDid = did
 	}
 
-	hashed, err := bcrypt.GenerateFromPassword([]byte(request.Password), 10)
-	if err != nil {
-		logger.Error("error hashing password", "error", err)
-		return helpers.ServerError(e, nil)
+	// An account that signs in with a key and no password stores an empty
+	// password hash, which comparePassword never matches, so every password
+	// path refuses the account.
+	hashed := []byte(request.Password)
+	if request.Password != "" {
+		h, err := bcrypt.GenerateFromPassword([]byte(request.Password), 10)
+		if err != nil {
+			logger.Error("error hashing password", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+		hashed = h
 	}
 
 	urepo := models.Repo{
@@ -260,6 +287,36 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 		if err := s.emitRepoSync(context.TODO(), urepo.Did, rev, root); err != nil {
 			logger.Error("error emitting repo sync event", "error", err)
 		}
+	}
+
+	if authKey != "" {
+		if err := s.db.Create(ctx, &models.AuthKey{
+			Did:       urepo.Did,
+			DidKey:    authKey,
+			CreatedAt: time.Now(),
+		}, nil).Error; err != nil {
+			logger.Error("error storing sign-in key", "error", err)
+			return helpers.ServerError(e, nil)
+		}
+	}
+
+	// An account with no password signs in with its key: no legacy session.
+	if request.Password == "" {
+		go func() {
+			if err := s.sendEmailVerification(urepo.Email, actor.Handle, *urepo.EmailVerificationCode); err != nil {
+				logger.Error("error sending email verification email", "error", err)
+			}
+			if err := s.sendWelcomeMail(urepo.Email, actor.Handle); err != nil {
+				logger.Error("error sending welcome email", "error", err)
+			}
+		}()
+
+		return e.JSON(200, ComAtprotoServerCreateAccountResponse{
+			AccessJwt:  "",
+			RefreshJwt: "",
+			Handle:     request.Handle,
+			Did:        signupDid,
+		})
 	}
 
 	sess, err := s.createSession(ctx, &urepo)

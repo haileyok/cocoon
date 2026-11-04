@@ -10,7 +10,6 @@ import (
 	"github.com/bluesky-social/indigo/util"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/labstack/echo/v4"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type ComAtprotoServerDeleteAccountRequest struct {
@@ -40,7 +39,7 @@ func (s *Server) handleServerDeleteAccount(e echo.Context) error {
 		return echo.NewHTTPError(400, "account not found")
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(urepo.Repo.Password), []byte(req.Password)); err != nil {
+	if err := comparePassword(urepo.Repo.Password, req.Password); err != nil {
 		logger.Error("password mismatch", "error", err)
 		return echo.NewHTTPError(401, "Invalid did or password")
 	}

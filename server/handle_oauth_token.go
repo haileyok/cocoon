@@ -30,6 +30,8 @@ type OauthTokenRequest struct {
 	CodeVerifier *string `form:"code_verifier" json:"code_verifier,omitempty"`
 	RedirectURI  *string `form:"redirect_uri" json:"redirect_uri,omitempty"`
 	RefreshToken *string `form:"refresh_token" json:"refresh_token,omitempty"`
+	Assertion    *string `form:"assertion" json:"assertion,omitempty"`
+	Scope        *string `form:"scope" json:"scope,omitempty"`
 }
 
 type OauthTokenResponse struct {
@@ -76,7 +78,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 	}
 
 	// TODO: this should come from an oauth provier config
-	if !slices.Contains([]string{"authorization_code", "refresh_token"}, req.GrantType) {
+	if !slices.Contains([]string{"authorization_code", "refresh_token", jwtBearerGrantType}, req.GrantType) {
 		return helpers.InputError(e, to.StringPtr(fmt.Sprintf(`"%s" grant type is not supported by the server`, req.GrantType)))
 	}
 
@@ -305,6 +307,10 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			ExpiresIn:    int64(eat.Sub(time.Now()).Seconds()),
 			Sub:          oauthToken.Sub,
 		})
+	}
+
+	if req.GrantType == jwtBearerGrantType {
+		return s.handleOauthTokenJwtBearer(e, client, clientAuth, proof, req)
 	}
 
 	return helpers.InputError(e, to.StringPtr(fmt.Sprintf(`grant type "%s" is not supported`, req.GrantType)))
