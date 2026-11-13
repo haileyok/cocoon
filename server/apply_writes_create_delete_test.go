@@ -8,7 +8,7 @@ import (
 func newApplyWritesServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	acct := s.createTestAccount(t, "alice.pds.test")
 	s.seedGenesisRepo(t, acct.Did, acct.SigningKey)

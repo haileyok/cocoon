@@ -70,7 +70,7 @@ func counterTotal(t *testing.T, name string) float64 {
 func newSubscribeTestServer(t *testing.T) *Server {
 	t.Helper()
 	s := newTestServer(t)
-	evtman, persister := newTestEvtmanPersister(t)
+	evtman, persister := s.newTestEvtmanPersister(t)
 	s.evtman = evtman
 	// The handler consults the persister for the retained seq range, so tests
 	// must wire the same instance the event manager writes through.

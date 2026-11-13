@@ -453,7 +453,7 @@ func TestImportRejectsMisorderedTree(t *testing.T) {
 func TestImportSerializesWithWrites(t *testing.T) {
 	s := newTestServer(t)
 	s.repoman = NewRepoMan(s)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	account := s.createTestAccount(t, "overlap.pds.test")
 	s.seedGenesisRepo(t, account.Did, account.SigningKey)
 	repo, err := s.getRepoActorByDid(context.Background(), account.Did)
@@ -512,7 +512,7 @@ func TestImportSerializesWithWrites(t *testing.T) {
 func TestWriteAfterImportRefreshesHead(t *testing.T) {
 	s := newTestServer(t)
 	s.repoman = NewRepoMan(s)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	account := s.createTestAccount(t, "cached-import.pds.test")
 	s.seedGenesisRepo(t, account.Did, account.SigningKey)
 	mustApply(t, s, account.Did, Op{Type: OpTypeCreate, Collection: "app.bsky.feed.post", Rkey: strPtr("old"), Record: rmPostRecord("old")})

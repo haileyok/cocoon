@@ -70,7 +70,7 @@ func mkTestCid(t *testing.T, b []byte) cid.Cid {
 
 func TestRunRepoGcMigrationDryRun(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	did := gcCreateChurnedRepo(t, s)
 	garbage := gcInsertGarbageBlocks(t, s, did, 3)
@@ -102,7 +102,7 @@ func TestRunRepoGcMigrationDryRun(t *testing.T) {
 
 func TestRunRepoGcMigration(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	did := gcCreateChurnedRepo(t, s)
 	garbage := gcInsertGarbageBlocks(t, s, did, 3)
@@ -151,7 +151,7 @@ func TestRunRepoGcMigration(t *testing.T) {
 
 func TestRunRepoGcMigrationNoGarbage(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	did := gcCreateChurnedRepo(t, s)
 
@@ -185,7 +185,7 @@ func TestRunRepoGcMigrationUnknownDid(t *testing.T) {
 
 func TestRunRepoGcMigrationCorruptCidRowFails(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	did := gcCreateChurnedRepo(t, s)
 
@@ -228,7 +228,7 @@ func TestRunRepoGcMigrationCorruptCidRowFails(t *testing.T) {
 // actual rows, never by subtraction.
 func TestRunRepoGcMigrationMissingLiveRowNoNegativeAccounting(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	did := gcCreateChurnedRepo(t, s)
 	garbage := gcInsertGarbageBlocks(t, s, did, 2)

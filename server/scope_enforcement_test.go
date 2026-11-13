@@ -195,7 +195,7 @@ func TestRepoWriteActualAction(t *testing.T) {
 					t.Fatalf("import: %d %s", code, msg)
 				}
 				uploadTestBlob(t, s, account, "original media")
-				s.evtman = newTestEvtman(t)
+				s.evtman = s.newTestEvtman(t)
 				before := importState(t, s, account.Did)
 				body := map[string]any{"repo": account.Did, "collection": "app.bsky.feed.post", "rkey": tc.key, "record": postRecord("replacement")}
 				if tc.swap {
@@ -262,11 +262,14 @@ func TestRepoWriteBatchAuthorization(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, account := endpointTestServer(t)
 			s.repoman = NewRepoMan(s)
-			s.evtman = newTestEvtman(t)
+			manager, persister := s.newTestEvtmanPersister(t)
+			s.evtman = manager
 			s.seedGenesisRepo(t, account.Did, account.SigningKey)
 			mustApply(t, s, account.Did, Op{Type: OpTypeCreate, Collection: "app.bsky.feed.post", Rkey: strPtr("existing"), Record: rmPostRecord("original")})
-			events, persister := newTestEvtmanPersister(t)
-			s.evtman = events
+			_, beforeSeq, _, err := persister.EventSeqRange(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
 			before := importState(t, s, account.Did)
 			body := ComAtprotoRepoApplyWritesInput{Repo: account.Did, Writes: []ComAtprotoRepoApplyWritesItem{
 				{Type: tc.first.String(), Collection: "app.bsky.feed.post", Rkey: tc.firstKey, Value: rmPostRecord("first")},
@@ -294,7 +297,7 @@ func TestRepoWriteBatchAuthorization(t *testing.T) {
 				if !reflect.DeepEqual(before, importState(t, s, account.Did)) {
 					t.Fatal("denied batch changed repository state")
 				}
-				if _, _, ok, err := persister.EventSeqRange(context.Background()); err != nil || ok {
+				if _, afterSeq, _, err := persister.EventSeqRange(context.Background()); err != nil || afterSeq != beforeSeq {
 					t.Fatalf("denied batch published an event: %v", err)
 				}
 				return

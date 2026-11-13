@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -18,32 +17,22 @@ import (
 	"github.com/haileyok/cocoon/models"
 	"github.com/ipfs/go-cid"
 	"github.com/ipld/go-car"
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
-	gormlogger "gorm.io/gorm/logger"
 )
 
-// newTestEvtmanPersister builds an event manager over a fresh events database
-// and returns the persister alongside it, for tests that need to inspect the
-// retained seq range the manager prunes.
-func newTestEvtmanPersister(t *testing.T) (*events.EventManager, *DbPersister) {
+// Events share the repository database, as in production.
+func (s *Server) newTestEvtmanPersister(t *testing.T) (*events.EventManager, *DbPersister) {
 	t.Helper()
-	gdb, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "events.db")), &gorm.Config{
-		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
-	})
-	if err != nil {
-		t.Fatalf("open events db: %v", err)
-	}
-	p, err := NewDbPersister(gdb, time.Hour)
+	p, err := NewDbPersister(s.db.Client(), time.Hour)
 	if err != nil {
 		t.Fatalf("new persister: %v", err)
 	}
+	s.evtpersister = p
 	return events.NewEventManager(p), p
 }
 
-func newTestEvtman(t *testing.T) *events.EventManager {
+func (s *Server) newTestEvtman(t *testing.T) *events.EventManager {
 	t.Helper()
-	m, _ := newTestEvtmanPersister(t)
+	m, _ := s.newTestEvtmanPersister(t)
 	return m
 }
 
@@ -97,7 +86,7 @@ func TestSubscribeReposMsgType(t *testing.T) {
 // the previous commit's MST root as prevData.
 func TestApplyWritesEmitsPrevData(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	acct := s.createTestAccount(t, "alice.pds.test")
 	root, _ := s.seedGenesisRepo(t, acct.Did, acct.SigningKey)
@@ -155,7 +144,7 @@ func TestApplyWritesEmitsPrevData(t *testing.T) {
 // #sync event announcing the repo's current head.
 func TestActivateAccountEmitsRepoSync(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	acct := s.createTestAccount(t, "bob.pds.test")
 	attachStatusDID(t, s, acct, acct.Did, "valid")
 	_, rev := s.seedGenesisRepo(t, acct.Did, acct.SigningKey)
@@ -207,7 +196,7 @@ func TestActivateAccountEmitsRepoSync(t *testing.T) {
 func TestInactiveWritesStayLocalUntilActivation(t *testing.T) {
 	s, account := endpointTestServer(t)
 	s.repoman = NewRepoMan(s)
-	manager, persister := newTestEvtmanPersister(t)
+	manager, persister := s.newTestEvtmanPersister(t)
 	s.evtman = manager
 	s.seedGenesisRepo(t, account.Did, account.SigningKey)
 	attachStatusDID(t, s, account, account.Did, "valid")

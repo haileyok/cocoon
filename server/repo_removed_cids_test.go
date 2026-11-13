@@ -144,7 +144,7 @@ func strPtr(v string) *string { return &v }
 // commit.removedCids.
 func TestApplyWritesRemovesSupersededRecordBlocks(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	acct := s.createTestAccount(t, "alice.pds.test")
 	s.seedGenesisRepo(t, acct.Did, acct.SigningKey)
@@ -216,7 +216,7 @@ func TestApplyWritesRemovesSupersededRecordBlocks(t *testing.T) {
 // retained.
 func TestApplyWritesRemovesSupersededMstNodes(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	acct := s.createTestAccount(t, "alice.pds.test")
 	s.seedGenesisRepo(t, acct.Did, acct.SigningKey)
@@ -289,7 +289,7 @@ func TestApplyWritesRemovesSupersededMstNodes(t *testing.T) {
 // (DataDiff adds the previous commit CID to removedCids).
 func TestApplyWritesRemovesSupersededCommitBlocks(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	acct := s.createTestAccount(t, "alice.pds.test")
 	genesisRoot, _ := s.seedGenesisRepo(t, acct.Did, acct.SigningKey)
@@ -323,7 +323,7 @@ func TestApplyWritesRemovesSupersededCommitBlocks(t *testing.T) {
 // identical content does not delete the record block.
 func TestApplyWritesNoopUpdateKeepsRecordBlock(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	acct := s.createTestAccount(t, "alice.pds.test")
 	s.seedGenesisRepo(t, acct.Did, acct.SigningKey)
@@ -358,7 +358,7 @@ func TestApplyWritesNoopUpdateKeepsRecordBlock(t *testing.T) {
 // being deleted.
 func TestApplyWritesFirehoseAfterRemovals(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	acct := s.createTestAccount(t, "alice.pds.test")
 	s.seedGenesisRepo(t, acct.Did, acct.SigningKey)
@@ -474,7 +474,7 @@ func TestApplyWritesFirehoseAfterRemovals(t *testing.T) {
 // record block in storage.
 func TestApplyWritesBatchCreateThenDeleteCleansBlock(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	acct := s.createTestAccount(t, "alice.pds.test")
 	s.seedGenesisRepo(t, acct.Did, acct.SigningKey)
@@ -513,7 +513,7 @@ func TestApplyWritesBatchCreateThenDeleteCleansBlock(t *testing.T) {
 // record blocks.
 func TestApplyWritesBatchUpdateThenDeleteCleansBlock(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	acct := s.createTestAccount(t, "alice.pds.test")
 	s.seedGenesisRepo(t, acct.Did, acct.SigningKey)
@@ -632,7 +632,7 @@ func TestComputeRemovedCids(t *testing.T) {
 // blockstore after superseded blocks have been removed.
 func TestApplyWritesRepoStillVerifies(t *testing.T) {
 	s := newTestServer(t)
-	s.evtman = newTestEvtman(t)
+	s.evtman = s.newTestEvtman(t)
 	s.repoman = NewRepoMan(s)
 	acct := s.createTestAccount(t, "alice.pds.test")
 	s.seedGenesisRepo(t, acct.Did, acct.SigningKey)
