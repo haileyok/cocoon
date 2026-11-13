@@ -140,8 +140,13 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 		authReq.Parameters.Scope = expandedScope
 
+		// The scope is not put in the access token: it is stored with the
+		// token in the db, which is where the OAuth middleware reads it from.
+		// Expanded `include:` scopes can run to several KB, which bloats every
+		// request's Authorization header and breaks clients that index the
+		// token. This matches the reference PDS's "stateful" token mode:
+		// https://github.com/bluesky-social/atproto/blob/b4dac063aba56e4be8085d0da3888c7bc55e6102/packages/pds/src/context.ts#L498-L503
 		accessClaims := jwt.MapClaims{
-			"scope":     expandedScope,
 			"aud":       s.config.Did,
 			"sub":       repo.Repo.Did,
 			"iat":       now.Unix(),
@@ -265,8 +270,8 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 		oauthToken.Parameters.Scope = expandedScope
 
+		// See the authorization_code grant: scope lives in the db, not the token.
 		accessClaims := jwt.MapClaims{
-			"scope":     expandedScope,
 			"aud":       s.config.Did,
 			"sub":       oauthToken.Sub,
 			"iat":       now.Unix(),
