@@ -280,7 +280,8 @@ func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
 	code := oauth.GenerateCode()
 
 	// Only the first accept wins, even if the form is submitted twice.
-	res := s.db.Exec(ctx, "UPDATE oauth_authorization_requests SET sub = ?, session_version = ?, code = ?, accepted = ?, ip = ? WHERE request_id = ? AND sub IS NULL AND code IS NULL", nil, repo.Repo.Did, repo.SessionVersion, code, true, e.RealIP(), reqId)
+	// Start the code's exchange window at consent, not at request creation.
+	res := s.db.Exec(ctx, "UPDATE oauth_authorization_requests SET sub = ?, session_version = ?, code = ?, accepted = ?, ip = ?, expires_at = ? WHERE request_id = ? AND sub IS NULL AND code IS NULL", nil, repo.Repo.Did, repo.SessionVersion, code, true, e.RealIP(), time.Now().Add(constants.AuthorizationInactivityTimeout), reqId)
 	if res.Error != nil {
 		logger.Error("error updating authorization request", "error", res.Error)
 		return helpers.ServerError(e, nil)

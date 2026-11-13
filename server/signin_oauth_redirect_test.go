@@ -16,6 +16,7 @@ import (
 	"github.com/haileyok/cocoon/internal/totp"
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/oauth"
+	"github.com/haileyok/cocoon/oauth/constants"
 	"github.com/haileyok/cocoon/oauth/provider"
 	"gorm.io/gorm"
 )
@@ -423,6 +424,83 @@ func TestAuthorizeAcceptOnlyOnce(t *testing.T) {
 	}
 	if w := browserDo(s, cookie, "POST", "/oauth/authorize", form); w.Code != 400 {
 		t.Fatalf("second accept should fail, got %d %q", w.Code, w.Header().Get("Location"))
+	}
+}
+
+func TestAuthorizeAcceptRenewsCodeExpiry(t *testing.T) {
+	s, account, cookie := manageServer(t)
+	attachOauthProvider(t, s)
+	auth, exchange := authorizationCodeFixture(t, s, account)
+	auth.Parameters.ResponseType = "code"
+	auth.Sub, auth.Code, auth.Accepted = nil, nil, nil
+	auth.ExpiresAt = time.Now().Add(time.Second)
+	oldExpiry := auth.ExpiresAt
+	if err := s.db.Create(context.Background(), &auth, nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now()
+	w := browserDo(s, cookie, "POST", "/oauth/authorize", url.Values{
+		"request_uri": {oauth.EncodeRequestUri(auth.RequestId)}, "accept_or_reject": {"accept"},
+	})
+	after := time.Now()
+	if w.Code != 303 {
+		t.Fatalf("accept: %d %s", w.Code, w.Body.String())
+	}
+	location, err := url.Parse(w.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exchange.Set("code", location.Query().Get("code"))
+	if exchange.Get("code") == "" {
+		t.Fatalf("missing code in redirect: %s", location)
+	}
+	if err := s.db.First(context.Background(), &auth, "request_id = ?", auth.RequestId).Error; err != nil {
+		t.Fatal(err)
+	}
+	if auth.ExpiresAt.Before(before.Add(constants.AuthorizationInactivityTimeout)) || auth.ExpiresAt.After(after.Add(constants.AuthorizationInactivityTimeout)) {
+		t.Errorf("code expiry %s was not renewed at acceptance", auth.ExpiresAt)
+	}
+	acceptedExpiry := auth.ExpiresAt
+	w = browserDo(s, cookie, "POST", "/oauth/authorize", url.Values{
+		"request_uri": {oauth.EncodeRequestUri(auth.RequestId)}, "accept_or_reject": {"accept"},
+	})
+	if w.Code != 400 {
+		t.Fatalf("second acceptance: %d %s", w.Code, w.Body.String())
+	}
+	if err := s.db.First(context.Background(), &auth, "request_id = ?", auth.RequestId).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !auth.ExpiresAt.Equal(acceptedExpiry) || auth.Code == nil || *auth.Code != exchange.Get("code") {
+		t.Fatal("second acceptance changed the code or its expiry")
+	}
+	// The redirect/exchange can outlive the pending request's remaining lifetime.
+	time.Sleep(time.Until(oldExpiry) + time.Millisecond)
+	w = httptest.NewRecorder()
+	s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, exchange))
+	if w.Code != 200 || countOauthTokens(t, s) != 1 {
+		t.Fatalf("exchange after original PAR expiry: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAuthorizeAcceptDoesNotRenewExpiredRequest(t *testing.T) {
+	s, _, cookie := manageServer(t)
+	insertAuthRequest(t, s, "expired-request")
+	expiry := time.Now().Add(-time.Second)
+	if err := s.db.Exec(t.Context(), "UPDATE oauth_authorization_requests SET expires_at = ? WHERE request_id = ?", nil, expiry, "expired-request").Error; err != nil {
+		t.Fatal(err)
+	}
+	w := browserDo(s, cookie, "POST", "/oauth/authorize", url.Values{
+		"request_uri": {oauth.EncodeRequestUri("expired-request")}, "accept_or_reject": {"accept"},
+	})
+	if w.Code != 400 {
+		t.Fatalf("expired request acceptance: %d %s", w.Code, w.Body.String())
+	}
+	var auth provider.OauthAuthorizationRequest
+	if err := s.db.First(t.Context(), &auth, "request_id = ?", "expired-request").Error; err != nil {
+		t.Fatal(err)
+	}
+	if auth.Code != nil || auth.Sub != nil || !auth.ExpiresAt.Equal(expiry) {
+		t.Fatal("expired request was renewed or authorized")
 	}
 }
 
