@@ -31,7 +31,11 @@ func newTestDpopProof(t *testing.T, s *Server, method, htu string, accessToken *
 	if err != nil {
 		t.Fatalf("generate dpop key: %v", err)
 	}
+	return newTestDpopProofWithKey(t, s, method, htu, accessToken, priv)
+}
 
+func newTestDpopProofWithKey(t *testing.T, s *Server, method, htu string, accessToken *string, priv *ecdsa.PrivateKey) string {
+	t.Helper()
 	pub, err := jwk.FromRaw(priv.Public())
 	if err != nil {
 		t.Fatalf("build public jwk: %v", err)

@@ -135,8 +135,9 @@ func TestOauthTokenAuthorizationCodeInvalidGrant(t *testing.T) {
 			seed: func(t *testing.T, s *Server, account *testAccount) string {
 				ctx := context.Background()
 				auth := provider.OauthAuthorizationRequest{
-					RequestId: "stale-auth",
-					ClientId:  "http://localhost",
+					RequestId:  "stale-auth",
+					ClientId:   "http://localhost",
+					ClientAuth: provider.ClientAuth{Method: "none"},
 					Parameters: provider.ParRequest{
 						Scope: "atproto", RedirectURI: redirectURI,
 						CodeChallenge: &challenge, CodeChallengeMethod: "S256",
