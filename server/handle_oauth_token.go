@@ -90,12 +90,19 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr(`"code" is required"`))
 		}
 
+		// Match the reference: consume before grant validation. Later failures
+		// must not restore the code, including failure to persist the token.
 		var authReq provider.OauthAuthorizationRequest
-		if err := s.db.Raw(ctx, "SELECT * FROM oauth_authorization_requests WHERE code = ?", nil, *req.Code).Scan(&authReq).Error; err != nil {
-			logger.Error("error finding authorization request", "error", err)
+		if err := s.db.Raw(ctx, "DELETE FROM oauth_authorization_requests WHERE code = ? RETURNING *", nil, *req.Code).Scan(&authReq).Error; err != nil {
+			logger.Error("error consuming authorization request", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 		if authReq.Sub == nil || authReq.Code == nil || !time.Now().Before(authReq.ExpiresAt) {
+			// A replay invalidates any session already issued from this code.
+			if err := s.db.Exec(ctx, "DELETE FROM oauth_tokens WHERE code = ?", nil, *req.Code).Error; err != nil {
+				logger.Error("error revoking replayed authorization code", "error", err)
+				return helpers.ServerError(e, nil)
+			}
 			return helpers.InvalidGrantError(e, "Invalid authorization code")
 		}
 
@@ -114,16 +121,16 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		if req.RedirectURI == nil || *req.RedirectURI != authReq.Parameters.RedirectURI {
-			return helpers.InputError(e, to.StringPtr(`"redirect_uri" mismatch`))
+			return helpers.InvalidGrantError(e, `"redirect_uri" mismatch`)
 		}
 
 		if authReq.Parameters.CodeChallenge != nil {
 			if req.CodeVerifier == nil {
-				return helpers.InputError(e, to.StringPtr(`"code_verifier" is required`))
+				return helpers.InvalidGrantError(e, `"code_verifier" is required`)
 			}
 
 			if len(*req.CodeVerifier) < 43 {
-				return helpers.InputError(e, to.StringPtr(`"code_verifier" is too short`))
+				return helpers.InvalidGrantError(e, `"code_verifier" is too short`)
 			}
 
 			if err := verifyPKCE(*authReq.Parameters.CodeChallenge, authReq.Parameters.CodeChallengeMethod, *req.CodeVerifier); err != nil {
@@ -180,18 +187,17 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return err
 		}
 
-		invalidCode := errors.New("authorization code is no longer valid")
+		revokedSession := errors.New("authorization session is no longer valid")
 		err = s.db.Transaction(ctx, func(tx *db.DB) error {
-			// Scope resolution may take time; recheck expiry and revocation while consuming once.
-			result := tx.Exec(ctx, `DELETE FROM oauth_authorization_requests
-				WHERE request_id = ? AND code = ? AND expires_at > ?
-				AND EXISTS (SELECT 1 FROM repos WHERE did = ? AND session_version = ?)`,
-				nil, authReq.RequestId, *authReq.Code, time.Now(), *authReq.Sub, authReq.SessionVersion)
+			// Recheck and lock the account after scope resolution. Password reset
+			// takes this same lock before removing sessions, so it cannot miss issuance.
+			result := tx.Exec(ctx, `UPDATE repos SET session_version = session_version
+				WHERE did = ? AND session_version = ?`, nil, *authReq.Sub, authReq.SessionVersion)
 			if result.Error != nil {
 				return result.Error
 			}
 			if result.RowsAffected != 1 {
-				return invalidCode
+				return revokedSession
 			}
 			return tx.Create(ctx, &provider.OauthToken{
 				ClientId:       authReq.ClientId,
@@ -207,8 +213,8 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 				Ip:             authReq.Ip,
 			}, nil).Error
 		})
-		if errors.Is(err, invalidCode) {
-			return helpers.InvalidGrantError(e, "Invalid authorization code")
+		if errors.Is(err, revokedSession) {
+			return helpers.InvalidGrantError(e, "Session revoked")
 		}
 		if err != nil {
 			logger.Error("error creating token in db", "error", err)
