@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -144,7 +143,7 @@ func (f codeExchangeResolver) ResolvePermissionSet(ctx context.Context, _ string
 func TestOauthCodeExchangeValidation(t *testing.T) {
 	for _, name := range []string{
 		"expired", "wrong client", "changed auth method", "missing proof", "wrong proof",
-		"missing proof without prior binding", "wrong redirect", "missing verifier", "wrong verifier", "revoked session",
+		"missing proof without prior binding", "wrong redirect", "missing redirect", "missing verifier", "short verifier", "wrong verifier", "revoked session",
 	} {
 		t.Run(name, func(t *testing.T) {
 			s, account := endpointTestServer(t)
@@ -160,18 +159,18 @@ func TestOauthCodeExchangeValidation(t *testing.T) {
 				auth.Parameters.DpopJkt = nil
 			case "wrong redirect":
 				form.Set("redirect_uri", "http://127.0.0.1/other")
+			case "missing redirect":
+				form.Del("redirect_uri")
 			case "missing verifier":
 				form.Del("code_verifier")
+			case "short verifier":
+				form.Set("code_verifier", strings.Repeat("x", 42))
 			case "wrong verifier":
 				form.Set("code_verifier", strings.Repeat("x", 43))
 			case "revoked session":
 				auth.SessionVersion = -1
 			}
 			if err := s.db.Create(context.Background(), &auth, nil).Error; err != nil {
-				t.Fatal(err)
-			}
-			var before provider.OauthAuthorizationRequest
-			if err := s.db.First(context.Background(), &before, "request_id = ?", auth.RequestId).Error; err != nil {
 				t.Fatal(err)
 			}
 			r := authorizationCodeRequest(t, s, form)
@@ -190,101 +189,69 @@ func TestOauthCodeExchangeValidation(t *testing.T) {
 			switch name {
 			case "missing proof without prior binding":
 				wantError = "invalid_dpop_proof"
-			case "wrong redirect", "missing verifier":
-				wantError = ""
 			}
 			var response map[string]string
-			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || (wantError != "" && response["error"] != wantError) {
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || response["error"] != wantError {
 				t.Fatalf("expected %s: %s", wantError, w.Body.String())
 			}
-			var after provider.OauthAuthorizationRequest
-			if err := s.db.First(context.Background(), &after, "request_id = ?", auth.RequestId).Error; err != nil {
-				t.Fatalf("rejected exchange consumed grant: %v", err)
-			}
-			if !reflect.DeepEqual(before, after) || countOauthTokens(t, s) != 0 {
-				t.Fatal("rejected exchange changed the grant or issued a token")
+			if countAuthRequests(t, s) != 0 || countOauthTokens(t, s) != 0 {
+				t.Fatal("rejected exchange must consume the grant without issuing a token")
 			}
 		})
 	}
 }
 
 func TestOauthCodeExchangeSingleUse(t *testing.T) {
-	for _, name := range []string{"bound", "bound at exchange", "concurrent", "issuance failure"} {
+	for _, name := range []string{"bound", "bound at exchange", "issuance failure", "scope failure"} {
 		t.Run(name, func(t *testing.T) {
 			s, account := endpointTestServer(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			auth, form := authorizationCodeFixture(t, s, account)
 			wantJkt := *auth.Parameters.DpopJkt
-			wantScope := "atproto"
-			n := 1
+			auth.Parameters.Scope = "atproto include:com.example.permissions"
+			wantScope := auth.Parameters.Scope + " repo:com.example.record?action=create"
+			s.scopeResolver = codeExchangeResolver(func(context.Context) {})
 			if name == "bound at exchange" {
 				auth.Parameters.DpopJkt = nil
 			}
-			if name == "concurrent" {
-				n = 8
-				sqlDB, err := s.db.Client().DB()
-				if err != nil {
-					t.Fatal(err)
-				}
-				sqlDB.SetMaxOpenConns(1)
-				auth.Parameters.Scope = "atproto include:com.example.permissions"
-				wantScope = auth.Parameters.Scope + " repo:com.example.record?action=create"
-				var arrived atomic.Int32
-				release := make(chan struct{})
-				s.scopeResolver = codeExchangeResolver(func(ctx context.Context) {
-					if arrived.Add(1) == int32(n) {
-						close(release)
-					}
-					select {
-					case <-release:
-					case <-ctx.Done():
-					}
-				})
+			if name == "scope failure" {
+				auth.Parameters.Scope = "atproto space:com.example.space"
+				s.spaceTypes = declaredSpaceTypes{}
 			}
 			if err := s.db.Create(ctx, &auth, nil).Error; err != nil {
 				t.Fatal(err)
 			}
-			if name == "issuance failure" {
-				if err := s.db.Exec(ctx, "CREATE TRIGGER fail_token BEFORE INSERT ON oauth_tokens BEGIN SELECT RAISE(ABORT, 'test failure'); END", nil).Error; err != nil {
-					t.Fatal(err)
+			if name == "issuance failure" || name == "scope failure" {
+				wantStatus := 400
+				if name == "issuance failure" {
+					wantStatus = 500
+					if err := s.db.Exec(ctx, "CREATE TRIGGER fail_token BEFORE INSERT ON oauth_tokens BEGIN SELECT RAISE(ABORT, 'test failure'); END", nil).Error; err != nil {
+						t.Fatal(err)
+					}
 				}
 				w := httptest.NewRecorder()
 				s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form))
-				if w.Code != 500 || countAuthRequests(t, s) != 1 || countOauthTokens(t, s) != 0 {
-					t.Fatalf("failed issuance must preserve grant without tokens: %d %s", w.Code, w.Body.String())
+				if w.Code != wantStatus || countAuthRequests(t, s) != 0 || countOauthTokens(t, s) != 0 {
+					t.Fatalf("failed issuance must consume grant without tokens: %d %s", w.Code, w.Body.String())
 				}
-				if err := s.db.Exec(ctx, "DROP TRIGGER fail_token", nil).Error; err != nil {
+				if err := s.db.Exec(ctx, "DROP TRIGGER IF EXISTS fail_token", nil).Error; err != nil {
 					t.Fatal(err)
 				}
+				s.spaceTypes = declaredSpaceTypes{"com.example.space": {"com.example.record"}}
+				w = httptest.NewRecorder()
+				s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form))
+				assertInvalidGrant(t, w)
+				return
 			}
-			start := make(chan struct{})
-			results := make(chan *httptest.ResponseRecorder, n)
-			for range n {
-				r := authorizationCodeRequest(t, s, form).WithContext(ctx)
-				go func() {
-					<-start
-					w := httptest.NewRecorder()
-					s.echo.ServeHTTP(w, r)
-					results <- w
-				}()
-			}
-			close(start)
+			w := httptest.NewRecorder()
+			s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form))
 			var response OauthTokenResponse
-			successes := 0
-			for range n {
-				w := <-results
-				if w.Code == 200 {
-					successes++
-					if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-						t.Fatal(err)
-					}
-				} else {
-					assertInvalidGrant(t, w)
-				}
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
 			}
-			if successes != 1 || countAuthRequests(t, s) != 0 || countOauthTokens(t, s) != 1 {
-				t.Fatalf("wanted exactly one consumed grant and token, got %d successful exchanges", successes)
+			if w.Code != 200 || countAuthRequests(t, s) != 0 || countOauthTokens(t, s) != 1 {
+				t.Fatalf("wanted one consumed grant and token: %d %s", w.Code, w.Body.String())
 			}
 			var token provider.OauthToken
 			if err := s.db.First(ctx, &token, "token = ?", response.AccessToken).Error; err != nil {
@@ -306,12 +273,39 @@ func TestOauthCodeExchangeSingleUse(t *testing.T) {
 			if _, present := claims["scope"]; present {
 				t.Fatal("JWT duplicates database-backed scopes")
 			}
-			w := httptest.NewRecorder()
+			refreshForm := url.Values{"client_id": {auth.ClientId}, "grant_type": {"refresh_token"}, "refresh_token": {response.RefreshToken}}
+			if name == "bound at exchange" {
+				w = httptest.NewRecorder()
+				s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, refreshForm))
+				if w.Code != 200 {
+					t.Fatalf("refresh before code replay: %d %s", w.Code, w.Body.String())
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+					t.Fatal(err)
+				}
+				refreshForm.Set("refresh_token", response.RefreshToken)
+			}
+			seedRefreshToken(t, s, account.Did, "unrelated-session")
+			w = httptest.NewRecorder()
 			s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form))
 			assertInvalidGrant(t, w)
 			if countOauthTokens(t, s) != 1 {
-				t.Fatal("replay changed token count")
+				t.Fatal("replay must revoke only the session issued from this code")
 			}
+			if err := s.db.First(ctx, &provider.OauthToken{}, "refresh_token = ?", "unrelated-session").Error; err != nil {
+				t.Fatalf("replay revoked unrelated session: %v", err)
+			}
+			r := httptest.NewRequest("GET", "/xrpc/com.atproto.server.getSession", nil)
+			r.Header.Set("Authorization", "DPoP "+response.AccessToken)
+			r.Header.Set("DPoP", newTestDpopProofWithKey(t, s, r.Method, "https://"+testHostname+r.URL.String(), &response.AccessToken, s.privateKey))
+			w = httptest.NewRecorder()
+			s.echo.ServeHTTP(w, r)
+			if w.Code != 401 {
+				t.Fatalf("replayed session still permits access: %d %s", w.Code, w.Body.String())
+			}
+			w = httptest.NewRecorder()
+			s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, refreshForm))
+			assertInvalidGrant(t, w)
 		})
 	}
 }
@@ -390,7 +384,7 @@ func TestOauthTokenDatabaseScopes(t *testing.T) {
 }
 
 func TestOauthCodeExchangeRechecksAfterScopeResolution(t *testing.T) {
-	for _, name := range []string{"expiry", "revocation", "deletion"} {
+	for _, name := range []string{"revocation", "account deletion"} {
 		t.Run(name, func(t *testing.T) {
 			s, account := endpointTestServer(t)
 			auth, form := authorizationCodeFixture(t, s, account)
@@ -401,12 +395,10 @@ func TestOauthCodeExchangeRechecksAfterScopeResolution(t *testing.T) {
 			s.scopeResolver = codeExchangeResolver(func(ctx context.Context) {
 				var err error
 				switch name {
-				case "expiry":
-					err = s.db.Exec(ctx, "UPDATE oauth_authorization_requests SET expires_at = ? WHERE request_id = ?", nil, time.Now().Add(-time.Second), auth.RequestId).Error
 				case "revocation":
-					err = s.db.Exec(ctx, "UPDATE repos SET session_version = session_version + 1 WHERE did = ?", nil, account.Did).Error
-				case "deletion":
-					err = s.db.Exec(ctx, "DELETE FROM oauth_authorization_requests WHERE request_id = ?", nil, auth.RequestId).Error
+					err = s.db.ResetPassword(ctx, account.Did, "unused-test-password-hash", nil)
+				case "account deletion":
+					err = s.db.Exec(ctx, "DELETE FROM repos WHERE did = ?", nil, account.Did).Error
 				}
 				if err != nil {
 					t.Fatal(err)
@@ -417,6 +409,101 @@ func TestOauthCodeExchangeRechecksAfterScopeResolution(t *testing.T) {
 			assertInvalidGrant(t, w)
 			if countOauthTokens(t, s) != 0 {
 				t.Fatal("invalidated grant issued tokens")
+			}
+		})
+	}
+}
+
+func TestOauthCodeExchangeConcurrentConsumption(t *testing.T) {
+	s, account := endpointTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sqlDB, err := s.db.Client().DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+	auth, form := authorizationCodeFixture(t, s, account)
+	auth.Parameters.Scope = "atproto include:com.example.permissions"
+	if err := s.db.Create(ctx, &auth, nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var resolutions atomic.Int32
+	s.scopeResolver = codeExchangeResolver(func(ctx context.Context) {
+		if resolutions.Add(1) == 1 {
+			close(entered)
+		}
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+	})
+	winner := make(chan *httptest.ResponseRecorder, 1)
+	r := authorizationCodeRequest(t, s, form).WithContext(ctx)
+	go func() {
+		w := httptest.NewRecorder()
+		s.echo.ServeHTTP(w, r)
+		winner <- w
+	}()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("first exchange never reached scope resolution")
+	}
+	losers := make(chan *httptest.ResponseRecorder, 7)
+	for range 7 {
+		r := authorizationCodeRequest(t, s, form).WithContext(ctx)
+		go func() {
+			w := httptest.NewRecorder()
+			s.echo.ServeHTTP(w, r)
+			losers <- w
+		}()
+	}
+	for range 7 {
+		assertInvalidGrant(t, <-losers)
+	}
+	close(release)
+	w := <-winner
+	if w.Code != 200 || resolutions.Load() != 1 || countAuthRequests(t, s) != 0 {
+		t.Fatalf("only the code consumer may issue tokens: %d %s; resolutions=%d", w.Code, w.Body.String(), resolutions.Load())
+	}
+	// Like the reference, replay revokes a session once it has been issued.
+	w = httptest.NewRecorder()
+	s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form))
+	assertInvalidGrant(t, w)
+	if countOauthTokens(t, s) != 0 {
+		t.Fatal("code replay did not revoke the issued session")
+	}
+}
+
+func TestOauthCodeExchangeProtocolFailurePreservesGrant(t *testing.T) {
+	for _, name := range []string{"invalid proof", "invalid client", "unsupported grant"} {
+		t.Run(name, func(t *testing.T) {
+			s, account := endpointTestServer(t)
+			auth, form := authorizationCodeFixture(t, s, account)
+			if err := s.db.Create(context.Background(), &auth, nil).Error; err != nil {
+				t.Fatal(err)
+			}
+			badForm, _ := url.ParseQuery(form.Encode())
+			if name == "invalid client" {
+				badForm.Set("client_id", "not-a-url")
+			} else if name == "unsupported grant" {
+				badForm.Set("grant_type", "unsupported")
+			}
+			r := authorizationCodeRequest(t, s, badForm)
+			if name == "invalid proof" {
+				r.Header.Set("DPoP", "not-a-proof")
+			}
+			w := httptest.NewRecorder()
+			s.echo.ServeHTTP(w, r)
+			if w.Code != 400 || countAuthRequests(t, s) != 1 {
+				t.Fatalf("protocol failure consumed grant: %d %s", w.Code, w.Body.String())
+			}
+			w = httptest.NewRecorder()
+			s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form))
+			if w.Code != 200 {
+				t.Fatalf("corrected exchange: %d %s", w.Code, w.Body.String())
 			}
 		})
 	}
