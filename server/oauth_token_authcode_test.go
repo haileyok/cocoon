@@ -300,8 +300,11 @@ func TestOauthCodeExchangeSingleUse(t *testing.T) {
 			}
 			claims := parsed.Claims.(jwt.MapClaims)
 			cnf, ok := claims["cnf"].(map[string]any)
-			if !ok || cnf["jkt"] != wantJkt || claims["scope"] != wantScope {
-				t.Fatal("JWT scope or DPoP confirmation differs from the issued grant")
+			if !ok || cnf["jkt"] != wantJkt {
+				t.Fatal("JWT DPoP confirmation differs from the issued grant")
+			}
+			if _, present := claims["scope"]; present {
+				t.Fatal("JWT duplicates database-backed scopes")
 			}
 			w := httptest.NewRecorder()
 			s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form))
@@ -310,6 +313,79 @@ func TestOauthCodeExchangeSingleUse(t *testing.T) {
 				t.Fatal("replay changed token count")
 			}
 		})
+	}
+}
+
+func TestOauthTokenDatabaseScopes(t *testing.T) {
+	s, account := endpointTestServer(t)
+	s.evtman = s.newTestEvtman(t)
+	s.repoman = NewRepoMan(s)
+	s.seedGenesisRepo(t, account.Did, account.SigningKey)
+	auth, form := authorizationCodeFixture(t, s, account)
+	auth.Parameters.Scope = "atproto include:com.example.permissions"
+	wantScope := auth.Parameters.Scope + " repo:com.example.record?action=create"
+	s.scopeResolver = codeExchangeResolver(func(context.Context) {})
+	if err := s.db.Create(t.Context(), &auth, nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, grant := range []string{"authorization_code", "refresh_token"} {
+		w := httptest.NewRecorder()
+		s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form))
+		if w.Code != 200 {
+			t.Fatalf("%s: %d %s", grant, w.Code, w.Body.String())
+		}
+		var response OauthTokenResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if response.Scope != wantScope {
+			t.Fatalf("%s response lost granted scopes: %q", grant, response.Scope)
+		}
+		var stored provider.OauthToken
+		if err := s.db.First(t.Context(), &stored, "token = ?", response.AccessToken).Error; err != nil {
+			t.Fatal(err)
+		}
+		if stored.Parameters.Scope != wantScope {
+			t.Fatalf("%s stored grant lost expanded scopes: %q", grant, stored.Parameters.Scope)
+		}
+		parsed, err := jwt.Parse(response.AccessToken, func(*jwt.Token) (any, error) {
+			return s.privateKey.Public(), nil
+		}, jwt.WithValidMethods([]string{"ES256"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, present := parsed.Claims.(jwt.MapClaims)["scope"]; present {
+			t.Fatalf("%s JWT duplicates database-backed scopes", grant)
+		}
+		for _, operation := range []struct {
+			endpoint string
+			status   int
+		}{{"createRecord", 200}, {"deleteRecord", 403}} {
+			r := repoSwapRequest(t, account.Did, response.AccessToken, operation.endpoint, map[string]any{
+				"collection": "com.example.record", "rkey": grant,
+				"record": map[string]any{"$type": "com.example.record", "text": "scope test"},
+			})
+			r.Header.Set("Authorization", "DPoP "+response.AccessToken)
+			r.Header.Set("DPoP", newTestDpopProofWithKey(t, s, r.Method, "https://"+testHostname+r.URL.String(), &response.AccessToken, s.privateKey))
+			w = httptest.NewRecorder()
+			s.echo.ServeHTTP(w, r)
+			if w.Code != operation.status {
+				t.Fatalf("%s %s: %d %s", grant, operation.endpoint, w.Code, w.Body.String())
+			}
+			if operation.status == 403 {
+				assertInsufficientScope(t, w.Code, w.Body.Bytes())
+			}
+		}
+		w = httptest.NewRecorder()
+		s.echo.ServeHTTP(w, httptest.NewRequest("GET", "/xrpc/com.atproto.repo.getRecord?repo="+account.Did+"&collection=com.example.record&rkey="+grant, nil))
+		var record ComAtprotoRepoGetRecordResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &record); err != nil {
+			t.Fatal(err)
+		}
+		if w.Code != 200 || record.Value["text"] != "scope test" {
+			t.Fatalf("%s must create the record and deny its deletion: %d %s", grant, w.Code, w.Body.String())
+		}
+		form = url.Values{"client_id": {auth.ClientId}, "grant_type": {"refresh_token"}, "refresh_token": {response.RefreshToken}}
 	}
 }
 
