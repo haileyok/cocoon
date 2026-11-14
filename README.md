@@ -37,6 +37,11 @@ Cocoon is a PDS implementation in Go.
 
    # Generate with: openssl rand -hex 32
    COCOON_SESSION_SECRET="your-session-secret"
+
+   # Where the DPoP nonce secret lives. It must survive restarts: a new secret
+   # invalidates the nonces OAuth clients already hold, so they have to
+   # authorize again. Keep it on the mounted volume, and back it up.
+   COCOON_NONCE_SECRET_PATH=/data/cocoon/nonce.secret
    ```
 
 4. **Start the services**

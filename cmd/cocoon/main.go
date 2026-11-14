@@ -157,6 +157,12 @@ func main() {
 				Value:   "session",
 			},
 			&cli.StringFlag{
+				Name:    "nonce-secret-path",
+				EnvVars: []string{"COCOON_NONCE_SECRET_PATH"},
+				Usage:   "File holding the DPoP nonce secret. Put it on durable storage: a new secret invalidates the nonces OAuth clients already hold and makes them authorize again.",
+				Value:   server.DefaultNonceSecretPath,
+			},
+			&cli.StringFlag{
 				Name:    "blockstore-variant",
 				EnvVars: []string{"COCOON_BLOCKSTORE_VARIANT"},
 				Value:   "sqlite",
@@ -267,6 +273,7 @@ var runServe = &cli.Command{
 			},
 			SessionSecret:     cmd.String("session-secret"),
 			SessionCookieKey:  cmd.String("session-cookie-key"),
+			NonceSecretPath:   cmd.String("nonce-secret-path"),
 			BlockstoreVariant: server.MustReturnBlockstoreVariant(cmd.String("blockstore-variant")),
 			FallbackProxy:     cmd.String("fallback-proxy"),
 			PlcURL:            cmd.String("plc-url"),
@@ -678,6 +685,7 @@ func newAgentServer(cmd *cli.Context) (*server.Server, error) {
 		AdminPassword:     cmd.String("admin-password"),
 		RequireInvite:     cmd.Bool("require-invite"),
 		SessionSecret:     cmd.String("session-secret"),
+		NonceSecretPath:   cmd.String("nonce-secret-path"),
 		BlockstoreVariant: server.MustReturnBlockstoreVariant(cmd.String("blockstore-variant")),
 		PlcURL:            cmd.String("plc-url"),
 	})

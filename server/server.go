@@ -158,6 +158,12 @@ type Args struct {
 	SessionSecret    string
 	SessionCookieKey string
 
+	// NonceSecretPath is the file holding the DPoP nonce secret that signs the
+	// nonces handed to OAuth clients. It must be on durable storage, otherwise
+	// every restart invalidates the nonces clients already hold. Empty defaults
+	// to DefaultNonceSecretPath.
+	NonceSecretPath string
+
 	BlockstoreVariant BlockstoreVariant
 	FallbackProxy     string
 
@@ -474,12 +480,14 @@ func New(args *Args) (*Server, error) {
 
 	oauthCli := helpers.NewSafeFetchClient()
 
-	var nonceSecret []byte
-	maybeSecret, err := os.ReadFile("nonce.secret")
-	if err != nil && !os.IsNotExist(err) {
-		logger.Error("error attempting to read nonce secret", "error", err)
-	} else {
-		nonceSecret = maybeSecret
+	nonceSecretPath := resolveNonceSecretPath(args.NonceSecretPath)
+
+	nonceSecret, err := LoadOrCreateNonceSecret(nonceSecretPath, logger)
+	if err != nil {
+		// Keep serving rather than refusing to start: the manager falls back to
+		// an in-memory secret, which works until this process restarts.
+		logger.Error("could not load or create the dpop nonce secret, oauth sessions will not survive a restart", "path", nonceSecretPath, "error", err)
+		nonceSecret = nil
 	}
 
 	evtPersister, err := NewDbPersister(gdb, 72*time.Hour)
@@ -532,8 +540,8 @@ func New(args *Args) (*Server, error) {
 				NonceSecret:           nonceSecret,
 				NonceRotationInterval: constants.NonceMaxRotationInterval / 3,
 				OnNonceSecretCreated: func(newNonce []byte) {
-					if err := os.WriteFile("nonce.secret", newNonce, 0644); err != nil {
-						logger.Error("error writing new nonce secret", "error", err)
+					if err := SaveNonceSecret(nonceSecretPath, newNonce); err != nil {
+						logger.Error("error writing new nonce secret", "path", nonceSecretPath, "error", err)
 					}
 				},
 				Logger:   args.Logger.With("component", "dpop-manager"),

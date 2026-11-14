@@ -54,6 +54,9 @@ services:
       COCOON_RELAYS: ${COCOON_RELAYS:-https://bsky.network}
       COCOON_ADMIN_PASSWORD: ${COCOON_ADMIN_PASSWORD}
       COCOON_SESSION_SECRET: ${COCOON_SESSION_SECRET}
+      # Must survive restarts: a new DPoP nonce secret makes every OAuth
+      # client re-authorize.
+      COCOON_NONCE_SECRET_PATH: ${COCOON_NONCE_SECRET_PATH:-/data/cocoon/nonce.secret}
 
       # Server configuration
       COCOON_ADDR: ":8080"

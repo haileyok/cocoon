@@ -41,7 +41,9 @@ func NewNonce(args NonceArgs) *Nonce {
 
 	if args.Secret == nil {
 		args.Secret = helpers.RandomBytes(constants.NonceSecretByteLength)
-		args.OnSecretCreated(args.Secret)
+		if args.OnSecretCreated != nil {
+			args.OnSecretCreated(args.Secret)
+		}
 	}
 
 	n := &Nonce{
