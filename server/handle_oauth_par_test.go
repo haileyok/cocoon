@@ -175,6 +175,29 @@ func TestClientAssertionClockSkew(t *testing.T) {
 	}
 }
 
+// TestClientAssertionMissingType verifies that a private_key_jwt request with a
+// client_assertion but no client_assertion_type fails authentication instead of
+// panicking.
+func TestClientAssertionMissingType(t *testing.T) {
+	s := newTestServer(t)
+	attachOauthProvider(t, s)
+
+	const clientID = "https://client.example/metadata.json"
+	assertion := "not-checked"
+	_, err := s.oauthProvider.Authenticate(t.Context(), provider.AuthenticateClientRequestBase{
+		ClientID:        clientID,
+		ClientAssertion: &assertion,
+	}, &client.Client{
+		Metadata: &client.Metadata{
+			ClientID:                clientID,
+			TokenEndpointAuthMethod: "private_key_jwt",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected authentication error")
+	}
+}
+
 // TestHandleOauthParWithoutDpopProof verifies that a PAR request without a
 // DPoP proof header or dpop_jkt parameter is rejected with use_dpop_nonce,
 // not a panic.
