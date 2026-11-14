@@ -112,7 +112,14 @@ func (dm *Manager) CheckProof(reqMethod, reqUrl string, headers http.Header, acc
 		return nil, fmt.Errorf("failed to get raw public key: %w", err)
 	}
 
-	token, err = jwt.Parse(proof, func(t *jwt.Token) (any, error) {
+	// Skip MapClaims.Valid's zero-leeway time checks and enforce iat/exp/nbf
+	// below with DpopCheckTolerance, as client_auth.go does for client assertions.
+	// Signature and algorithm verification still happen here.
+	verifier := jwt.NewParser(
+		jwt.WithValidMethods([]string{"ES256", "ES384", "ES512", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "EdDSA"}),
+		jwt.WithoutClaimsValidation(),
+	)
+	token, err = verifier.Parse(proof, func(t *jwt.Token) (any, error) {
 		alg := t.Header["alg"].(string)
 
 		switch key.KeyType() {
@@ -131,7 +138,7 @@ func (dm *Manager) CheckProof(reqMethod, reqUrl string, headers http.Header, acc
 		}
 
 		return pubKey, nil
-	}, jwt.WithValidMethods([]string{"ES256", "ES384", "ES512", "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "EdDSA"}))
+	})
 	if err != nil {
 		return nil, fmt.Errorf("could not verify dpop proof jwt: %w", err)
 	}
@@ -159,6 +166,16 @@ func (dm *Manager) CheckProof(reqMethod, reqUrl string, headers http.Header, acc
 
 	if iatTime.Sub(now) > constants.DpopCheckTolerance {
 		return nil, errors.New("dpop proof iat is in the future")
+	}
+
+	// DPoP proofs normally carry no exp/nbf, but honour them if present now that
+	// the parser no longer checks them.
+	if exp, ok := claims["exp"].(float64); ok && now.Sub(time.Unix(int64(exp), 0)) > constants.DpopCheckTolerance {
+		return nil, errors.New("dpop proof expired")
+	}
+
+	if nbf, ok := claims["nbf"].(float64); ok && time.Unix(int64(nbf), 0).Sub(now) > constants.DpopCheckTolerance {
+		return nil, errors.New("dpop proof is not valid yet")
 	}
 
 	jti, _ := claims["jti"].(string)

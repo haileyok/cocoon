@@ -4,7 +4,7 @@ import "time"
 
 const (
 	MaxDpopAge         = 10 * time.Second
-	DpopCheckTolerance = 5 * time.Second
+	DpopCheckTolerance = 30 * time.Second
 
 	NonceSecretByteLength = 32
 
