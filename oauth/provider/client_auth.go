@@ -18,6 +18,26 @@ type AuthenticateClientOptions struct {
 	AllowMissingDpopProof bool
 }
 
+// ValidateBinding compares an already-authenticated client with the saved
+// session binding. Public or absent bindings may upgrade to confidential auth;
+// a confidential binding must retain its key identity, not its assertion nonce.
+func (initial ClientAuth) ValidateBinding(current ClientAuth) error {
+	switch initial.Method {
+	case "", "none":
+		return nil
+	case "private_key_jwt", constants.ClientAssertionTypeJwtBearer:
+		if current.Method != "private_key_jwt" {
+			return errors.New("client authentication method mismatch")
+		}
+		if current.Kid != initial.Kid || current.Alg != initial.Alg || current.Jkt != initial.Jkt {
+			return errors.New("session was initiated with a different client key")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported saved client authentication method %q", initial.Method)
+	}
+}
+
 type AuthenticateClientRequestBase struct {
 	ClientID            string  `form:"client_id" json:"client_id" query:"client_id" validate:"required"`
 	ClientAssertionType *string `form:"client_assertion_type" json:"client_assertion_type,omitempty" query:"client_assertion_type"`

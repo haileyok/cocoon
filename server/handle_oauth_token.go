@@ -81,7 +81,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		return helpers.InputError(e, to.StringPtr(fmt.Sprintf(`"%s" grant type is not supported by the server`, req.GrantType)))
 	}
 
-	if !slices.Contains(client.Metadata.GrantTypes, req.GrantType) {
+	if req.GrantType != "refresh_token" && !slices.Contains(client.Metadata.GrantTypes, req.GrantType) {
 		return helpers.InputError(e, to.StringPtr(fmt.Sprintf(`"%s" grant type is not supported by the client`, req.GrantType)))
 	}
 
@@ -106,8 +106,11 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InvalidGrantError(e, "Invalid authorization code")
 		}
 
-		if client.Metadata.ClientID != authReq.ClientId || clientAuth.Method != authReq.ClientAuth.Method {
-			return helpers.InvalidGrantError(e, "Authorization code was issued to a different client or authentication method")
+		if client.Metadata.ClientID != authReq.ClientId {
+			return helpers.InvalidGrantError(e, "Authorization code was issued to a different client")
+		}
+		if err := authReq.ClientAuth.ValidateBinding(*clientAuth); err != nil {
+			return helpers.InvalidGrantError(e, err.Error())
 		}
 		if !dpopJktMatches(authReq.Parameters.DpopJkt, proof) {
 			return helpers.InvalidGrantError(e, "DPoP proof does not match authorization code")
@@ -271,14 +274,31 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr(`"client_id" mismatch`))
 		}
 
-		if clientAuth.Method != oauthToken.ClientAuth.Method {
-			return helpers.InputError(e, to.StringPtr(`"client authentication method mismatch`))
+		// Invalid client bindings or withdrawn refresh permission revoke this
+		// session. A disconnected caller must not cancel the cleanup.
+		rejectRefresh := func(description string) error {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if err := s.db.Exec(cleanupCtx, "DELETE FROM oauth_tokens WHERE id = ?", nil, oauthToken.ID).Error; err != nil {
+				logger.Error("error revoking failed refresh session", "error", err)
+				return helpers.ServerError(e, nil)
+			}
+			return helpers.InvalidGrantError(e, description)
+		}
+		if err := oauthToken.ClientAuth.ValidateBinding(*clientAuth); err != nil {
+			return rejectRefresh(err.Error())
 		}
 
 		if !dpopJktMatches(oauthToken.Parameters.DpopJkt, proof) {
 			return helpers.InputError(e, to.StringPtr("dpop proof does not match expected jkt"))
 		}
 
+		if !slices.Contains(client.Metadata.GrantTypes, "refresh_token") {
+			return rejectRefresh("Refresh token grant not allowed")
+		}
+		// Apply the current client's lifetimes on upgrade and persist its
+		// authenticated key with the rotated credentials below.
+		oauthToken.ClientAuth = *clientAuth
 		ageRes := oauth.GetSessionAgeFromToken(oauthToken)
 
 		if ageRes.SessionExpired {
@@ -328,7 +348,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return err
 		}
 
-		if err := s.db.Exec(ctx, "UPDATE oauth_tokens SET token = ?, refresh_token = ?, expires_at = ?, updated_at = ?, parameters = ? WHERE refresh_token = ?", nil, accessString, nextRefreshToken, eat, now, oauthToken.Parameters, *req.RefreshToken).Error; err != nil {
+		if err := s.db.Exec(ctx, "UPDATE oauth_tokens SET token = ?, refresh_token = ?, expires_at = ?, updated_at = ?, parameters = ?, client_auth = ? WHERE refresh_token = ?", nil, accessString, nextRefreshToken, eat, now, oauthToken.Parameters, oauthToken.ClientAuth, *req.RefreshToken).Error; err != nil {
 			logger.Error("error updating token", "error", err)
 			return helpers.ServerError(e, nil)
 		}
