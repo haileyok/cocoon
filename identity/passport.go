@@ -2,6 +2,7 @@ package identity
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -22,11 +23,12 @@ type BackingCache interface {
 }
 
 type Passport struct {
-	h       *http.Client
-	plcHTTP *http.Client
-	bc      BackingCache
-	plcURL  string
-	mu      sync.RWMutex
+	h        *http.Client
+	plcHTTP  *http.Client
+	bc       BackingCache
+	plcURL   string
+	resolver TXTResolver
+	mu       sync.RWMutex
 }
 
 // PassportOption configures optional Passport behavior.
@@ -38,6 +40,17 @@ func WithPlcURL(plcURL string) PassportOption {
 	return func(p *Passport) {
 		if plcURL != "" {
 			p.plcURL = plcURL
+		}
+	}
+}
+
+// WithTXTResolver overrides the DNS resolver used for _atproto TXT lookups.
+// Tests use it to keep handle resolution off live DNS; an operator could use it
+// to pin handle resolution to a specific resolver.
+func WithTXTResolver(resolver TXTResolver) PassportOption {
+	return func(p *Passport) {
+		if resolver != nil {
+			p.resolver = resolver
 		}
 	}
 }
@@ -58,10 +71,11 @@ func NewPassport(h *http.Client, bc BackingCache, opts ...PassportOption) *Passp
 	}
 
 	p := &Passport{
-		h:       h,
-		plcHTTP: plcHTTP,
-		bc:      bc,
-		plcURL:  DefaultPlcURL,
+		h:        h,
+		plcHTTP:  plcHTTP,
+		bc:       bc,
+		plcURL:   DefaultPlcURL,
+		resolver: net.DefaultResolver,
 	}
 	for _, opt := range opts {
 		opt(p)
@@ -112,7 +126,7 @@ func (p *Passport) ResolveHandle(ctx context.Context, handle string) (string, er
 		}
 	}
 
-	did, err := ResolveHandle(ctx, p.h, handle)
+	did, err := resolveHandle(ctx, p.resolver, p.h, handle)
 	if err != nil {
 		return "", err
 	}
