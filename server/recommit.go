@@ -36,6 +36,8 @@ type RecommitResult struct {
 	NewHead     string
 	Recommitted bool
 	Err         error
+	// Inactive means firehose announcements are skipped, including in dry-run plans.
+	Inactive bool
 }
 
 // isValidRev reports whether rev is a syntactically valid TID (13 chars).
@@ -45,13 +47,14 @@ func isValidRev(rev string) bool {
 }
 
 // RunRecommitMigration re-mints valid revs for repos whose stored rev is not a
-// valid TID, and announces each repo's current head to the firehose.
+// valid TID, and announces each active repo's current head to the firehose.
 //
 // For every did it re-commits when the rev is invalid (a fresh signed commit
-// with a current 13-char TID rev and new head), then emits #sync (head
-// announcement), #identity (handle refresh), and #account (active) so relays
+// with a current 13-char TID rev and new head). For active repos it then emits
+// #sync (head announcement), #identity (handle refresh), and #account so relays
 // observe the repo's authoritative state. Re-committing is silent on the commit
 // stream; #sync is the spec's frame for out-of-band state changes.
+// Inactive and taken-down repos are repaired locally without emitting events.
 //
 // IMPORTANT: events carry an in-memory sequence number, so this must run with
 // the PDS stopped to avoid colliding with the live server's sequence.
@@ -97,6 +100,8 @@ func (s *Server) recommitOne(ctx context.Context, did string, dryRun bool) Recom
 	}
 	res.OldRev = urepo.Repo.Rev
 	res.NewRev = urepo.Repo.Rev
+	// Active currently covers deactivation; takedowns must also stay private.
+	res.Inactive = !urepo.Active() || urepo.TakenDown()
 
 	head, err := cid.Cast(urepo.Repo.Root)
 	if err != nil {
@@ -123,6 +128,10 @@ func (s *Server) recommitOne(ctx context.Context, did string, dryRun bool) Recom
 		res.NewHead = newHead.String()
 		res.NewRev = newRev
 		res.Recommitted = true
+	}
+
+	if res.Inactive {
+		return res
 	}
 
 	if err := s.emitRepoSync(ctx, did, res.NewRev, head); err != nil {
