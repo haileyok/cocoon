@@ -244,6 +244,99 @@ func TestOauthTokenRefreshRotation(t *testing.T) {
 	}
 }
 
+func TestOauthRefreshRechecksAfterScopeResolution(t *testing.T) {
+	for _, method := range []string{"none", "private_key_jwt"} {
+		for _, change := range []string{"valid", "session expiry", "refresh expiry", "revocation", "token deletion", "account deletion"} {
+			t.Run(method+"/"+change, func(t *testing.T) {
+				s, account := endpointTestServer(t)
+				ctx := t.Context()
+				auth, _ := authorizationCodeFixture(t, s, account)
+				auth.Parameters.Scope = "atproto include:com.example.permissions"
+				form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {"old-refresh"}}
+				sessionLifetime, refreshLifetime := 14*24*time.Hour, 14*24*time.Hour
+				if method == "private_key_jwt" {
+					sessionLifetime, refreshLifetime = 730*24*time.Hour, 90*24*time.Hour
+					auth.ClientAuth = confidentialClientFixture(t, s, form, []string{"authorization_code", "refresh_token"})
+					auth.ClientId = form.Get("client_id")
+				}
+				form.Set("client_id", auth.ClientId)
+				token := provider.OauthToken{
+					ClientId: auth.ClientId, ClientAuth: auth.ClientAuth, Sub: account.Did,
+					Parameters: auth.Parameters, Token: "old-access", RefreshToken: "old-refresh",
+					ExpiresAt: time.Now().Add(-time.Hour), SessionVersion: 7,
+				}
+				// Valid refreshes may outlive access tokens and, for confidential clients, two weeks.
+				token.CreatedAt = time.Now().Add(-sessionLifetime + 24*time.Hour)
+				token.UpdatedAt = time.Now().Add(-refreshLifetime + 24*time.Hour)
+				if err := s.db.Exec(ctx, "UPDATE repos SET session_version = ? WHERE did = ?", nil, token.SessionVersion, account.Did).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := s.db.Create(ctx, &token, nil).Error; err != nil {
+					t.Fatal(err)
+				}
+				resolved := false
+				s.scopeResolver = codeExchangeResolver(func(ctx context.Context) {
+					resolved = true
+					var err error
+					switch change {
+					case "session expiry", "refresh expiry":
+						expires := time.Now().Add(20 * time.Millisecond)
+						column, lifetime := "created_at", sessionLifetime
+						if change == "refresh expiry" {
+							column, lifetime = "updated_at", refreshLifetime
+						}
+						err = s.db.Exec(ctx, "UPDATE oauth_tokens SET "+column+" = ? WHERE id = ?", nil, expires.Add(-lifetime), token.ID).Error
+						time.Sleep(time.Until(expires) + time.Millisecond)
+					case "revocation":
+						err = s.db.Exec(ctx, "UPDATE repos SET session_version = session_version + 1 WHERE did = ?", nil, account.Did).Error
+					case "token deletion":
+						err = s.db.Exec(ctx, "DELETE FROM oauth_tokens WHERE id = ?", nil, token.ID).Error
+					case "account deletion":
+						err = s.db.Exec(ctx, "DELETE FROM repos WHERE did = ?", nil, account.Did).Error
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+				})
+				w := httptest.NewRecorder()
+				s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form))
+				if !resolved {
+					t.Fatalf("request did not reach scope resolution: %d %s", w.Code, w.Body.String())
+				}
+				if change == "valid" {
+					if w.Code != 200 {
+						t.Fatalf("valid refresh rejected: %d %s", w.Code, w.Body.String())
+					}
+					var response OauthTokenResponse
+					if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+						t.Fatal(err)
+					}
+					var stored provider.OauthToken
+					if err := s.db.First(ctx, &stored, "token = ?", response.AccessToken).Error; err != nil {
+						t.Fatal(err)
+					}
+					if stored.RefreshToken != response.RefreshToken || !stored.CreatedAt.Equal(token.CreatedAt) || !stored.UpdatedAt.After(token.UpdatedAt) {
+						t.Fatal("rotation must preserve session creation time and renew refresh time")
+					}
+				} else {
+					assertInvalidGrant(t, w)
+					var rotated int64
+					if err := s.db.Raw(ctx, "SELECT COUNT(*) FROM oauth_tokens WHERE token != ? OR refresh_token != ?", nil, token.Token, token.RefreshToken).Scan(&rotated).Error; err != nil {
+						t.Fatal(err)
+					}
+					wantCount := int64(1)
+					if change == "token deletion" {
+						wantCount = 0
+					}
+					if rotated != 0 || countOauthTokens(t, s) != wantCount {
+						t.Fatal("rejected refresh changed stored credentials")
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestOauthTokenAuthorizationCodeInvalidGrant(t *testing.T) {
 	const redirectURI = "http://127.0.0.1/"
 	verifier := strings.Repeat("verifier", 8)

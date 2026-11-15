@@ -317,9 +317,6 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		nextTokenId := oauth.GenerateTokenId()
 		nextRefreshToken := oauth.GenerateRefreshToken()
 
-		now := time.Now()
-		eat := now.Add(constants.TokenMaxAge)
-
 		expandedScope, err := s.issueScope(ctx, oauthToken.Parameters.Scope, oauthToken.Sub)
 		if err != nil {
 			s.logger.Error("refusing to refresh token: space type declaration unavailable", "scope", oauthToken.Parameters.Scope, "error", err)
@@ -327,6 +324,8 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 		oauthToken.Parameters.Scope = expandedScope
 
+		now := time.Now()
+		eat := now.Add(constants.TokenMaxAge)
 		// See the authorization_code grant: scope lives in the db, not the token.
 		accessClaims := jwt.MapClaims{
 			"aud":       s.config.Did,
@@ -348,7 +347,14 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return err
 		}
 
-		result := s.db.Exec(ctx, "UPDATE oauth_tokens SET token = ?, refresh_token = ?, expires_at = ?, updated_at = ?, parameters = ?, client_auth = ? WHERE refresh_token = ?", nil, accessString, nextRefreshToken, eat, now, oauthToken.Parameters, oauthToken.ClientAuth, *req.RefreshToken)
+		sessionLifetime, refreshLifetime := oauth.GetSessionLifetimes(oauthToken)
+		checkedAt := time.Now()
+		result := s.db.Exec(ctx, `UPDATE oauth_tokens
+			SET token = ?, refresh_token = ?, expires_at = ?, updated_at = ?, parameters = ?, client_auth = ?
+			WHERE refresh_token = ? AND created_at >= ? AND updated_at >= ?
+			AND EXISTS (SELECT 1 FROM repos WHERE did = ? AND session_version = ?)`,
+			nil, accessString, nextRefreshToken, eat, now, oauthToken.Parameters, oauthToken.ClientAuth, *req.RefreshToken,
+			checkedAt.Add(-sessionLifetime), checkedAt.Add(-refreshLifetime), oauthToken.Sub, oauthToken.SessionVersion)
 		if result.Error != nil {
 			logger.Error("error updating token", "error", result.Error)
 			return helpers.ServerError(e, nil)
