@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bluesky-social/indigo/atproto/lexicon"
+	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
@@ -52,9 +52,13 @@ func (r *IndigoResolver) resolveSpace(ctx context.Context, nsidStr string) ([]st
 	if err != nil {
 		return nil, fmt.Errorf("invalid nsid %q: %w", nsidStr, err)
 	}
-	data, err := lexicon.ResolveLexiconData(ctx, r.dir, nsid)
+	record, err := r.fetchLexicon(ctx, nsid)
 	if err != nil {
 		return nil, fmt.Errorf("could not resolve space type %q: %w", nsidStr, err)
+	}
+	data, err := atdata.UnmarshalJSON(record)
+	if err != nil {
+		return nil, fmt.Errorf("invalid lexicon %q: %w", nsidStr, err)
 	}
 	return SpaceCollectionsFromLexicon(data)
 }
