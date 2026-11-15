@@ -112,8 +112,9 @@ type Server struct {
 	spaceHTTP     *http.Client
 	spaceHTTPOnce sync.Once
 
-	// Optional client override for proxy and feed-record requests. Nil keeps
-	// each path's existing default client.
+	// Responses from other services are forwarded with this client. It is never
+	// nil in production: the proxy paths must not fall back to
+	// http.DefaultClient, which has no response-header timeout.
 	proxyHTTPClient *http.Client
 
 	lastRequestCrawl time.Time
@@ -521,6 +522,8 @@ func New(args *Args) (*Server, error) {
 		dbName:   args.DbName,
 		dbType:   dbType,
 		s3Config: args.S3Config,
+
+		proxyHTTPClient: defaultProxyHTTPClient,
 
 		oauthProvider: provider.NewProvider(provider.Args{
 			Hostname: args.Hostname,
