@@ -17,6 +17,7 @@ import (
 	"github.com/bluesky-social/indigo/atproto/lexicon"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/haileyok/cocoon/oauth/client"
+	"github.com/haileyok/cocoon/oauth/constants"
 	"github.com/haileyok/cocoon/oauth/dpop"
 	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/lestrrat-go/jwx/v2/jwk"
@@ -129,6 +130,51 @@ func authorizationCodeRequest(t *testing.T, s *Server, form url.Values) *http.Re
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("DPoP", newTestDpopProofWithKey(t, s, r.Method, r.URL.String(), nil, s.privateKey))
 	return r
+}
+
+// confidentialClientFixture serves real client metadata/JWKS and adds a signed
+// assertion to form. The returned binding is derived from the fixture's key,
+// independently of the provider's authentication result.
+func confidentialClientFixture(t *testing.T, s *Server, form url.Values, grantTypes []string) provider.ClientAuth {
+	t.Helper()
+	key, err := jwk.FromRaw(s.privateKey.Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := key.Set(jwk.KeyIDKey, "client-key"); err != nil {
+		t.Fatal(err)
+	}
+	thumb, err := key.Thumbprint(crypto.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := map[string]any{
+		"redirect_uris": []string{"https://example.com/callback"}, "response_types": []string{"code"},
+		"grant_types": grantTypes, "scope": "atproto", "application_type": "web",
+		"token_endpoint_auth_method": "private_key_jwt", "token_endpoint_auth_signing_alg": "ES256",
+		"dpop_bound_access_tokens": true, "jwks": map[string]any{"keys": []any{key}},
+	}
+	clientServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(metadata)
+	}))
+	t.Cleanup(clientServer.Close)
+	clientID := clientServer.URL + "/client-metadata.json"
+	metadata["client_id"] = clientID
+	exp := float64(time.Now().Add(time.Minute).Unix())
+	assertion := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"iss": clientID, "sub": clientID, "aud": "https://" + testHostname,
+		"iat": time.Now().Unix(), "exp": exp, "jti": "current-client-assertion",
+	})
+	assertion.Header["kid"] = "client-key"
+	signed, err := assertion.SignedString(s.privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form.Set("client_id", clientID)
+	form.Set("client_assertion_type", constants.ClientAssertionTypeJwtBearer)
+	form.Set("client_assertion", signed)
+	return provider.ClientAuth{Method: "private_key_jwt", Kid: "client-key", Alg: "ES256", Jkt: base64.RawURLEncoding.EncodeToString(thumb), Jti: "current-client-assertion", Exp: &exp}
 }
 
 type codeExchangeResolver func(context.Context)
@@ -506,5 +552,120 @@ func TestOauthCodeExchangeProtocolFailurePreservesGrant(t *testing.T) {
 				t.Fatalf("corrected exchange: %d %s", w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestOauthClientAuthBinding(t *testing.T) {
+	for _, grant := range []string{"authorization_code", "refresh_token"} {
+		for _, change := range []string{"matching", "key id", "algorithm", "key thumbprint", "public upgrade", "absent binding", "legacy binding", "legacy key", "unknown method", "confidential downgrade", "refresh disabled"} {
+			t.Run(grant+"/"+change, func(t *testing.T) {
+				s, account := endpointTestServer(t)
+				auth, form := authorizationCodeFixture(t, s, account)
+				grants := []string{"authorization_code", "refresh_token"}
+				if change == "refresh disabled" {
+					grants = []string{"authorization_code"}
+				}
+				current := confidentialClientFixture(t, s, form, grants)
+				auth.ClientId, auth.ClientAuth = form.Get("client_id"), current
+				auth.Parameters.RedirectURI = "https://example.com/callback"
+				form.Set("redirect_uri", auth.Parameters.RedirectURI)
+				// Assertion nonce and expiry change without changing the client key.
+				auth.ClientAuth.Jti = "original-client-assertion"
+				auth.ClientAuth.Exp = to.Float64Ptr(float64(time.Now().Add(-time.Hour).Unix()))
+				wantSuccess := false
+				switch change {
+				case "matching":
+					wantSuccess = true
+				case "key id":
+					auth.ClientAuth.Kid = "previous-key-id"
+				case "algorithm":
+					auth.ClientAuth.Alg = "ES384"
+				case "key thumbprint":
+					auth.ClientAuth.Jkt = "previous-key-thumbprint"
+				case "public upgrade":
+					auth.ClientAuth = provider.ClientAuth{Method: "none"}
+					wantSuccess = true
+				case "absent binding":
+					auth.ClientAuth = provider.ClientAuth{}
+					wantSuccess = true
+				case "legacy binding":
+					auth.ClientAuth.Method = constants.ClientAssertionTypeJwtBearer
+					wantSuccess = true
+				case "legacy key":
+					auth.ClientAuth.Method = constants.ClientAssertionTypeJwtBearer
+					auth.ClientAuth.Jkt = "previous-key-thumbprint"
+				case "unknown method":
+					auth.ClientAuth.Method = "unsupported"
+				case "confidential downgrade":
+					auth.ClientId = "http://localhost"
+					form.Set("client_id", auth.ClientId)
+					form.Del("client_assertion_type")
+					form.Del("client_assertion")
+				case "refresh disabled":
+					wantSuccess = grant == "authorization_code"
+				}
+				form.Set("grant_type", grant)
+				if grant == "authorization_code" {
+					if err := s.db.Create(t.Context(), &auth, nil).Error; err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					token := provider.OauthToken{
+						ClientId: auth.ClientId, ClientAuth: auth.ClientAuth, Parameters: auth.Parameters,
+						Sub: account.Did, Code: *auth.Code, Token: "old-access", RefreshToken: "old-refresh",
+						ExpiresAt: time.Now().Add(-time.Hour),
+					}
+					// The current confidential client's lifetimes apply on upgrade,
+					// rather than the old public limits.
+					token.CreatedAt = time.Now().Add(-30 * 24 * time.Hour)
+					token.UpdatedAt = time.Now().Add(-20 * 24 * time.Hour)
+					if change == "confidential downgrade" {
+						// The binding, not the shorter public lifetime, must reject this.
+						token.CreatedAt = time.Now().Add(-24 * time.Hour)
+						token.UpdatedAt = time.Now().Add(-time.Hour)
+					}
+					if err := s.db.Create(t.Context(), &token, nil).Error; err != nil {
+						t.Fatal(err)
+					}
+					form.Set("refresh_token", token.RefreshToken)
+					other := token
+					other.ID = 0
+					other.Code, other.Token, other.RefreshToken = "other-code", "other-access", "other-refresh"
+					if err := s.db.Create(t.Context(), &other, nil).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				w := httptest.NewRecorder()
+				s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form))
+				unrelatedSessions := int64(0)
+				if grant == "refresh_token" {
+					unrelatedSessions = 1
+					if err := s.db.First(t.Context(), &provider.OauthToken{}, "refresh_token = ?", "other-refresh").Error; err != nil {
+						t.Fatalf("another session for this account and client was revoked: %v", err)
+					}
+				}
+				if !wantSuccess {
+					assertInvalidGrant(t, w)
+					if countAuthRequests(t, s) != 0 || countOauthTokens(t, s) != unrelatedSessions {
+						t.Fatal("rejected binding must consume the code or revoke the session")
+					}
+					return
+				}
+				if w.Code != 200 {
+					t.Fatalf("valid client binding rejected: %d %s", w.Code, w.Body.String())
+				}
+				var response OauthTokenResponse
+				if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+					t.Fatal(err)
+				}
+				var stored provider.OauthToken
+				if err := s.db.First(t.Context(), &stored, "token = ?", response.AccessToken).Error; err != nil {
+					t.Fatal(err)
+				}
+				if stored.ClientAuth.Method != current.Method || stored.ClientAuth.Kid != current.Kid || stored.ClientAuth.Alg != current.Alg || stored.ClientAuth.Jkt != current.Jkt || stored.ClientAuth.Jti != current.Jti {
+					t.Fatalf("issued session did not retain current client authentication: %+v", stored.ClientAuth)
+				}
+			})
+		}
 	}
 }
