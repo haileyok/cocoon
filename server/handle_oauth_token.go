@@ -338,7 +338,7 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 		}
 
 		if oauthToken.Parameters.DpopJkt != nil {
-			accessClaims["cnf"] = *&oauthToken.Parameters.DpopJkt
+			accessClaims["cnf"] = map[string]string{"jkt": *oauthToken.Parameters.DpopJkt}
 		}
 
 		accessToken := jwt.NewWithClaims(jwt.SigningMethodES256, accessClaims)
@@ -348,9 +348,13 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return err
 		}
 
-		if err := s.db.Exec(ctx, "UPDATE oauth_tokens SET token = ?, refresh_token = ?, expires_at = ?, updated_at = ?, parameters = ?, client_auth = ? WHERE refresh_token = ?", nil, accessString, nextRefreshToken, eat, now, oauthToken.Parameters, oauthToken.ClientAuth, *req.RefreshToken).Error; err != nil {
-			logger.Error("error updating token", "error", err)
+		result := s.db.Exec(ctx, "UPDATE oauth_tokens SET token = ?, refresh_token = ?, expires_at = ?, updated_at = ?, parameters = ?, client_auth = ? WHERE refresh_token = ?", nil, accessString, nextRefreshToken, eat, now, oauthToken.Parameters, oauthToken.ClientAuth, *req.RefreshToken)
+		if result.Error != nil {
+			logger.Error("error updating token", "error", result.Error)
 			return helpers.ServerError(e, nil)
+		}
+		if result.RowsAffected != 1 {
+			return helpers.InvalidGrantError(e, "Invalid refresh token")
 		}
 
 		// prob not needed

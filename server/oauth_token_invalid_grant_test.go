@@ -8,10 +8,12 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/golang-jwt/jwt/v4"
 	"github.com/haileyok/cocoon/oauth/provider"
 )
 
@@ -109,6 +111,135 @@ func TestOauthTokenRefreshInvalidGrant(t *testing.T) {
 				"refresh_token": {refresh},
 			})
 			assertInvalidGrant(t, w)
+		})
+	}
+}
+
+func TestOauthTokenRefreshRotation(t *testing.T) {
+	for _, name := range []string{"concurrent", "update failure"} {
+		t.Run(name, func(t *testing.T) {
+			s, account := endpointTestServer(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			sqlDB, err := s.db.Client().DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			sqlDB.SetMaxOpenConns(1)
+			auth, _ := authorizationCodeFixture(t, s, account)
+			auth.Parameters.Scope = "atproto include:com.example.permissions"
+			token := provider.OauthToken{
+				ClientId: auth.ClientId, ClientAuth: auth.ClientAuth, Sub: account.Did,
+				Parameters: auth.Parameters, Token: "old-access", RefreshToken: "old-refresh",
+				ExpiresAt: time.Now().Add(time.Hour),
+			}
+			if err := s.db.Create(ctx, &token, nil).Error; err != nil {
+				t.Fatal(err)
+			}
+			form := url.Values{
+				"client_id": {auth.ClientId}, "grant_type": {"refresh_token"},
+				"refresh_token": {token.RefreshToken},
+			}
+			n := 1
+			if name == "concurrent" {
+				n = 8
+			}
+			var arrived atomic.Int32
+			release := make(chan struct{})
+			s.scopeResolver = codeExchangeResolver(func(ctx context.Context) {
+				if arrived.Add(1) == int32(n) {
+					close(release)
+				}
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+			})
+			if name == "update failure" {
+				if err := s.db.Exec(ctx, "CREATE TRIGGER fail_rotation BEFORE UPDATE ON oauth_tokens BEGIN SELECT RAISE(ABORT, 'test failure'); END", nil).Error; err != nil {
+					t.Fatal(err)
+				}
+				w := httptest.NewRecorder()
+				s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form).WithContext(ctx))
+				if w.Code != 500 {
+					t.Fatalf("failed update: %d %s", w.Code, w.Body.String())
+				}
+				if err := s.db.Exec(ctx, "DROP TRIGGER fail_rotation", nil).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			results := make(chan *httptest.ResponseRecorder, n)
+			for range n {
+				r := authorizationCodeRequest(t, s, form).WithContext(ctx)
+				go func() {
+					w := httptest.NewRecorder()
+					s.echo.ServeHTTP(w, r)
+					results <- w
+				}()
+			}
+			var response OauthTokenResponse
+			successes := 0
+			for range n {
+				w := <-results
+				if w.Code == 200 {
+					successes++
+					if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					assertInvalidGrant(t, w)
+				}
+			}
+			if successes != 1 || countOauthTokens(t, s) != 1 {
+				t.Fatalf("wanted one stored rotation, got %d successful responses", successes)
+			}
+			wantScope := auth.Parameters.Scope + " repo:com.example.record?action=create"
+			if response.TokenType != "DPoP" || response.Sub != account.Did || response.Scope != wantScope || response.RefreshToken == token.RefreshToken {
+				t.Fatalf("incorrect rotated credentials: %+v", response)
+			}
+			var stored provider.OauthToken
+			if err := s.db.First(ctx, &stored, "token = ?", response.AccessToken).Error; err != nil {
+				t.Fatal(err)
+			}
+			if stored.RefreshToken != response.RefreshToken || stored.Parameters.Scope != wantScope {
+				t.Fatal("response differs from the stored refresh token or scopes")
+			}
+			parsed, err := jwt.Parse(response.AccessToken, func(*jwt.Token) (any, error) { return s.privateKey.Public(), nil }, jwt.WithValidMethods([]string{"ES256"}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			claims := parsed.Claims.(jwt.MapClaims)
+			cnf, ok := claims["cnf"].(map[string]any)
+			if !ok || cnf["jkt"] != *auth.Parameters.DpopJkt {
+				t.Fatal("DPoP confirmation differs from the refreshed grant")
+			}
+			if _, present := claims["scope"]; present {
+				t.Fatal("JWT duplicates database-backed scopes")
+			}
+			w := httptest.NewRecorder()
+			s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form))
+			assertInvalidGrant(t, w)
+
+			r := httptest.NewRequest("GET", "/xrpc/com.atproto.server.getSession", nil)
+			r.Header.Set("Authorization", "DPoP "+response.AccessToken)
+			r.Header.Set("DPoP", newTestDpopProofWithKey(t, s, r.Method, "https://"+testHostname+r.URL.String(), &response.AccessToken, s.privateKey))
+			w = httptest.NewRecorder()
+			s.echo.ServeHTTP(w, r)
+			var session struct {
+				Did string `json:"did"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &session); err != nil {
+				t.Fatal(err)
+			}
+			if w.Code != 200 || session.Did != account.Did {
+				t.Fatalf("winner's access token unusable after replay: %d %s", w.Code, w.Body.String())
+			}
+			form.Set("refresh_token", response.RefreshToken)
+			w = httptest.NewRecorder()
+			s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form))
+			if w.Code != 200 {
+				t.Fatalf("winner's refresh token unusable after replay: %d %s", w.Code, w.Body.String())
+			}
 		})
 	}
 }
