@@ -194,17 +194,30 @@ func emitAccountEvent(s *Server) {
 
 // awaitFirstEvent pumps events until the connected client receives one, proving
 // the handler has registered its subscriber and is writing frames.
+//
+// A timed-out read leaves a gorilla connection permanently failed (reading it
+// again panics), so this makes a single read under one deadline while events
+// keep being emitted until it returns.
 func awaitFirstEvent(t *testing.T, s *Server, c *websocket.Conn) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	read := make(chan error, 1)
+	go func() {
+		_, _, err := c.ReadMessage()
+		read <- err
+	}()
+
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
 	for {
 		emitAccountEvent(s)
-		_ = c.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-		if _, _, err := c.ReadMessage(); err == nil {
+		select {
+		case err := <-read:
+			if err != nil {
+				t.Fatalf("client never received an event; harness broken: %v", err)
+			}
 			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("client never received an event; harness broken")
+		case <-tick.C:
 		}
 	}
 }
