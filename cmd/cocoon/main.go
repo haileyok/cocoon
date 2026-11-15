@@ -441,9 +441,10 @@ var runResetPassword = &cli.Command{
 
 var runRecommitRepos = &cli.Command{
 	Name:  "recommit-repos",
-	Usage: "Re-mint valid TID revs for repos with invalid revs and re-announce their state on the firehose",
+	Usage: "Re-mint valid TID revs for repos with invalid revs and re-announce active repos on the firehose",
 	Description: "Re-commits each listed repo so its rev becomes a valid 13-char TID (producing a new head), " +
-		"then emits #sync, #identity, and #account events so relays observe the repo's current state.\n\n" +
+		"then emits #sync, #identity, and #account events for active repos. Inactive and taken-down repos " +
+		"are repaired locally without emitting events.\n\n" +
 		"Dry-run by default; pass --confirm to apply. Because firehose events use an in-memory sequence " +
 		"counter, the PDS MUST be stopped while this runs, or sequence numbers will collide with the live server.",
 	Flags: []cli.Flag{
@@ -498,15 +499,22 @@ var runRecommitRepos = &cli.Command{
 				fmt.Printf("  %s: ERROR: %v\n", r.Did, r.Err)
 				continue
 			}
+			announcement := "emitted #sync/#identity/#account"
+			if dryRun {
+				announcement = "would emit #sync/#identity/#account"
+			}
+			if r.Inactive {
+				announcement = "inactive repo; no firehose events"
+			}
 			switch {
 			case dryRun && r.Recommitted:
-				fmt.Printf("  %s: would recommit (rev %q -> new TID), then emit #sync/#identity/#account\n", r.Did, r.OldRev)
+				fmt.Printf("  %s: would recommit (rev %q -> new TID); %s\n", r.Did, r.OldRev, announcement)
 			case dryRun:
-				fmt.Printf("  %s: rev %q already valid; would emit #sync/#identity/#account only\n", r.Did, r.OldRev)
+				fmt.Printf("  %s: rev %q already valid; %s\n", r.Did, r.OldRev, announcement)
 			case r.Recommitted:
-				fmt.Printf("  %s: recommitted rev %q -> %q, head %s -> %s; emitted #sync/#identity/#account\n", r.Did, r.OldRev, r.NewRev, r.OldHead, r.NewHead)
+				fmt.Printf("  %s: recommitted rev %q -> %q, head %s -> %s; %s\n", r.Did, r.OldRev, r.NewRev, r.OldHead, r.NewHead, announcement)
 			default:
-				fmt.Printf("  %s: rev %q already valid; emitted #sync/#identity/#account\n", r.Did, r.OldRev)
+				fmt.Printf("  %s: rev %q already valid; %s\n", r.Did, r.OldRev, announcement)
 			}
 		}
 		if failures > 0 {
