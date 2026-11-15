@@ -709,6 +709,7 @@ func (s *Server) Migrate() error {
 		&models.TwoFactorCredential{},
 		&models.TwoFactorBackupCode{},
 		&provider.OauthToken{},
+		&provider.OauthUsedRefreshToken{},
 		&provider.OauthAuthorizationRequest{},
 	); err != nil {
 		errs = append(errs, fmt.Errorf("migration failed: %w", err))

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/haileyok/cocoon/oauth/provider"
+	"gorm.io/gorm"
 )
 
 // postOauthToken drives /oauth/token through the full router with a fresh
@@ -116,7 +118,7 @@ func TestOauthTokenRefreshInvalidGrant(t *testing.T) {
 }
 
 func TestOauthTokenRefreshRotation(t *testing.T) {
-	for _, name := range []string{"concurrent", "update failure"} {
+	for _, name := range []string{"sequential", "concurrent", "update failure", "history failure"} {
 		t.Run(name, func(t *testing.T) {
 			s, account := endpointTestServer(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -133,12 +135,44 @@ func TestOauthTokenRefreshRotation(t *testing.T) {
 				Parameters: auth.Parameters, Token: "old-access", RefreshToken: "old-refresh",
 				ExpiresAt: time.Now().Add(time.Hour),
 			}
-			if err := s.db.Create(ctx, &token, nil).Error; err != nil {
-				t.Fatal(err)
+			other := token
+			other.Token, other.RefreshToken = "other-access", "other-refresh"
+			for _, session := range []*provider.OauthToken{&token, &other} {
+				if err := s.db.Create(ctx, session, nil).Error; err != nil {
+					t.Fatal(err)
+				}
 			}
-			form := url.Values{
-				"client_id": {auth.ClientId}, "grant_type": {"refresh_token"},
-				"refresh_token": {token.RefreshToken},
+			if name == "sequential" {
+				// Upgrade a database whose sessions predate replay history.
+				if err := s.db.Exec(ctx, "DROP TABLE oauth_used_refresh_tokens", nil).Error; err != nil {
+					t.Fatal(err)
+				}
+				for range 2 {
+					if err := s.Migrate(); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			history := func() int64 {
+				t.Helper()
+				var n int64
+				if err := s.db.Raw(ctx, "SELECT COUNT(*) FROM oauth_used_refresh_tokens", nil).Scan(&n).Error; err != nil {
+					t.Fatal(err)
+				}
+				return n
+			}
+			prune := func() {
+				t.Helper()
+				if _, err := s.pruneOauthTokens(ctx, time.Now()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			refresh := func(refreshToken string) *httptest.ResponseRecorder {
+				t.Helper()
+				form := url.Values{"client_id": {auth.ClientId}, "grant_type": {"refresh_token"}, "refresh_token": {refreshToken}}
+				w := httptest.NewRecorder()
+				s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form).WithContext(ctx))
+				return w
 			}
 			n := 1
 			if name == "concurrent" {
@@ -155,14 +189,24 @@ func TestOauthTokenRefreshRotation(t *testing.T) {
 				case <-ctx.Done():
 				}
 			})
-			if name == "update failure" {
-				if err := s.db.Exec(ctx, "CREATE TRIGGER fail_rotation BEFORE UPDATE ON oauth_tokens BEGIN SELECT RAISE(ABORT, 'test failure'); END", nil).Error; err != nil {
+			if name == "update failure" || name == "history failure" {
+				target := "UPDATE ON oauth_tokens"
+				if name == "history failure" {
+					target = "INSERT ON oauth_used_refresh_tokens"
+				}
+				if err := s.db.Exec(ctx, "CREATE TRIGGER fail_rotation BEFORE "+target+" BEGIN SELECT RAISE(ABORT, 'test failure'); END", nil).Error; err != nil {
 					t.Fatal(err)
 				}
-				w := httptest.NewRecorder()
-				s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form).WithContext(ctx))
-				if w.Code != 500 {
+				if w := refresh(token.RefreshToken); w.Code != 500 {
 					t.Fatalf("failed update: %d %s", w.Code, w.Body.String())
+				}
+				// Rotation and its history commit together or not at all.
+				var stored provider.OauthToken
+				if err := s.db.First(ctx, &stored, "id = ?", token.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if stored.RefreshToken != token.RefreshToken || stored.Token != token.Token || history() != 0 {
+					t.Fatal("failed rotation left partial changes")
 				}
 				if err := s.db.Exec(ctx, "DROP TRIGGER fail_rotation", nil).Error; err != nil {
 					t.Fatal(err)
@@ -170,7 +214,9 @@ func TestOauthTokenRefreshRotation(t *testing.T) {
 			}
 			results := make(chan *httptest.ResponseRecorder, n)
 			for range n {
-				r := authorizationCodeRequest(t, s, form).WithContext(ctx)
+				r := authorizationCodeRequest(t, s, url.Values{
+					"client_id": {auth.ClientId}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken},
+				}).WithContext(ctx)
 				go func() {
 					w := httptest.NewRecorder()
 					s.echo.ServeHTTP(w, r)
@@ -190,19 +236,18 @@ func TestOauthTokenRefreshRotation(t *testing.T) {
 					assertInvalidGrant(t, w)
 				}
 			}
-			if successes != 1 || countOauthTokens(t, s) != 1 {
-				t.Fatalf("wanted one stored rotation, got %d successful responses", successes)
+			// A concurrent loser presents a token that is already superseded,
+			// so it revokes the winner's session as a replay would.
+			wantSessions := int64(2)
+			if name == "concurrent" {
+				wantSessions = 1
+			}
+			if successes != 1 || countOauthTokens(t, s) != wantSessions {
+				t.Fatalf("got %d successful responses and %d sessions, want 1 and %d", successes, countOauthTokens(t, s), wantSessions)
 			}
 			wantScope := auth.Parameters.Scope + " repo:com.example.record?action=create"
 			if response.TokenType != "DPoP" || response.Sub != account.Did || response.Scope != wantScope || response.RefreshToken == token.RefreshToken {
 				t.Fatalf("incorrect rotated credentials: %+v", response)
-			}
-			var stored provider.OauthToken
-			if err := s.db.First(ctx, &stored, "token = ?", response.AccessToken).Error; err != nil {
-				t.Fatal(err)
-			}
-			if stored.RefreshToken != response.RefreshToken || stored.Parameters.Scope != wantScope {
-				t.Fatal("response differs from the stored refresh token or scopes")
 			}
 			parsed, err := jwt.Parse(response.AccessToken, func(*jwt.Token) (any, error) { return s.privateKey.Public(), nil }, jwt.WithValidMethods([]string{"ES256"}))
 			if err != nil {
@@ -216,29 +261,88 @@ func TestOauthTokenRefreshRotation(t *testing.T) {
 			if _, present := claims["scope"]; present {
 				t.Fatal("JWT duplicates database-backed scopes")
 			}
+			if name != "concurrent" {
+				var stored provider.OauthToken
+				if err := s.db.First(ctx, &stored, "token = ?", response.AccessToken).Error; err != nil {
+					t.Fatal(err)
+				}
+				if stored.ID != token.ID || stored.RefreshToken != response.RefreshToken || stored.Parameters.Scope != wantScope {
+					t.Fatal("response differs from the stored refresh token or scopes")
+				}
+				// Keep rotating, so the replay below presents a token two
+				// generations old rather than the immediate predecessor.
+				for range 2 {
+					w := refresh(response.RefreshToken)
+					if w.Code != 200 {
+						t.Fatalf("valid rotation: %d %s", w.Code, w.Body.String())
+					}
+					if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+						t.Fatal(err)
+					}
+				}
+				// Pruning keeps history for live sessions.
+				prune()
+				if history() != 3 {
+					t.Fatalf("history = %d, want 3 rotated tokens", history())
+				}
+				// History keeps only a digest, never the token itself.
+				var digests int64
+				if err := s.db.Raw(ctx, "SELECT COUNT(*) FROM oauth_used_refresh_tokens WHERE oauth_token_id = ? AND token_hash = ?", nil,
+					token.ID, fmt.Sprintf("%x", sha256.Sum256([]byte(token.RefreshToken)))).Scan(&digests).Error; err != nil {
+					t.Fatal(err)
+				}
+				if digests != 1 {
+					t.Fatal("history does not hold the superseded token's SHA-256 digest")
+				}
+			}
+			// The replaying caller disconnects as revocation starts.
+			replayCtx, cancelReplay := context.WithCancel(ctx)
+			if err := s.db.Client().Callback().Raw().Before("gorm:raw").Register("cancel-replay", func(tx *gorm.DB) {
+				if strings.Contains(tx.Statement.SQL.String(), "WHERE token_hash") {
+					cancelReplay()
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
 			w := httptest.NewRecorder()
-			s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form))
+			s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, url.Values{
+				"client_id": {auth.ClientId}, "grant_type": {"refresh_token"}, "refresh_token": {token.RefreshToken},
+			}).WithContext(replayCtx))
+			if err := s.db.Client().Callback().Raw().Remove("cancel-replay"); err != nil {
+				t.Fatal(err)
+			}
 			assertInvalidGrant(t, w)
+			if replayCtx.Err() == nil {
+				t.Fatal("replay was not canceled during revocation")
+			}
+			if countOauthTokens(t, s) != 1 {
+				t.Fatal("refresh replay must revoke the matching session")
+			}
+			if err := s.db.First(ctx, &provider.OauthToken{}, "id = ? AND refresh_token = ?", other.ID, other.RefreshToken).Error; err != nil {
+				t.Fatalf("replay changed an unrelated session: %v", err)
+			}
 
 			r := httptest.NewRequest("GET", "/xrpc/com.atproto.server.getSession", nil)
 			r.Header.Set("Authorization", "DPoP "+response.AccessToken)
 			r.Header.Set("DPoP", newTestDpopProofWithKey(t, s, r.Method, "https://"+testHostname+r.URL.String(), &response.AccessToken, s.privateKey))
 			w = httptest.NewRecorder()
 			s.echo.ServeHTTP(w, r)
-			var session struct {
-				Did string `json:"did"`
+			if w.Code != 401 {
+				t.Fatalf("latest access token usable after replay: %d %s", w.Code, w.Body.String())
 			}
-			if err := json.Unmarshal(w.Body.Bytes(), &session); err != nil {
-				t.Fatal(err)
+			assertInvalidGrant(t, refresh(response.RefreshToken))
+			prune()
+			if history() != 0 {
+				t.Fatal("revoked session left replay history after pruning")
 			}
-			if w.Code != 200 || session.Did != account.Did {
-				t.Fatalf("winner's access token unusable after replay: %d %s", w.Code, w.Body.String())
+
+			// The unrelated session keeps working and gains its own history.
+			if w := refresh(other.RefreshToken); w.Code != 200 {
+				t.Fatalf("unrelated session refresh: %d %s", w.Code, w.Body.String())
 			}
-			form.Set("refresh_token", response.RefreshToken)
-			w = httptest.NewRecorder()
-			s.echo.ServeHTTP(w, authorizationCodeRequest(t, s, form))
-			if w.Code != 200 {
-				t.Fatalf("winner's refresh token unusable after replay: %d %s", w.Code, w.Body.String())
+			prune()
+			if countOauthTokens(t, s) != 1 || history() != 1 {
+				t.Fatal("unrelated session or its history was not retained")
 			}
 		})
 	}
