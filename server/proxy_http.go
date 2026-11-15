@@ -1,9 +1,11 @@
 package server
 
 import (
-	"net"
 	"net/http"
+	"strings"
 	"time"
+
+	"github.com/bluesky-social/gttp"
 )
 
 const (
@@ -48,24 +50,44 @@ const (
 // whatever is queued on it until the kernel aborts the socket. Requests are
 // also sent with the inbound request context, so a client that disconnects
 // cancels the upstream call instead of leaving it running.
-func newProxyHTTPClient() *http.Client {
-	return &http.Client{
-		Timeout: proxyRequestTimeout,
-		Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   proxyDialTimeout,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   proxyMaxIdleConnsPerHost,
-			IdleConnTimeout:       proxyIdleConnTimeout,
-			TLSHandshakeTimeout:   proxyTLSHandshakeTimeout,
-			ExpectContinueTimeout: 1 * time.Second,
-			ResponseHeaderTimeout: proxyResponseHeaderTimeout,
-		},
+func newProxyHTTPClient(opts ...gttp.Option) *http.Client {
+	client := gttp.New(append(opts,
+		// Direct, dial-bound checks also cover DNS answers and redirect targets.
+		gttp.WithStrictSSRFProtection(),
+		gttp.WithNoProxy(),
+		gttp.WithTimeout(proxyRequestTimeout),
+		gttp.WithDialTimeout(proxyDialTimeout),
+		gttp.WithDialKeepAlive(30*time.Second),
+		gttp.WithTLSHandshakeTimeout(proxyTLSHandshakeTimeout),
+		gttp.WithResponseHeaderTimeout(proxyResponseHeaderTimeout),
+		gttp.WithExpectContinueTimeout(time.Second),
+		gttp.WithIdleConnTimeout(proxyIdleConnTimeout),
+		gttp.WithMaxIdleConns(100),
+		gttp.WithMaxIdleConnsPerHost(proxyMaxIdleConnsPerHost),
+		gttp.WithMaxConnsPerHost(0),
+		gttp.WithRedirectPolicy(10),
+		// Preserve streaming bytes and the existing timeout/retry policy.
+		gttp.WithNoRetries(),
+		gttp.WithDisableCompression(),
+		gttp.WithIdleTimeout(0),
+		gttp.WithHTTP2ReadIdleTimeout(0),
+	)...)
+	checkRedirect := client.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if err := checkRedirect(req, via); err != nil {
+			return err
+		}
+		// Go copies the original headers again on each hop. Once the chain
+		// crosses an origin, do not restore its service token on later hops.
+		for _, previous := range via {
+			if !strings.EqualFold(previous.URL.Scheme, req.URL.Scheme) || !strings.EqualFold(previous.URL.Host, req.URL.Host) {
+				req.Header.Del("Authorization")
+				break
+			}
+		}
+		return nil
 	}
+	return client
 }
 
 // defaultProxyHTTPClient is the process-wide proxy client. Server.proxyHTTPClient

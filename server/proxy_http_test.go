@@ -2,14 +2,225 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/bluesky-social/gttp"
 	"github.com/haileyok/cocoon/identity"
 	"github.com/labstack/echo/v4"
+	"golang.org/x/net/dns/dnsmessage"
 )
+
+func proxyTestHTTPClient(t *testing.T, upstream *httptest.Server) *http.Client {
+	t.Helper()
+	tlsConfig := upstream.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	tlsConfig.ServerName = "example.com"
+	client := newProxyHTTPClient(
+		gttp.WithTLSConfig(tlsConfig),
+		gttp.WithDialContext(func(ctx context.Context, network, address string) (net.Conn, error) {
+			// The IP guard runs before mapping approved addresses to the test server.
+			if address != "203.0.113.10:443" && address != "203.0.113.10:8443" && address != "203.0.113.11:443" {
+				return nil, fmt.Errorf("unexpected dial: %s", address)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
+		}),
+	)
+	t.Cleanup(client.CloseIdleConnections)
+	return client
+}
+
+func TestProxyBlocksPrivateDestinations(t *testing.T) {
+	var connections atomic.Int32
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"value":{"$type":"app.bsky.feed.generator","did":"did:web:generator.test"}}`)
+	}))
+	upstream.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	upstream.StartTLS()
+	t.Cleanup(upstream.Close)
+	for _, method := range []string{"app.bsky.feed.getTimeline", "app.bsky.feed.getFeed"} {
+		for _, initialized := range []bool{false, true} {
+			for _, host := range []string{"127.0.0.1", "localhost"} {
+				t.Run(fmt.Sprintf("%s/initialized=%t/%s", method, initialized, host), func(t *testing.T) {
+					s := newTestServer(t)
+					if initialized {
+						s.proxyHTTPClient = defaultProxyHTTPClient
+					}
+					cache := identity.NewMemCache(10)
+					if err := cache.PutDoc("did:web:appview.test", &identity.DidDoc{
+						Id: "did:web:appview.test", Service: []identity.DidDocService{{Id: "#view", ServiceEndpoint: strings.Replace(upstream.URL, "127.0.0.1", host, 1)}},
+					}); err != nil {
+						t.Fatal(err)
+					}
+					s.passport = identity.NewPassport(nil, cache)
+					s.config.FallbackProxy = "did:web:appview.test#view"
+					e, _ := newRequestContext("GET", "/xrpc/"+method+"?feed=at://did:web:owner.test/app.bsky.feed.generator/test", "", nil)
+					e.Set("credentialKind", credentialLegacyAccess)
+					if method == "app.bsky.feed.getFeed" {
+						_ = s.handleProxyBskyFeedGetFeed(e)
+					} else if err := s.handleProxy(e); !errors.Is(err, gttp.ErrBlockedByIPPolicy) {
+						t.Errorf("expected IP-policy rejection, got %v", err)
+					}
+				})
+			}
+		}
+	}
+	if connections.Load() != 0 {
+		t.Fatalf("private service received %d connections", connections.Load())
+	}
+}
+
+func TestProxyDialUsesCheckedAddress(t *testing.T) {
+	for _, mixed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("private DNS answer=%t", mixed), func(t *testing.T) {
+			dns, err := net.ListenPacket("udp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { dns.Close() })
+			go func() {
+				buf := make([]byte, 4096)
+				for {
+					n, addr, err := dns.ReadFrom(buf)
+					if err != nil {
+						return
+					}
+					var message dnsmessage.Message
+					if message.Unpack(buf[:n]) != nil {
+						continue
+					}
+					message.Header.Response = true
+					message.Header.RecursionAvailable = true
+					for _, q := range message.Questions {
+						if q.Type != dnsmessage.TypeA {
+							continue
+						}
+						ips := [][4]byte{{203, 0, 113, 10}}
+						if mixed {
+							ips = append(ips, [4]byte{10, 0, 0, 1})
+						}
+						for _, ip := range ips {
+							message.Answers = append(message.Answers, dnsmessage.Resource{
+								Header: dnsmessage.ResourceHeader{Name: q.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET},
+								Body:   &dnsmessage.AResource{A: ip},
+							})
+						}
+					}
+					response, err := message.Pack()
+					if err == nil {
+						_, _ = dns.WriteTo(response, addr)
+					}
+				}
+			}()
+			resolver := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "udp", dns.LocalAddr().String())
+			}}
+			dialed := make(chan string, 4)
+			stopped := errors.New("test stopped before connecting")
+			client := newProxyHTTPClient(gttp.WithResolver(resolver), gttp.WithDialContext(func(_ context.Context, _, address string) (net.Conn, error) {
+				dialed <- address
+				return nil, stopped
+			}))
+			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, "GET", "https://appview.test/", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.Do(req)
+			if mixed {
+				if !errors.Is(err, gttp.ErrBlockedByIPPolicy) || len(dialed) != 0 {
+					t.Fatalf("mixed DNS answer reached dialer: calls=%d error=%v", len(dialed), err)
+				}
+			} else {
+				if !errors.Is(err, stopped) || len(dialed) != 1 {
+					t.Fatalf("public DNS answer: calls=%d error=%v", len(dialed), err)
+				}
+				if address := <-dialed; address != "203.0.113.10:443" {
+					t.Fatalf("dial must use checked IP, not resolve again: %s", address)
+				}
+			}
+		})
+	}
+}
+
+func TestProxyRedirectGuards(t *testing.T) {
+	// A proxy would resolve the destination itself, bypassing the local IP guard.
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:1")
+	t.Setenv("NO_PROXY", "")
+	for _, tc := range []struct {
+		name, target, last string
+		wantErr            error
+	}{
+		{"same origin", "/next", "/last", nil},
+		{"other host", "https://203.0.113.11/next", "/last", nil},
+		{"other port", "https://203.0.113.10:8443/next", "/last", nil},
+		{"return to original", "https://203.0.113.10:8443/next", "https://203.0.113.10/last", nil},
+		{"private", "https://127.0.0.1/next", "", gttp.ErrBlockedByIPPolicy},
+		{"downgrade", "http://203.0.113.10/next", "", gttp.ErrSchemeDowngrade},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			seen := make(chan string, 3)
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seen <- r.Header.Get("Authorization")
+				switch r.URL.Path {
+				case "/start":
+					http.Redirect(w, r, tc.target, http.StatusFound)
+				case "/next":
+					http.Redirect(w, r, tc.last, http.StatusFound)
+				default:
+					io.WriteString(w, "ok")
+				}
+			}))
+			t.Cleanup(upstream.Close)
+			client := proxyTestHTTPClient(t, upstream)
+			req, err := http.NewRequest("GET", "https://203.0.113.10/start", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer service-token")
+			resp, err := client.Do(req)
+			if tc.wantErr != nil {
+				if resp != nil {
+					resp.Body.Close()
+				}
+				if !errors.Is(err, tc.wantErr) || len(seen) != 1 {
+					t.Fatalf("redirect: requests=%d error=%v, want %v", len(seen), err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil || string(body) != "ok" || len(seen) != 3 {
+				t.Fatalf("redirect chain: requests=%d body=%q error=%v", len(seen), body, err)
+			}
+			for i := 0; i < 3; i++ {
+				want := ""
+				if i == 0 || tc.name == "same origin" {
+					want = "Bearer service-token"
+				}
+				if got := <-seen; got != want {
+					t.Errorf("hop %d authorization = %q, want %q", i, got, want)
+				}
+			}
+		})
+	}
+}
 
 // TestProxyHTTPClientHasTimeouts guards the client the proxy paths use. The bug
 // this prevents: with no response-header timeout, an upstream connection that
@@ -20,33 +231,46 @@ import (
 func TestProxyHTTPClientHasTimeouts(t *testing.T) {
 	c := newProxyHTTPClient()
 
-	if c.Timeout != proxyRequestTimeout {
-		t.Errorf("client timeout = %v, want %v", c.Timeout, proxyRequestTimeout)
+	if c.Timeout != 2*time.Minute {
+		t.Errorf("client timeout = %v, want 2 minutes", c.Timeout)
 	}
 
-	tr, ok := c.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("transport is %T, want *http.Transport", c.Transport)
-	}
-
-	if tr.ResponseHeaderTimeout <= 0 {
-		t.Error("transport has no ResponseHeaderTimeout, so a half-open upstream connection pins requests")
-	}
-
-	if tr.TLSHandshakeTimeout <= 0 {
-		t.Error("transport has no TLSHandshakeTimeout")
-	}
-
-	if tr.IdleConnTimeout <= 0 {
-		t.Error("transport has no IdleConnTimeout")
-	}
-
-	if tr.MaxIdleConnsPerHost < proxyMaxIdleConnsPerHost {
-		t.Errorf("MaxIdleConnsPerHost = %d, want at least %d", tr.MaxIdleConnsPerHost, proxyMaxIdleConnsPerHost)
-	}
-
-	if defaultProxyHTTPClient == nil {
-		t.Error("defaultProxyHTTPClient is nil, so the proxy would fall back to http.DefaultClient")
+	for _, stage := range []string{"headers", "body"} {
+		t.Run(stage, func(t *testing.T) {
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if stage == "body" {
+					w.WriteHeader(http.StatusOK)
+					w.(http.Flusher).Flush()
+				}
+				<-r.Context().Done()
+			}))
+			t.Cleanup(upstream.Close)
+			client := proxyTestHTTPClient(t, upstream)
+			if stage == "body" {
+				client.Timeout = 100 * time.Millisecond
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 25*time.Second)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, "GET", "https://203.0.113.10/stall", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			resp, err := client.Do(req)
+			if stage == "body" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resp.Body.Close()
+				_, err = io.ReadAll(resp.Body)
+			}
+			if !errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+				t.Fatalf("expected client timeout during %s, got %v (context: %v)", stage, err, ctx.Err())
+			}
+			if stage == "headers" && time.Since(start) < 20*time.Second {
+				t.Fatal("header timeout shortened below 20 seconds")
+			}
+		})
 	}
 }
 
@@ -68,12 +292,7 @@ func TestProxyCancelsUpstreamOnClientDisconnect(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	s := newTestServer(t)
-	// Keep production timeouts, but trust the test server's certificate.
-	proxyClient := *defaultProxyHTTPClient
-	tr := defaultProxyHTTPClient.Transport.(*http.Transport).Clone()
-	tr.TLSClientConfig = upstream.Client().Transport.(*http.Transport).TLSClientConfig
-	proxyClient.Transport = tr
-	s.proxyHTTPClient = &proxyClient
+	s.proxyHTTPClient = proxyTestHTTPClient(t, upstream)
 
 	attachOauthProvider(t, s)
 	account := s.createTestAccount(t, "proxy.pds.test")
@@ -81,7 +300,7 @@ func TestProxyCancelsUpstreamOnClientDisconnect(t *testing.T) {
 	cache := identity.NewMemCache(10)
 	if err := cache.PutDoc("did:web:appview.test", &identity.DidDoc{
 		Id:      "did:web:appview.test",
-		Service: []identity.DidDocService{{Id: "#view", ServiceEndpoint: upstream.URL}},
+		Service: []identity.DidDocService{{Id: "#view", ServiceEndpoint: "https://203.0.113.10"}},
 	}); err != nil {
 		t.Fatal(err)
 	}

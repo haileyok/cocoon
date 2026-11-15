@@ -167,6 +167,12 @@ COCOON_S3_CDN_URL="https://cdn.example.com"
 
 > **Tip**: For Cloudflare R2, you can use the public bucket URL as the CDN URL. For AWS S3, you can use CloudFront or the S3 bucket URL directly if public access is enabled.
 
+#### Outbound proxy requests
+
+Requests forwarded to AppViews, chat services and feed generators must use public destinations. Cocoon blocks private and loopback addresses, including DNS answers and redirect targets, and refuses HTTPS-to-HTTP redirects. Service credentials are removed for the rest of a redirect chain once it changes scheme, host or port.
+
+These requests connect directly, ignoring `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`. Private-network AppViews are not supported. The configured PLC directory is separate and unchanged. Proxy timeouts remain 20 seconds for response headers and two minutes for the whole request.
+
 #### PLC Directory
 
 Cocoon uses the public PLC directory (`https://plc.directory`) to create, update, and resolve `did:plc` identities. You can point it at a different directory, such as a local PLC instance for integration testing, so that test accounts are never registered with the real directory:
