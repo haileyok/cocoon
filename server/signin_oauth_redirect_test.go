@@ -224,6 +224,53 @@ func TestSigninAddAccountFromDashboard(t *testing.T) {
 	}
 }
 
+func TestSignoutKeepsOAuthContinuation(t *testing.T) {
+	standardQuery := url.Values{
+		"client_id": {"http://localhost"}, "response_type": {"code"},
+		"redirect_uri": {"http://localhost/callback"}, "scope": {"atproto"},
+		"state": {"two words & a plus +"}, "extra": {"first&value", "second=value"}, "empty": {""},
+	}.Encode()
+	for _, tc := range []struct {
+		name, query, wantQuery, wantReturn string
+	}{
+		{"standard", standardQuery, standardQuery, "/oauth/authorize?" + standardQuery},
+		{"pushed", testOAuthQuery, testOAuthQuery, "/oauth/authorize?" + testOAuthQuery},
+		{"account", "add=1&next=https%3A%2F%2Fexample.com", "", "/account"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, acct, cookie := manageServer(t)
+			w := browserDo(s, cookie, "GET", "/account/signout?"+tc.query, nil)
+			wantSignin := "/account/signin"
+			if tc.wantQuery != "" {
+				wantSignin += "?" + tc.wantQuery
+			}
+			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != wantSignin {
+				t.Fatalf("signout = %d %q, want 303 %q", w.Code, w.Header().Get("Location"), wantSignin)
+			}
+			cookie = sessionCookieFrom(s, w, cookie)
+			if w := browserDo(s, cookie, "GET", "/account", nil); w.Code != http.StatusSeeOther {
+				t.Fatalf("account after signout = %d, want 303", w.Code)
+			}
+			w = browserDo(s, cookie, "GET", wantSignin, nil)
+			if w.Code != http.StatusOK {
+				t.Fatalf("signin page = %d", w.Code)
+			}
+			cookie = sessionCookieFrom(s, w, cookie)
+			m := queryParamsField.FindStringSubmatch(w.Body.String())
+			if m == nil || html.UnescapeString(m[1]) != tc.wantQuery {
+				t.Fatalf("signin form query = %v, want %q", m, tc.wantQuery)
+			}
+			w = browserDo(s, cookie, "POST", "/account/signin", url.Values{
+				"username": {acct.Handle}, "password": {acct.Password},
+				"query_params": {html.UnescapeString(m[1])},
+			})
+			if w.Code != http.StatusSeeOther || w.Header().Get("Location") != tc.wantReturn {
+				t.Fatalf("signin = %d %q, want 303 %q", w.Code, w.Header().Get("Location"), tc.wantReturn)
+			}
+		})
+	}
+}
+
 func TestAuthorizeAccountActionsKeepOAuthRequest(t *testing.T) {
 	s, acct, cookie := manageServer(t)
 	attachOauthProvider(t, s)
