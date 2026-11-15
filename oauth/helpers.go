@@ -56,14 +56,15 @@ type SessionAgeResult struct {
 	RefreshExpired bool
 }
 
-func GetSessionAgeFromToken(t provider.OauthToken) SessionAgeResult {
-	sessionLifetime := constants.PublicClientSessionLifetime
-	refreshLifetime := constants.PublicClientRefreshLifetime
+func GetSessionLifetimes(t provider.OauthToken) (session, refresh time.Duration) {
 	if t.ClientAuth.Method != "none" {
-		sessionLifetime = constants.ConfidentialClientSessionLifetime
-		refreshLifetime = constants.ConfidentialClientRefreshLifetime
+		return constants.ConfidentialClientSessionLifetime, constants.ConfidentialClientRefreshLifetime
 	}
+	return constants.PublicClientSessionLifetime, constants.PublicClientRefreshLifetime
+}
 
+func GetSessionAgeFromToken(t provider.OauthToken) SessionAgeResult {
+	sessionLifetime, refreshLifetime := GetSessionLifetimes(t)
 	res := SessionAgeResult{}
 
 	res.SessionAge = time.Since(t.CreatedAt)
