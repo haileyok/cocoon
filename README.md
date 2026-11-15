@@ -177,6 +177,8 @@ These requests connect directly, ignoring `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PR
 
 OAuth permission-set and Spaces type lookups fetch identity documents and lexicon records directly, without environment proxies. Public fetches require HTTPS, a DNS hostname and port 443; private addresses are blocked even when returned by DNS or reached through a redirect. Identity-document redirects are not followed. Each HTTP request has a ten-second timeout and a 2 MiB response limit, with a thirty-second limit for the full lookup.
 
+Lexicon records must be returned by `com.atproto.sync.getRecord` with a signed repository commit and an inclusion proof for the requested record. Cocoon checks the signature against the authority's DID signing key, verifies the record's content and NSID, and bounds proof decoding. Unsigned `com.atproto.repo.getRecord` responses are no longer accepted. A valid proof authenticates a published record; it does not establish that the record is the latest version.
+
 The configured PLC directory remains trusted for direct DID-document requests, so a local PLC still works. This exception does not extend to redirects or the PDS endpoints listed in its documents. Lexicons hosted on private, HTTP, IP-literal or custom-port PDS endpoints cannot be resolved.
 
 #### PLC Directory

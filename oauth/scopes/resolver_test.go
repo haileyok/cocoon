@@ -96,7 +96,7 @@ func lexiconTestDNS(t *testing.T, did string) *net.Resolver {
 func TestLexiconResolutionBlocksPrivateDestinations(t *testing.T) {
 	const did = "did:plc:abcdefghijklmnopqrstuvwx"
 	dns := lexiconTestDNS(t, did)
-	for _, kind := range []string{"permission-set", "space"} {
+	for _, kind := range []string{"permission-set", "space", "space permissions"} {
 		for _, host := range []string{"127.0.0.1", "localhost", "pds.example.com"} {
 			t.Run(kind+"/"+host, func(t *testing.T) {
 				var hits atomic.Int32
@@ -115,6 +115,8 @@ func TestLexiconResolutionBlocksPrivateDestinations(t *testing.T) {
 				var err error
 				if kind == "space" {
 					_, err = r.ResolveSpaceCollections(t.Context(), "com.example.lexicon")
+				} else if kind == "space permissions" {
+					_, err = r.ResolveSpacePermissions(t.Context(), "com.example.lexicon")
 				} else {
 					_, err = r.ResolvePermissionSet(t.Context(), "com.example.lexicon")
 				}
@@ -200,13 +202,29 @@ func TestLexiconSuppliedDirectoryPrivatePDS(t *testing.T) {
 }
 
 func TestLexiconResolutionPublicFetch(t *testing.T) {
-	for _, mode := range []string{"permission-set", "space", "DID-web", "DID-web redirect", "public redirect", "private redirect", "HTTP redirect", "IP redirect", "port redirect", "oversized", "at limit", "over limit", "space at limit", "space over limit", "API error", "non-JSON error", "cancel body", "deadline body"} {
+	for _, mode := range []string{"permission-set", "space", "DID-web", "DID-web redirect", "public redirect", "private redirect", "HTTP redirect", "IP redirect", "port redirect", "oversized", "at limit", "over limit", "space at limit", "space over limit", "API error", "non-JSON error", "cancel body", "deadline body", "unsigned JSON", "P256", "partial", "space permissions", "space forged signature", "space permissions forged signature", "forged signature", "tampered commit", "wrong DID", "wrong path", "tampered record CID", "wrong ID", "wrong type", "wrong version", "missing defs", "missing commit", "missing MST", "missing record", "multiple roots", "bad prefix", "negative prefix"} {
 		t.Run(mode, func(t *testing.T) {
 			did := "did:plc:abcdefghijklmnopqrstuvwx"
 			if strings.HasPrefix(mode, "DID-web") {
 				did = "did:web:public.example.com"
 			}
 			dns := lexiconTestDNS(t, did)
+			kind := "permission-set"
+			if strings.HasPrefix(mode, "space") && !strings.HasPrefix(mode, "space permissions") {
+				kind = "space"
+			}
+			fixtureMode := mode
+			if strings.HasSuffix(mode, "forged signature") {
+				fixtureMode = "forged signature"
+			}
+			proof, publicKey := lexiconProofFixture(t, kind, fixtureMode)
+			if strings.HasSuffix(mode, "limit") {
+				size := 2 << 20
+				if strings.Contains(mode, "over limit") {
+					size++
+				}
+				proof = lexiconProofAtSize(t, proof, size)
+			}
 			var requests atomic.Int32
 			started := make(chan struct{}, 1)
 			pds := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -215,12 +233,12 @@ func TestLexiconResolutionPublicFetch(t *testing.T) {
 					if mode == "DID-web redirect" {
 						http.Redirect(w, req, "/other-did.json", http.StatusFound)
 					} else {
-						fmt.Fprintf(w, `{"id":%q,"service":[{"id":"#atproto_pds","type":"AtprotoPersonalDataServer","serviceEndpoint":"https://public.example.com"}]}`, did)
+						fmt.Fprintf(w, `{"id":%q,"verificationMethod":[{"id":"#atproto","type":"Multikey","controller":%q,"publicKeyMultibase":%q}],"service":[{"id":"#atproto_pds","type":"AtprotoPersonalDataServer","serviceEndpoint":"https://public.example.com"}]}`, did, did, publicKey)
 					}
 					return
 				}
 				if req.URL.Path != "/record" {
-					if req.URL.Path != "/xrpc/com.atproto.repo.getRecord" || req.URL.Query().Get("repo") != did || req.URL.Query().Get("collection") != "com.atproto.lexicon.schema" || req.URL.Query().Get("rkey") != "com.example.lexicon" {
+					if req.URL.Path != "/xrpc/com.atproto.sync.getRecord" || req.URL.Query().Get("did") != did || req.URL.Query().Get("collection") != "com.atproto.lexicon.schema" || req.URL.Query().Get("rkey") != "com.example.lexicon" {
 						t.Errorf("wrong record request: %s", req.URL)
 					}
 					switch mode {
@@ -259,26 +277,16 @@ func TestLexiconResolutionPublicFetch(t *testing.T) {
 					fmt.Fprintf(w, `{"padding":%q,`, strings.Repeat("x", helpers.SafeFetchClientMaxBodyBytes))
 					return
 				}
-				kind := "permission-set"
-				if strings.HasPrefix(mode, "space") {
-					kind = "space"
+				if mode == "unsigned JSON" {
+					fmt.Fprint(w, `{"value":{"lexicon":1,"id":"com.example.lexicon","defs":{"main":{"type":"permission-set","permissions":[]}}}}`)
+					return
 				}
-				body := fmt.Sprintf(`{"value":{"lexicon":1,"id":"com.example.lexicon","defs":{"main":{"type":%q,"title":"Example","key":"tid","collections":["com.example.record"],"permissions":[{"type":"permission","resource":"repo","collection":["com.example.record"],"action":["create"]}]}}}}`, kind)
-				if strings.HasSuffix(mode, "limit") {
-					size := 2 << 20
-					if strings.Contains(mode, "over limit") {
-						size++
-					}
-					body = strings.TrimSuffix(body, "}") + `,"padding":"` + strings.Repeat("x", size-len(body)-len(`,"padding":""`)) + `"}`
-					if len(body) != size {
-						t.Errorf("fixture size = %d, want %d", len(body), size)
-					}
-				}
-				fmt.Fprint(w, body)
+				w.Header().Set("Content-Type", "application/vnd.ipld.car")
+				_, _ = w.Write(proof)
 			}))
 			defer pds.Close()
 			plc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-				fmt.Fprintf(w, `{"id":%q,"service":[{"id":"#atproto_pds","type":"AtprotoPersonalDataServer","serviceEndpoint":"https://public.example.com"}]}`, did)
+				fmt.Fprintf(w, `{"id":%q,"verificationMethod":[{"id":"#atproto","type":"Multikey","controller":%q,"publicKeyMultibase":%q}],"service":[{"id":"#atproto_pds","type":"AtprotoPersonalDataServer","serviceEndpoint":"https://public.example.com"}]}`, did, did, publicKey)
 			}))
 			defer plc.Close()
 			r := NewIndigoResolverWithPLCURL(plc.URL)
@@ -316,6 +324,25 @@ func TestLexiconResolutionPublicFetch(t *testing.T) {
 			if mode == "deadline body" {
 				r.httpClient.Timeout = 100 * time.Millisecond
 			}
+			if mode == "space permissions forged signature" || mode == "space forged signature" {
+				var err error
+				if mode == "space permissions forged signature" {
+					_, err = r.ResolveSpacePermissions(ctx, "com.example.lexicon")
+				} else {
+					_, err = r.ResolveSpaceCollections(ctx, "com.example.lexicon")
+				}
+				if err == nil || !strings.Contains(err.Error(), "commit signature") || requests.Load() != 1 {
+					t.Fatalf("forged space proof: requests=%d error=%v", requests.Load(), err)
+				}
+				return
+			}
+			if mode == "space permissions" {
+				perms, err := r.ResolveSpacePermissions(ctx, "com.example.lexicon")
+				if err != nil || len(perms) != 1 || perms[0].Type != "com.example.group" {
+					t.Fatalf("space permissions=%v, error=%v", perms, err)
+				}
+				return
+			}
 			if strings.HasPrefix(mode, "space") {
 				cols, err := r.ResolveSpaceCollections(ctx, "com.example.lexicon")
 				if mode == "space over limit" {
@@ -331,8 +358,8 @@ func TestLexiconResolutionPublicFetch(t *testing.T) {
 			}
 			ps, err := r.ResolvePermissionSet(ctx, "com.example.lexicon")
 			switch mode {
-			case "permission-set", "public redirect", "DID-web", "at limit":
-				if err != nil || len(ps.Permissions) != 1 || ps.Permissions[0].Resource != "repo" || ps.Permissions[0].Action[0] != "create" {
+			case "permission-set", "public redirect", "DID-web", "at limit", "P256", "partial":
+				if err != nil || len(ps.Permissions) != 2 || ps.Permissions[0].Resource != "repo" || ps.Permissions[0].Action[0] != "create" {
 					t.Fatalf("permission-set=%+v, error=%v", ps, err)
 				}
 				before := requests.Load()
@@ -365,7 +392,11 @@ func TestLexiconResolutionPublicFetch(t *testing.T) {
 				}
 			default:
 				if err == nil || requests.Load() != 1 {
-					t.Fatalf("unsafe redirect: error=%v, requests=%d", err, requests.Load())
+					t.Fatalf("unsafe response: error=%v, requests=%d", err, requests.Load())
+				}
+				before := requests.Load()
+				if _, cachedErr := r.ResolvePermissionSet(ctx, "com.example.lexicon"); cachedErr == nil || requests.Load() != before {
+					t.Fatalf("negative cache did not preserve rejection: %v", cachedErr)
 				}
 			}
 		})

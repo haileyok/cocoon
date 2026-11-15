@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bluesky-social/indigo/atproto/lexicon"
+	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 )
 
@@ -48,9 +48,13 @@ func (r *IndigoResolver) resolveSpacePermissions(ctx context.Context, nsidStr st
 	if err != nil {
 		return nil, fmt.Errorf("invalid nsid %q: %w", nsidStr, err)
 	}
-	data, err := lexicon.ResolveLexiconData(ctx, r.dir, nsid)
+	record, err := r.fetchLexicon(ctx, nsid)
 	if err != nil {
 		return nil, fmt.Errorf("could not resolve permission set %q: %w", nsidStr, err)
+	}
+	data, err := atdata.UnmarshalJSON(record)
+	if err != nil {
+		return nil, fmt.Errorf("invalid lexicon %q: %w", nsidStr, err)
 	}
 	return SpacePermissionsFromLexicon(nsidStr, data)
 }
