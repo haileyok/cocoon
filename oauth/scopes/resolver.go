@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/bluesky-social/gttp"
-	"github.com/bluesky-social/indigo/api/agnostic"
 	"github.com/bluesky-social/indigo/atproto/atclient"
 	"github.com/bluesky-social/indigo/atproto/identity"
 	"github.com/bluesky-social/indigo/atproto/lexicon"
@@ -174,11 +173,14 @@ func (r *IndigoResolver) fetchLexicon(ctx context.Context, nsid syntax.NSID) (js
 	if err != nil {
 		return nil, err
 	}
+	if ident == nil || ident.DID != did {
+		return nil, fmt.Errorf("lexicon authority identity does not match %s", did)
+	}
 	client := atclient.NewAPIClient(ident.PDSEndpoint())
 	client.Client = r.httpClient
-	req := atclient.NewAPIRequest(http.MethodGet, "com.atproto.repo.getRecord", nil)
+	req := atclient.NewAPIRequest(http.MethodGet, "com.atproto.sync.getRecord", nil)
 	req.QueryParams.Set("collection", "com.atproto.lexicon.schema")
-	req.QueryParams.Set("repo", ident.DID.String())
+	req.QueryParams.Set("did", did.String())
 	req.QueryParams.Set("rkey", nsid.String())
 	resp, err := client.Do(ctx, req)
 	if err != nil {
@@ -198,14 +200,11 @@ func (r *IndigoResolver) fetchLexicon(ctx context.Context, nsid syntax.NSID) (js
 		}
 		return nil, failure.APIError(resp.StatusCode)
 	}
-	var response agnostic.RepoGetRecord_Output
-	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("invalid lexicon response: %w", err)
+	record, err := verifyLexiconProof(ctx, body, ident, nsid)
+	if err != nil {
+		return nil, fmt.Errorf("invalid lexicon proof: %w", err)
 	}
-	if response.Value == nil {
-		return nil, fmt.Errorf("empty lexicon record in response")
-	}
-	return *response.Value, nil
+	return record, nil
 }
 
 func (r *IndigoResolver) lookup(nsid string) (cacheEntry, bool) {
