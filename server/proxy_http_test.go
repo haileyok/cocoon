@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -26,7 +28,10 @@ func proxyTestHTTPClient(t *testing.T, upstream *httptest.Server) *http.Client {
 	client := newProxyHTTPClient(
 		gttp.WithTLSConfig(tlsConfig),
 		gttp.WithDialContext(func(ctx context.Context, network, address string) (net.Conn, error) {
-			// The IP guard runs before mapping approved addresses to the test server.
+			// Check before mapping public addresses to the loopback test server.
+			if err := newProxyDialer().ControlContext(ctx, network, address, nil); err != nil {
+				return nil, err
+			}
 			if address != "203.0.113.10:443" && address != "203.0.113.10:8443" && address != "203.0.113.11:443" {
 				return nil, fmt.Errorf("unexpected dial: %s", address)
 			}
@@ -82,8 +87,16 @@ func TestProxyBlocksPrivateDestinations(t *testing.T) {
 }
 
 func TestProxyDialUsesCheckedAddress(t *testing.T) {
-	for _, mixed := range []bool{false, true} {
-		t.Run(fmt.Sprintf("private DNS answer=%t", mixed), func(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		ips  [][4]byte
+	}{
+		{"public", [][4]byte{{203, 0, 113, 10}}},
+		{"public then private", [][4]byte{{203, 0, 113, 10}, {10, 0, 0, 1}}},
+		{"private then public", [][4]byte{{10, 0, 0, 1}, {203, 0, 113, 10}}},
+		{"private only", [][4]byte{{10, 0, 0, 1}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			dns, err := net.ListenPacket("udp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
@@ -106,11 +119,7 @@ func TestProxyDialUsesCheckedAddress(t *testing.T) {
 						if q.Type != dnsmessage.TypeA {
 							continue
 						}
-						ips := [][4]byte{{203, 0, 113, 10}}
-						if mixed {
-							ips = append(ips, [4]byte{10, 0, 0, 1})
-						}
-						for _, ip := range ips {
+						for _, ip := range tc.ips {
 							message.Answers = append(message.Answers, dnsmessage.Resource{
 								Header: dnsmessage.ResourceHeader{Name: q.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET},
 								Body:   &dnsmessage.AResource{A: ip},
@@ -128,10 +137,19 @@ func TestProxyDialUsesCheckedAddress(t *testing.T) {
 			}}
 			dialed := make(chan string, 4)
 			stopped := errors.New("test stopped before connecting")
-			client := newProxyHTTPClient(gttp.WithResolver(resolver), gttp.WithDialContext(func(_ context.Context, _, address string) (net.Conn, error) {
+			dialer := newProxyDialer()
+			dialer.Resolver = resolver
+			check := dialer.ControlContext
+			dialer.ControlContext = func(ctx context.Context, network, address string, conn syscall.RawConn) error {
+				if err := check(ctx, network, address, conn); err != nil {
+					return err
+				}
+				// Returning here prevents an actual connection to the public IP.
 				dialed <- address
-				return nil, stopped
-			}))
+				return stopped
+			}
+			client := newProxyHTTPClient(gttp.WithDialContext(dialer.DialContext))
+			t.Cleanup(client.CloseIdleConnections)
 			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 			defer cancel()
 			req, err := http.NewRequestWithContext(ctx, "GET", "https://appview.test/", nil)
@@ -139,12 +157,14 @@ func TestProxyDialUsesCheckedAddress(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = client.Do(req)
-			if mixed {
+			if tc.name == "private only" {
 				if !errors.Is(err, gttp.ErrBlockedByIPPolicy) || len(dialed) != 0 {
-					t.Fatalf("mixed DNS answer reached dialer: calls=%d error=%v", len(dialed), err)
+					t.Fatalf("private DNS answer reached connect: calls=%d error=%v", len(dialed), err)
 				}
 			} else {
-				if !errors.Is(err, stopped) || len(dialed) != 1 {
+				// All attempts fail deliberately. Go returns the first address's
+				// error, which may be the blocked sibling in a mixed answer.
+				if (!errors.Is(err, stopped) && !errors.Is(err, gttp.ErrBlockedByIPPolicy)) || len(dialed) != 1 {
 					t.Fatalf("public DNS answer: calls=%d error=%v", len(dialed), err)
 				}
 				if address := <-dialed; address != "203.0.113.10:443" {
@@ -152,6 +172,150 @@ func TestProxyDialUsesCheckedAddress(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestProxyAddressPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		address string
+		blocked bool
+	}{
+		{"127.0.0.1:443", true},
+		{"[::1]:443", true},
+		{"[::ffff:127.0.0.1]:443", true},
+		{"10.0.0.1:443", true},
+		{"172.16.0.1:443", true},
+		{"172.31.255.255:443", true},
+		{"192.168.1.1:443", true},
+		{"[fd00::1]:443", true},
+		{"169.254.169.254:443", true},
+		{"[fe80::1%eth0]:443", true},
+		{"224.0.0.1:443", true},
+		{"[ff02::1]:443", true},
+		{"0.1.2.3:443", true},
+		{"0.0.0.0:443", true},
+		{"[::]:443", true},
+		{"[::%lo]:443", true},
+		{"255.255.255.255:443", true},
+		{"100.64.0.1:443", true},
+		{"100.127.255.255:443", true},
+		{"[64:ff9b::a00:1]:443", true},
+		{"[64:ff9b:1::a00:1]:443", true},
+		{"[64:ff9b::a00:1%lo]:443", true},
+		{"[64:ff9b:1::a00:1%lo]:443", true},
+		{"unresolved.test:443", true},
+		{"203.0.113.10:443", false},
+		{"[::ffff:203.0.113.10]:443", false},
+		{"[2606:4700:4700::1111]:443", false},
+		{"172.15.255.255:443", false},
+		{"172.32.0.0:443", false},
+		{"100.63.255.255:443", false},
+		{"100.128.0.0:443", false},
+		{"[64:ff9b:2::1]:443", false},
+	} {
+		t.Run(tc.address, func(t *testing.T) {
+			err := newProxyDialer().ControlContext(t.Context(), "tcp", tc.address, nil)
+			if tc.blocked && !errors.Is(err, gttp.ErrBlockedByIPPolicy) || !tc.blocked && err != nil {
+				t.Fatalf("address %s: error=%v, want blocked=%t", tc.address, err, tc.blocked)
+			}
+		})
+	}
+}
+
+func TestProxyBlocksZonedUnspecifiedAddress(t *testing.T) {
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback unavailable: %v", err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	var connections atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			connections.Add(1)
+			conn.Close()
+		}
+	}()
+	client := newProxyHTTPClient()
+	t.Cleanup(client.CloseIdleConnections)
+	// Linux routes the unspecified address to loopback. A zone must not
+	// hide that address from the policy check before the socket connects.
+	resp, err := client.Get(fmt.Sprintf("https://[::%%25lo]:%d/", listener.Addr().(*net.TCPAddr).Port))
+	if resp != nil {
+		resp.Body.Close()
+	}
+	listener.Close()
+	<-done
+	if !errors.Is(err, gttp.ErrBlockedByIPPolicy) || connections.Load() != 0 {
+		t.Fatalf("zoned unspecified address: connections=%d error=%v", connections.Load(), err)
+	}
+}
+
+func TestProxyDialTimeoutIncludesDNS(t *testing.T) {
+	// Each UDP answer requests TCP fallback; both answers are delayed. DNS
+	// retries alone take longer than the connection-establishment budget.
+	testCtx := t.Context()
+	resolver := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			var size uint16
+			if binary.Read(server, binary.BigEndian, &size) != nil {
+				return
+			}
+			request := make([]byte, size)
+			if _, err := io.ReadFull(server, request); err != nil {
+				return
+			}
+			var message dnsmessage.Message
+			if message.Unpack(request) != nil {
+				return
+			}
+			timer := time.NewTimer(3 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				return
+			case <-testCtx.Done():
+				return
+			}
+			message.Header.Response = true
+			message.Header.RecursionAvailable = true
+			message.Header.Truncated = network == "udp"
+			if network == "tcp" {
+				message.Header.RCode = dnsmessage.RCodeServerFailure
+			}
+			response, err := message.Pack()
+			if err != nil {
+				return
+			}
+			_, _ = server.Write(binary.BigEndian.AppendUint16(nil, uint16(len(response))))
+			_, _ = server.Write(response)
+		}()
+		return client, nil
+	}}
+	dialer := newProxyDialer()
+	dialer.Resolver = resolver
+	client := newProxyHTTPClient(gttp.WithDialContext(dialer.DialContext))
+	t.Cleanup(client.CloseIdleConnections)
+	ctx, cancel := context.WithTimeout(testCtx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://slow-dns.test./", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err = client.Do(req)
+	elapsed := time.Since(start)
+	var timeout net.Error
+	if !errors.As(err, &timeout) || !timeout.Timeout() || ctx.Err() != nil || elapsed < 9*time.Second || elapsed > 11*time.Second {
+		t.Fatalf("DNS must share the ten-second dial budget: elapsed=%s error=%v request context=%v", elapsed, err, ctx.Err())
 	}
 }
 
@@ -165,9 +329,11 @@ func TestProxyRedirectGuards(t *testing.T) {
 		wantErr            error
 	}{
 		{"same origin", "/next", "/last", nil},
+		{"default port", "https://203.0.113.10:443/next", "https://203.0.113.10/last", nil},
 		{"other host", "https://203.0.113.11/next", "/last", nil},
 		{"other port", "https://203.0.113.10:8443/next", "/last", nil},
 		{"return to original", "https://203.0.113.10:8443/next", "https://203.0.113.10/last", nil},
+		{"return to explicit default port", "https://203.0.113.10:8443/next", "https://203.0.113.10:443/last", nil},
 		{"private", "https://127.0.0.1/next", "", gttp.ErrBlockedByIPPolicy},
 		{"downgrade", "http://203.0.113.10/next", "", gttp.ErrSchemeDowngrade},
 	} {
@@ -211,7 +377,7 @@ func TestProxyRedirectGuards(t *testing.T) {
 			}
 			for i := 0; i < 3; i++ {
 				want := ""
-				if i == 0 || tc.name == "same origin" {
+				if i == 0 || tc.name == "same origin" || tc.name == "default port" {
 					want = "Bearer service-token"
 				}
 				if got := <-seen; got != want {

@@ -1,8 +1,14 @@
 package server
 
 import (
+	"context"
+	"fmt"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/bluesky-social/gttp"
@@ -51,13 +57,14 @@ const (
 // also sent with the inbound request context, so a client that disconnects
 // cancels the upstream call instead of leaving it running.
 func newProxyHTTPClient(opts ...gttp.Option) *http.Client {
-	client := gttp.New(append(opts,
-		// Direct, dial-bound checks also cover DNS answers and redirect targets.
-		gttp.WithStrictSSRFProtection(),
+	dialer := newProxyDialer()
+	client := gttp.New(append([]gttp.Option{
+		gttp.WithDialContext(dialer.DialContext),
+		// The dialer's socket check covers initial and redirected connections.
+		// Disable gttp's separate DNS preflight so DNS shares the dial budget.
+		gttp.WithAllowPrivateRedirects(),
 		gttp.WithNoProxy(),
 		gttp.WithTimeout(proxyRequestTimeout),
-		gttp.WithDialTimeout(proxyDialTimeout),
-		gttp.WithDialKeepAlive(30*time.Second),
 		gttp.WithTLSHandshakeTimeout(proxyTLSHandshakeTimeout),
 		gttp.WithResponseHeaderTimeout(proxyResponseHeaderTimeout),
 		gttp.WithExpectContinueTimeout(time.Second),
@@ -71,7 +78,19 @@ func newProxyHTTPClient(opts ...gttp.Option) *http.Client {
 		gttp.WithDisableCompression(),
 		gttp.WithIdleTimeout(0),
 		gttp.WithHTTP2ReadIdleTimeout(0),
-	)...)
+	}, opts...)...)
+	origin := func(u *url.URL) [3]string {
+		scheme, port := strings.ToLower(u.Scheme), u.Port()
+		if port == "" {
+			switch scheme {
+			case "https":
+				port = "443"
+			case "http":
+				port = "80"
+			}
+		}
+		return [3]string{scheme, strings.ToLower(u.Hostname()), port}
+	}
 	checkRedirect := client.CheckRedirect
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if err := checkRedirect(req, via); err != nil {
@@ -80,7 +99,7 @@ func newProxyHTTPClient(opts ...gttp.Option) *http.Client {
 		// Go copies the original headers again on each hop. Once the chain
 		// crosses an origin, do not restore its service token on later hops.
 		for _, previous := range via {
-			if !strings.EqualFold(previous.URL.Scheme, req.URL.Scheme) || !strings.EqualFold(previous.URL.Host, req.URL.Host) {
+			if origin(previous.URL) != origin(req.URL) {
 				req.Header.Del("Authorization")
 				break
 			}
@@ -88,6 +107,40 @@ func newProxyHTTPClient(opts ...gttp.Option) *http.Client {
 		return nil
 	}
 	return client
+}
+
+func newProxyDialer() *net.Dialer {
+	return &net.Dialer{
+		Timeout:   proxyDialTimeout,
+		KeepAlive: 30 * time.Second,
+		ControlContext: func(_ context.Context, _, address string, _ syscall.RawConn) error {
+			// ControlContext sees the resolved address immediately before connect.
+			// Go owns DNS, the shared deadline and IPv4/IPv6 fallback; every
+			// attempted address is checked, including mixed public/private answers.
+			destination, err := netip.ParseAddrPort(address)
+			if err != nil {
+				return fmt.Errorf("%w: %s", gttp.ErrBlockedByIPPolicy, address)
+			}
+			// Zones select an interface; they must not change address classification.
+			ip := destination.Addr().WithZone("").Unmap()
+			blocked := ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() ||
+				ip.IsMulticast() || ip.IsUnspecified()
+			if ip.Is4() {
+				v4 := ip.As4()
+				blocked = blocked || v4[0] == 0 || v4 == [4]byte{255, 255, 255, 255} ||
+					(v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127)
+			} else {
+				// NAT64 can translate an apparently public IPv6 destination to a
+				// private IPv4 address. Keep both translation ranges blocked.
+				blocked = blocked || netip.MustParsePrefix("64:ff9b::/96").Contains(ip) ||
+					netip.MustParsePrefix("64:ff9b:1::/48").Contains(ip)
+			}
+			if blocked {
+				return fmt.Errorf("%w: %s", gttp.ErrBlockedByIPPolicy, address)
+			}
+			return nil
+		},
+	}
 }
 
 // defaultProxyHTTPClient is the process-wide proxy client. Server.proxyHTTPClient
