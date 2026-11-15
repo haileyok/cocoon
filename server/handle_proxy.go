@@ -77,7 +77,10 @@ func (s *Server) handleProxy(e echo.Context) error {
 		body = nil
 	}
 
-	req, err := http.NewRequest(e.Request().Method, requrl.String(), body)
+	// The inbound context is carried over so a client that disconnects cancels
+	// the upstream call, rather than leaving it to run until the connection is
+	// eventually torn down.
+	req, err := http.NewRequestWithContext(e.Request().Context(), e.Request().Method, requrl.String(), body)
 	if err != nil {
 		return err
 	}
@@ -169,7 +172,7 @@ func (s *Server) handleProxy(e echo.Context) error {
 
 	client := s.proxyHTTPClient
 	if client == nil {
-		client = http.DefaultClient
+		client = defaultProxyHTTPClient
 	}
 	resp, err := client.Do(req)
 	if err != nil {
