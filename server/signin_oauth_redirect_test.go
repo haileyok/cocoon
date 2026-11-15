@@ -224,6 +224,109 @@ func TestSigninAddAccountFromDashboard(t *testing.T) {
 	}
 }
 
+func TestAuthorizeAccountActionsKeepOAuthRequest(t *testing.T) {
+	s, acct, cookie := manageServer(t)
+	attachOauthProvider(t, s)
+	other := s.createTestAccount(t, "second.pds.test")
+	req := provider.OauthAuthorizationRequest{
+		RequestId: "account-actions", ClientId: "http://localhost",
+		Parameters: provider.ParRequest{Scope: "atproto"},
+		ExpiresAt:  time.Now().Add(time.Hour),
+	}
+	if err := s.db.Create(context.Background(), &req, nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	query := url.Values{
+		"client_id": {req.ClientId}, "request_uri": {oauth.EncodeRequestUri(req.RequestId)},
+		"state": {`"><script>alert(1)</script>&request_uri=evil#fragment + % ' javascript:alert(2)`},
+		"extra": {"first&value", "second=value"}, "empty": {""},
+	}.Encode()
+	authorizeURL := "/oauth/authorize?" + query
+	assertRedirect := func(w *httptest.ResponseRecorder, want string) {
+		t.Helper()
+		if w.Code != http.StatusSeeOther || w.Header().Get("Location") != want {
+			t.Fatalf("redirect = %d %q, want 303 %q", w.Code, w.Header().Get("Location"), want)
+		}
+		cookie = sessionCookieFrom(s, w, cookie)
+	}
+	getPage := func(path string) string {
+		t.Helper()
+		w := browserDo(s, cookie, "GET", path, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d %s", path, w.Code, w.Body.String())
+		}
+		cookie = sessionCookieFrom(s, w, cookie)
+		body := w.Body.String()
+		if strings.Contains(body, "<script>") || strings.Contains(body, "ZgotmplZ") {
+			t.Fatal("unsafe query rendering")
+		}
+		return body
+	}
+	queryFromForm := func(body string) string {
+		t.Helper()
+		form := regexp.MustCompile(`(?s)<form action="/account/signin".*?</form>`).FindString(body)
+		m := queryParamsField.FindStringSubmatch(form)
+		if m == nil || html.UnescapeString(m[1]) != query {
+			t.Fatalf("form lost OAuth query: %v", m)
+		}
+		return html.UnescapeString(m[1])
+	}
+	assertActive := func(body, handle string) {
+		t.Helper()
+		if !strings.Contains(body, `<div class="row-title">`+handle+`</div>`) {
+			t.Fatalf("consent page not signed in as %s", handle)
+		}
+	}
+
+	// Follow the actual rendered add-account link, then submit the sign-in
+	// form's query rather than reconstructing the continuation in the test.
+	body := getPage(authorizeURL)
+	assertActive(body, acct.Handle)
+	signin := authorizeAccountLink(t, body, "/account/signin")
+	if signin != "/account/signin?"+query {
+		t.Fatalf("add-account link lost OAuth query: %s", signin)
+	}
+	body = getPage(signin)
+	w := browserDo(s, cookie, "POST", "/account/signin", url.Values{
+		"username": {other.Handle}, "password": {other.Password}, "query_params": {queryFromForm(body)},
+	})
+	assertRedirect(w, authorizeURL)
+	body = getPage(w.Header().Get("Location"))
+	assertActive(body, other.Handle)
+
+	// The consent switcher's hidden query stays a query string, not a URL.
+	formMatch := regexp.MustCompile(`(?s)<form action="/account/switch".*?</form>`).FindString(body)
+	form := url.Values{}
+	for _, m := range regexp.MustCompile(`name="([^"]*)" value="([^"]*)"`).FindAllStringSubmatch(formMatch, -1) {
+		form.Set(m[1], html.UnescapeString(m[2]))
+	}
+	if form.Get("did") != acct.Did || form.Get("next") != "/oauth/authorize" || form.Get("query_params") != query {
+		t.Fatalf("unexpected switch form: %v", form)
+	}
+	w = sameOriginPost(s, cookie, "/account/switch", form)
+	assertRedirect(w, authorizeURL)
+	body = getPage(w.Header().Get("Location"))
+	assertActive(body, acct.Handle)
+
+	// Sign out only the active account, preserving the same request through
+	// the sign-in page and a subsequent password sign-in.
+	signout := authorizeAccountLink(t, body, "/account/signout")
+	if signout != "/account/signout?"+query {
+		t.Fatalf("signout link lost OAuth query: %s", signout)
+	}
+	w = browserDo(s, cookie, "GET", signout, nil)
+	assertRedirect(w, signin)
+	body = getPage(w.Header().Get("Location"))
+	if strings.Contains(body, acct.Did) || !strings.Contains(body, other.Did) {
+		t.Fatal("signout should remove only the active account")
+	}
+	w = browserDo(s, cookie, "POST", "/account/signin", url.Values{
+		"username": {acct.Handle}, "password": {acct.Password}, "query_params": {queryFromForm(body)},
+	})
+	assertRedirect(w, authorizeURL)
+	assertActive(getPage(w.Header().Get("Location")), acct.Handle)
+}
+
 func insertOauthToken(t *testing.T, s *Server, tok provider.OauthToken) provider.OauthToken {
 	t.Helper()
 	if tok.Token == "" {
