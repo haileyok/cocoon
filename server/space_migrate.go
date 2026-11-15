@@ -9,6 +9,7 @@ import (
 
 	"github.com/haileyok/cocoon/models"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // migrateSpaceTables creates or updates the space tables.
@@ -24,7 +25,20 @@ import (
 // failures are returned together.
 func migrateSpaceTables(db *gorm.DB, logger *slog.Logger) error {
 	var errs []error
+	legacyErr := migrateSimplespace(db, logger)
+	if legacyErr != nil {
+		errs = append(errs, fmt.Errorf("simplespace tables: %w", legacyErr))
+	}
 	for _, model := range models.SpaceModels() {
+		// Until the legacy tables are converted, don't create the tables that
+		// replace them: an empty memberspace_members next to a legacy
+		// simplespace_members would hide the rows from the next attempt.
+		if legacyErr != nil {
+			switch model.(type) {
+			case *models.SpacePolicy, *models.MemberspaceMember:
+				continue
+			}
+		}
 		if err := moveIncompatibleTable(db, model, logger); err != nil {
 			errs = append(errs, fmt.Errorf("%T: %w", model, err))
 			continue
@@ -93,4 +107,102 @@ func moveIncompatibleTable(db *gorm.DB, model any, logger *slog.Logger) error {
 		}
 	}
 	return nil
+}
+
+// migrateSimplespace upgrades the tables of the October 22 alpha, as the
+// reference's actor store migrations 006 to 009 do:
+//
+//   - each simplespace_configs row becomes a baseline policy in space_policies,
+//     the member lists of spaces that become managedspaces are deleted, the
+//     config table is dropped, and simplespace_members is renamed
+//     memberspace_members;
+//   - registerNotify registrations name a service rather than an endpoint and
+//     have no token, so they can't be carried over: syncers re-register the
+//     next time they authorize. They and the pending deletion notices queued
+//     for them are dropped.
+//
+// Each step runs only if its legacy table is still there.
+func migrateSimplespace(db *gorm.DB, logger *slog.Logger) error {
+	m := db.Migrator()
+	if m.HasTable("simplespace_configs") {
+		if err := db.AutoMigrate(&models.SpacePolicy{}); err != nil {
+			return err
+		}
+		err := db.Transaction(func(tx *gorm.DB) error {
+			type config struct {
+				Did              string
+				Uri              string
+				ReadPolicy       string
+				ReadManagingApp  *string
+				WritePolicy      string
+				WriteManagingApp *string
+				AppAccessType    string
+				AppAllowed       string
+			}
+			var rows []config
+			if err := tx.Table("simplespace_configs").Find(&rows).Error; err != nil {
+				return err
+			}
+			members := "memberspace_members"
+			if tx.Migrator().HasTable("simplespace_members") {
+				members = "simplespace_members"
+			}
+			for _, c := range rows {
+				policy := legacyConfigToPolicy(c.ReadPolicy, c.ReadManagingApp, c.WritePolicy, c.WriteManagingApp, c.AppAccessType, c.AppAllowed)
+				j, err := policy.marshal()
+				if err != nil {
+					return err
+				}
+				if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&models.SpacePolicy{Did: c.Did, Uri: c.Uri, PolicyJson: j}).Error; err != nil {
+					return err
+				}
+				if !policy.isMember() && tx.Migrator().HasTable(members) {
+					if err := tx.Exec("DELETE FROM "+members+" WHERE did = ? AND space = ?", c.Did, c.Uri).Error; err != nil {
+						return err
+					}
+				}
+				if (c.ReadManagingApp != nil || c.WriteManagingApp != nil) && (c.ReadPolicy != "managing-app" || c.WritePolicy != "managing-app" || c.AppAccessType != "open") {
+					logger.Warn("a space with a mixed configuration changed access: its managing app is now asked about both reads and writes", "space", c.Uri, "managingApp", policy.ManagingApp)
+				}
+			}
+			return tx.Migrator().DropTable("simplespace_configs")
+		})
+		if err != nil {
+			return err
+		}
+	}
+	if m.HasTable("simplespace_members") {
+		if m.HasTable("memberspace_members") {
+			// Both exist when a rename was interrupted. Keep every member, in
+			// one transaction with the drop, so a failure can't leave a stale
+			// legacy table that a later attempt would merge back.
+			err := db.Transaction(func(tx *gorm.DB) error {
+				if err := tx.Exec("INSERT INTO memberspace_members (did, space, member_did, " + quoteCol(tx, "read") + ", " + quoteCol(tx, "write") + ") " +
+					"SELECT s.did, s.space, s.member_did, s." + quoteCol(tx, "read") + ", s." + quoteCol(tx, "write") + " FROM simplespace_members s " +
+					"WHERE NOT EXISTS (SELECT 1 FROM memberspace_members m WHERE m.did = s.did AND m.space = s.space AND m.member_did = s.member_did)").Error; err != nil {
+					return err
+				}
+				return tx.Migrator().DropTable("simplespace_members")
+			})
+			if err != nil {
+				return err
+			}
+		} else if err := m.RenameTable("simplespace_members", "memberspace_members"); err != nil {
+			return err
+		}
+	}
+	for _, table := range []string{"space_credential_recipients", "space_deleted_notification_retries"} {
+		if m.HasTable(table) {
+			if err := m.DropTable(table); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func quoteCol(db *gorm.DB, name string) string {
+	var b strings.Builder
+	db.Dialector.QuoteTo(&b, name)
+	return b.String()
 }

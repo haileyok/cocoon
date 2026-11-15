@@ -13,7 +13,7 @@ import (
 )
 
 // Space blobs, following the reference PDS's space/getBlob.ts and
-// listBlobs.ts at bluesky-social/atproto 5b95b2f2. A blob is uploaded with
+// listBlobs.ts at bluesky-social/atproto d4def6e9. A blob is uploaded with
 // com.atproto.repo.uploadBlob and belongs to a space once a record there
 // references it.
 
@@ -71,7 +71,8 @@ func (st *spaceStore) assertBlobsUploaded(writes []spaceWrite) error {
 // recordBlobs returns the blobs a space record references.
 func (st *spaceStore) recordBlobs(recordURI string) ([]string, error) {
 	var cids []string
-	return cids, st.db.Model(&models.SpaceRecordBlob{}).Where("record_uri = ?", recordURI).Pluck("blob_cid", &cids).Error
+	qerr := st.db.Model(&models.SpaceRecordBlob{}).Where("record_uri = ?", recordURI).Pluck("blob_cid", &cids).Error
+	return cids, qerr
 }
 
 // gcBlobs deletes blobs no record, public or space, references any more.
@@ -98,19 +99,17 @@ func (st *spaceStore) gcBlobs(cids []string) error {
 	return nil
 }
 
-func (st *spaceStore) listBlobs(uri string, limit int, since, cursor string) ([]string, error) {
+func (st *spaceStore) listBlobs(uri string, limit int, cursor string) ([]string, error) {
 	q := st.db.Table("space_record_blobs AS b").
 		Joins("JOIN space_records r ON r.uri = b.record_uri").
 		Where("r.did = ? AND r.space = ?", st.did, uri).
 		Group("b.blob_cid").Order("b.blob_cid asc").Limit(limit)
-	if since != "" {
-		q = q.Where("r.repo_rev > ?", since)
-	}
 	if cursor != "" {
 		q = q.Where("b.blob_cid > ?", cursor)
 	}
 	var cids []string
-	return cids, q.Pluck("b.blob_cid", &cids).Error
+	qerr := q.Pluck("b.blob_cid", &cids).Error
+	return cids, qerr
 }
 
 func (st *spaceStore) isBlobInSpace(uri, blobCid string) (bool, error) {
@@ -176,15 +175,11 @@ func (s *Server) handleSpaceListBlobs(e echo.Context) error {
 			return nil, err
 		}
 		q := e.QueryParams()
-		since, err := parseTIDParam("since", q.Get("since"))
-		if err != nil {
-			return nil, err
-		}
 		limit, err := parseLimitParam(q.Get("limit"), 500, 1, 1000)
 		if err != nil {
 			return nil, err
 		}
-		cids, err := s.spaceStore(nil, p.repo).listBlobs(p.ref.String(), limit, since, q.Get("cursor"))
+		cids, err := s.spaceStore(nil, p.repo).listBlobs(p.ref.String(), limit, q.Get("cursor"))
 		if err != nil {
 			return nil, err
 		}

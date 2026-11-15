@@ -130,8 +130,13 @@
       "records": [],
       "data": "e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad",
       "sharedSecret": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-      "mac": "dfa7be8f2fd5b5114078a04bc7b6991bdec6ede0ab8f7753266a63339e52b563",
-      "macHeader": "type=\"atproto-space-repo\", ver=1, mac=:36e+jy/VtRFAeKBLx7aZG97G7eCrj3dTJmpjM55StWM=:"
+      "keyShare": "did:key:zDnaExample",
+      "acceptSignature": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaExample\";tag=\"atproto-space-commit\"",
+      "headers": {
+        "atproto-space-commit": "ver=1, repo=\"did:example:alice\", space=\"at://did:example:space/space/app.bsky.group/test\", rev=\"3kbcq3p7ad400\", data=:5aAKqZkayKXuMQmETYSlVYO9IFcq0//NQnkvPDaxg60=:",
+        "signature-input": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaExample\";tag=\"atproto-space-commit\"",
+        "signature": "mac=:H8AHz3zDj7Uw6Ksw7ROyKOHXVvcIrFvyAQP6/iDpt2k=:"
+      }
     },
     {
       "ctx": {
@@ -148,8 +153,13 @@
       ],
       "data": "f477ef4680ddde216bf8c0a023eb9a0426ed0ec4ff655db706b36251563d3c05",
       "sharedSecret": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-      "mac": "0d5b4caa4ad0d703002ed6c411c7b44feee854fc820c9f2c9e5f88da9d79ea7b",
-      "macHeader": "type=\"atproto-space-repo\", ver=1, mac=:DVtMqkrQ1wMALtbEEce0T+7oVPyCDJ8snl+I2p156ns=:"
+      "keyShare": "did:key:zDnaExample",
+      "acceptSignature": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaExample\";tag=\"atproto-space-commit\"",
+      "headers": {
+        "atproto-space-commit": "ver=1, repo=\"did:example:alice\", space=\"at://did:example:space/space/app.bsky.group/test\", rev=\"3kbcq3p7ad400\", data=:9HfvRoDd3iFr+MCgI+uaBCbtDsT/ZV23BrNiUVY9PAU=:",
+        "signature-input": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaExample\";tag=\"atproto-space-commit\"",
+        "signature": "mac=:Ahfx1oUhG6KTENwDNx4daGNL5XAkaUl4aHHvewoWPe8=:"
+      }
     },
     {
       "ctx": {
@@ -171,8 +181,13 @@
       ],
       "data": "6f852cf6f906171abd67b33e917f08cb66ac386f63aca3d600c34a5e34998bb0",
       "sharedSecret": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
-      "mac": "e1ab87575bf6894913c701c532a145981ee4fc58ede846403992dc77bca0b1cc",
-      "macHeader": "type=\"atproto-space-repo\", ver=1, mac=:4auHV1v2iUkTxwHFMqFFmB7k/Fjt6EZAOZLcd7ygscw=:"
+      "keyShare": "did:key:zDnaExample",
+      "acceptSignature": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaExample\";tag=\"atproto-space-commit\"",
+      "headers": {
+        "atproto-space-commit": "ver=1, repo=\"did:example:alice\", space=\"at://did:example:space/space/app.bsky.group/test\", rev=\"3kbcq3p7ad400\", data=:b4Us9vkGFxq9Z7M+kX8Iy2asOG9jrKPWAMNKXjSZi7A=:",
+        "signature-input": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaExample\";tag=\"atproto-space-commit\"",
+        "signature": "mac=:GoiBK8NcJPL08eCSSbHNfVH/BX/3nhCrVhCgER83aZQ=:"
+      }
     }
   ],
   "recordMacs": [
@@ -180,34 +195,39 @@
       "uri": "at://did:example:space/space/app.bsky.group/test/did:example:alice/app.bsky.feed.post/1",
       "cid": "bafyreia45os3p5fydxr6vj53hwlltfga2jsod3l7jzxcr2zixddntijwzu",
       "sharedSecret": "1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100",
-      "mac": "97c05a8909515d6e3c1a6f160dffd7b7daaf39dc6c9eaeaa109627bc06d44f35",
-      "macHeader": "type=\"atproto-space-record\", ver=1, mac=:l8BaiQlRXW48Gm8WDf/Xt9qvOdxsnq6qEJYnvAbUTzU=:"
+      "keyShare": "did:key:zDnaExample",
+      "acceptSignature": "mac=(\"atproto-space-record\";sf);keyid=\"did:key:zDnaExample\";tag=\"atproto-space-record\"",
+      "headers": {
+        "atproto-space-record": "uri=\"at://did:example:space/space/app.bsky.group/test/did:example:alice/app.bsky.feed.post/1\", cid=\"bafyreia45os3p5fydxr6vj53hwlltfga2jsod3l7jzxcr2zixddntijwzu\"",
+        "signature-input": "mac=(\"atproto-space-record\";sf);keyid=\"did:key:zDnaExample\";tag=\"atproto-space-record\"",
+        "signature": "mac=:VDeA/yPFXeQl3fgil72JzN0NLrqtxGpr9oUw7RirDLg=:"
+      }
     }
   ],
   "kem": [
     {
       "kemPrivateKey": "2b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfe",
       "kemKey": "did:key:zDnaefp4MCeyzWQSRzvaVQioVLPwydSyG65GJRBR7hL6geCHQ",
-      "keyShare": "did:key:zDnaeUxxh7S1UAN1x79sRZ8MgkPjtpFmYLrQwFBR8VZ7QiVG2",
-      "sharedSecret": "8827cd2b854dde27691d18e1f4eeb81fe504362432aa9b2f8e604da6e2745791",
-      "wantMacHeader": "type=\"atproto-space-repo\", ver=1, key_share=\"did:key:zDnaeUxxh7S1UAN1x79sRZ8MgkPjtpFmYLrQwFBR8VZ7QiVG2\"",
-      "wantRecordMacHeader": "type=\"atproto-space-record\", ver=1, key_share=\"did:key:zDnaeUxxh7S1UAN1x79sRZ8MgkPjtpFmYLrQwFBR8VZ7QiVG2\""
+      "keyShare": "did:key:zDnaedSqLHk7tvwnwdmQUMh4ZcCejs3F8kE2GsjQRHdHkCwxd",
+      "sharedSecret": "13bfe1ad5cc057c35f0b1cda2255dcc9b427877e080b65399ece8251a9f35cb8",
+      "acceptCommitSignature": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaedSqLHk7tvwnwdmQUMh4ZcCejs3F8kE2GsjQRHdHkCwxd\";tag=\"atproto-space-commit\"",
+      "acceptRecordSignature": "mac=(\"atproto-space-record\";sf);keyid=\"did:key:zDnaedSqLHk7tvwnwdmQUMh4ZcCejs3F8kE2GsjQRHdHkCwxd\";tag=\"atproto-space-record\""
     },
     {
       "kemPrivateKey": "2b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfe",
       "kemKey": "did:key:zDnaefp4MCeyzWQSRzvaVQioVLPwydSyG65GJRBR7hL6geCHQ",
-      "keyShare": "did:key:zDnaef3owFE4o7dKmXDTQ8heJsnSZVDAfEPXTYQh4MyL1xhqS",
-      "sharedSecret": "92dbcd302df15d47d05d3e12293984a77233b48f6566694e0e45b95c0217507e",
-      "wantMacHeader": "type=\"atproto-space-repo\", ver=1, key_share=\"did:key:zDnaef3owFE4o7dKmXDTQ8heJsnSZVDAfEPXTYQh4MyL1xhqS\"",
-      "wantRecordMacHeader": "type=\"atproto-space-record\", ver=1, key_share=\"did:key:zDnaef3owFE4o7dKmXDTQ8heJsnSZVDAfEPXTYQh4MyL1xhqS\""
+      "keyShare": "did:key:zDnaev9BP2BmVXQ6ANrdxsTSwQYXBzH79bniJhzeRqBzr27pt",
+      "sharedSecret": "06a8af7645331147b90cac69c612e42c525b1a939a8226c6e39c37fbff9b18ab",
+      "acceptCommitSignature": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaev9BP2BmVXQ6ANrdxsTSwQYXBzH79bniJhzeRqBzr27pt\";tag=\"atproto-space-commit\"",
+      "acceptRecordSignature": "mac=(\"atproto-space-record\";sf);keyid=\"did:key:zDnaev9BP2BmVXQ6ANrdxsTSwQYXBzH79bniJhzeRqBzr27pt\";tag=\"atproto-space-record\""
     },
     {
       "kemPrivateKey": "2b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfe",
       "kemKey": "did:key:zDnaefp4MCeyzWQSRzvaVQioVLPwydSyG65GJRBR7hL6geCHQ",
-      "keyShare": "did:key:zDnaevBTrc9dqvXZA66HhYkU8WYzRtiaixpXfXCYAM1N2mxSo",
-      "sharedSecret": "64753a2c843abc08cdbfd33c7d329c21abdba43dece0a3874dbc3275fa7aa098",
-      "wantMacHeader": "type=\"atproto-space-repo\", ver=1, key_share=\"did:key:zDnaevBTrc9dqvXZA66HhYkU8WYzRtiaixpXfXCYAM1N2mxSo\"",
-      "wantRecordMacHeader": "type=\"atproto-space-record\", ver=1, key_share=\"did:key:zDnaevBTrc9dqvXZA66HhYkU8WYzRtiaixpXfXCYAM1N2mxSo\""
+      "keyShare": "did:key:zDnaeusvZT3NWkz5veEuqofaPsdmujc4qo2ZT1ACPLjaeonEs",
+      "sharedSecret": "f9c47d86b454628a7ac5f263f82f561c6aca8308ba61e45c86eeff48b579c268",
+      "acceptCommitSignature": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaeusvZT3NWkz5veEuqofaPsdmujc4qo2ZT1ACPLjaeonEs\";tag=\"atproto-space-commit\"",
+      "acceptRecordSignature": "mac=(\"atproto-space-record\";sf);keyid=\"did:key:zDnaeusvZT3NWkz5veEuqofaPsdmujc4qo2ZT1ACPLjaeonEs\";tag=\"atproto-space-record\""
     }
   ],
   "httpsig": [
@@ -216,8 +236,8 @@
       "headers": {
         "authorization": "Atproto-Space-Credential credential",
         "atproto-space-audience": "did:example:repo",
-        "signature-input": "atproto-space-credential=(\"authorization\" \"atproto-space-audience\");tag=\"atproto-space-credential\"",
-        "signature": "atproto-space-credential=:hFTrTqzhlbtWLKTyZy0zdr+ZJJO3621++66BnWl8TV8CXFZ+CXZ4zETD+/VRx6rXNInnovcAYSccK0mh1b2OoQ==:"
+        "signature-input": "sig=(\"authorization\" \"atproto-space-audience\");tag=\"atproto-space-credential\"",
+        "signature": "sig=:hFTrTqzhlbtWLKTyZy0zdr+ZJJO3621++66BnWl8TV8CXFZ+CXZ4zETD+/VRx6rXNInnovcAYSccK0mh1b2OoQ==:"
       }
     },
     {
@@ -225,8 +245,8 @@
       "headers": {
         "authorization": "Atproto-Space-Credential eyJhbGciOiJFUzI1NksifQ.e30.c2ln",
         "atproto-space-audience": "did:plc:ewvi7nxzyoun6zhxrhs64oiz",
-        "signature-input": "atproto-space-credential=(\"authorization\" \"atproto-space-audience\");tag=\"atproto-space-credential\"",
-        "signature": "atproto-space-credential=:pHjRSkJTRyB5pi0eC+8fo0deSdXwYETqfMzq4oFJtCl/gHp6YkWRCP9dMleGOqW2gmdEQSkh5anPIvNTZtt0Uw==:"
+        "signature-input": "sig=(\"authorization\" \"atproto-space-audience\");tag=\"atproto-space-credential\"",
+        "signature": "sig=:pHjRSkJTRyB5pi0eC+8fo0deSdXwYETqfMzq4oFJtCl/gHp6YkWRCP9dMleGOqW2gmdEQSkh5anPIvNTZtt0Uw==:"
       }
     },
     {
@@ -234,50 +254,85 @@
       "headers": {
         "authorization": "atproto-space-credential lowercase",
         "atproto-space-audience": "did:example:repo",
-        "signature-input": "atproto-space-credential=(\"authorization\" \"atproto-space-audience\");tag=\"atproto-space-credential\"",
-        "signature": "atproto-space-credential=:FS2RB7c838hUApYaE2N/TNyFDv9UlM+LcnmTA3sGOfgr8reXA3DqSt+kPL63jHwKK6k0I+foQvMKZSLqVgUiCw==:"
+        "signature-input": "sig=(\"authorization\" \"atproto-space-audience\");tag=\"atproto-space-credential\"",
+        "signature": "sig=:FS2RB7c838hUApYaE2N/TNyFDv9UlM+LcnmTA3sGOfgr8reXA3DqSt+kPL63jHwKK6k0I+foQvMKZSLqVgUiCw==:"
       }
     }
   ],
   "tokens": [
     {
       "type": "delegation",
-      "jwt": "eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJhdHByb3RvLXNwYWNlLWRlbGVnYXRpb24rand0Iiwia2lkIjoiI2F0cHJvdG8ifQ.eyJpc3MiOiJkaWQ6ZXhhbXBsZTphbGljZSIsInN1YiI6ImF0Oi8vZGlkOmV4YW1wbGU6c3BhY2Uvc3BhY2UvYXBwLmJza3kuZ3JvdXAvdGVzdCIsImF1ZCI6ImRpZDpleGFtcGxlOnNwYWNlI2F0cHJvdG9fcGRzIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDAwNjAsImp0aSI6ImNiMzIzYzU2M2FjYzcxNjEyYWU3YjM3ZDQ2OGNhZTAwIn0.5N4HQIcmPVpYNPyi7SLxRtZooPu0VHu9TRyPb59DO4MihDXLWDnn1OzOKokihja4g1D71KPzTLgm4KjYrwY0-w",
+      "jwt": "eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJhdHByb3RvLXNwYWNlLWRlbGVnYXRpb24rand0Iiwia2lkIjoiI2F0cHJvdG8ifQ.eyJpc3MiOiJkaWQ6ZXhhbXBsZTphbGljZSIsInN1YiI6ImF0Oi8vZGlkOmV4YW1wbGU6c3BhY2Uvc3BhY2UvYXBwLmJza3kuZ3JvdXAvdGVzdCIsImF1ZCI6ImRpZDpleGFtcGxlOnNwYWNlI2F0cHJvdG9fcGRzIiwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDAwNjAsImp0aSI6ImE4ZGFmMmQwYzc4ODY1ZWNhM2UxNDliMjBiNGNmZjQ4In0.Ds4R0xGLcg0X1XsY_x6XiMZRx9xzZ7YhWCNecy07fGVM7NGdvrSy88F1_KKcjZkCW-TDiTmZcGc_iFBe1mBZKQ",
       "signingKey": "did:key:zQ3shnbD7khZtpvbSg43frzdhKMxzGdouT3xtf9qMHk4h6pwL",
-      "opts": {
+      "payload": {
         "iss": "did:example:alice",
         "sub": "at://did:example:space/space/app.bsky.group/test",
-        "aud": "did:example:space#atproto_pds"
+        "aud": "did:example:space#atproto_pds",
+        "iat": 1790000000,
+        "exp": 1790000060,
+        "jti": "a8daf2d0c78865eca3e149b20b4cff48"
+      },
+      "header": {
+        "alg": "ES256K",
+        "typ": "atproto-space-delegation+jwt",
+        "kid": "#atproto"
       }
     },
     {
       "type": "credential",
-      "jwt": "eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJhdHByb3RvLXNwYWNlLWNyZWRlbnRpYWwrand0Iiwia2lkIjoiI2F0cHJvdG8ifQ.eyJpc3MiOiJkaWQ6ZXhhbXBsZTpzcGFjZSIsInN1YiI6ImF0Oi8vZGlkOmV4YW1wbGU6c3BhY2Uvc3BhY2UvYXBwLmJza3kuZ3JvdXAvdGVzdCIsImNuZiI6eyJraWQiOiJkaWQ6a2V5OnpEbmFlc2txc2d4WHVUN1B6M0hKRUV0TnBnZ29TblFYNFNVc1VQclpmWEp2d1F5cVcifSwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsImp0aSI6IjMyZDUzMzRlMzE2NzAzNTNmNmU0ZDhkZmU5OGRlYjkyIn0.QbjIHVAi_t5Sn8FEMKSwBVQkGR-XYin8nMDlSgeZAqEizszERNS5cur0rrxFHvvNbas4xadMZ9f_08qUC7msNA",
+      "jwt": "eyJhbGciOiJFUzI1NksiLCJ0eXAiOiJhdHByb3RvLXNwYWNlLWNyZWRlbnRpYWwrand0Iiwia2lkIjoiI2F0cHJvdG8ifQ.eyJpc3MiOiJkaWQ6ZXhhbXBsZTpzcGFjZSIsInN1YiI6ImF0Oi8vZGlkOmV4YW1wbGU6c3BhY2Uvc3BhY2UvYXBwLmJza3kuZ3JvdXAvdGVzdCIsImNuZiI6eyJraWQiOiJkaWQ6a2V5OnpEbmFlc2txc2d4WHVUN1B6M0hKRUV0TnBnZ29TblFYNFNVc1VQclpmWEp2d1F5cVcifSwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsImp0aSI6IjYxZDk3ZmRjYmMwNmI0NTY3ZjEzMmI1NjMxMzUwNmJkIn0.J_owzebdMmxJiIfmBlxY6oP_zjTDDPd-zCh4ULmxv31mI6QCINeS0Q4owcJBmkq_hrdL099SaGr1kqWyV_amQA",
       "signingKey": "did:key:zQ3shnbD7khZtpvbSg43frzdhKMxzGdouT3xtf9qMHk4h6pwL",
-      "opts": {
+      "payload": {
         "iss": "did:example:space",
         "sub": "at://did:example:space/space/app.bsky.group/test",
-        "keyId": "did:key:zDnaeskqsgxXuT7Pz3HJEEtNpggoSnQX4SUsUPrZfXJvwQyqW"
+        "cnf": {
+          "kid": "did:key:zDnaeskqsgxXuT7Pz3HJEEtNpggoSnQX4SUsUPrZfXJvwQyqW"
+        },
+        "iat": 1790000000,
+        "exp": 1790000600,
+        "jti": "61d97fdcbc06b4567f132b56313506bd"
+      },
+      "header": {
+        "alg": "ES256K",
+        "typ": "atproto-space-credential+jwt",
+        "kid": "#atproto"
       }
     },
     {
       "type": "credential",
-      "jwt": "eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0cHJvdG8tc3BhY2UtY3JlZGVudGlhbCtqd3QiLCJraWQiOiIjYXRwcm90byJ9.eyJpc3MiOiJkaWQ6ZXhhbXBsZTpzcGFjZSIsInN1YiI6ImF0Oi8vZGlkOmV4YW1wbGU6c3BhY2Uvc3BhY2UvYXBwLmJza3kuZ3JvdXAvdGVzdCIsImNuZiI6eyJraWQiOiJkaWQ6a2V5OnpEbmFlc2txc2d4WHVUN1B6M0hKRUV0TnBnZ29TblFYNFNVc1VQclpmWEp2d1F5cVcifSwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsImp0aSI6ImE2ZDk5OWViNDAzZDIyYmM4OTNmZjI2NDkwZTIzZWI1In0.UnLijzHFdAiJBEeWlH4yHj1-jWVFEYaYcLzqsuvtoEASMHJUpqlTbozTfUbdfvka4Lm7ARVDn1xC101cpHVfTQ",
+      "jwt": "eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0cHJvdG8tc3BhY2UtY3JlZGVudGlhbCtqd3QiLCJraWQiOiIjYXRwcm90byJ9.eyJpc3MiOiJkaWQ6ZXhhbXBsZTpzcGFjZSIsInN1YiI6ImF0Oi8vZGlkOmV4YW1wbGU6c3BhY2Uvc3BhY2UvYXBwLmJza3kuZ3JvdXAvdGVzdCIsImNuZiI6eyJraWQiOiJkaWQ6a2V5OnpEbmFlc2txc2d4WHVUN1B6M0hKRUV0TnBnZ29TblFYNFNVc1VQclpmWEp2d1F5cVcifSwiaWF0IjoxNzkwMDAwMDAwLCJleHAiOjE3OTAwMDA2MDAsImp0aSI6ImMwZDEyMTE0MWI2YWNjZTQxYmY0NGI1Mzk2OGRjOTRhIn0.fhVAyz_3_OFnMNV7RvNvVtaRVvWH-H3vaD_EnVudayY_uArhTT2xWUi-F4jdUJPum6VyhscNWjZtOEeb1Kp2XQ",
       "signingKey": "did:key:zDnaeskqsgxXuT7Pz3HJEEtNpggoSnQX4SUsUPrZfXJvwQyqW",
-      "opts": {
+      "payload": {
         "iss": "did:example:space",
         "sub": "at://did:example:space/space/app.bsky.group/test",
-        "keyId": "did:key:zDnaeskqsgxXuT7Pz3HJEEtNpggoSnQX4SUsUPrZfXJvwQyqW"
+        "cnf": {
+          "kid": "did:key:zDnaeskqsgxXuT7Pz3HJEEtNpggoSnQX4SUsUPrZfXJvwQyqW"
+        },
+        "iat": 1790000000,
+        "exp": 1790000600,
+        "jti": "c0d121141b6acce41bf44b53968dc94a"
+      },
+      "header": {
+        "alg": "ES256",
+        "typ": "atproto-space-credential+jwt",
+        "kid": "#atproto"
       }
     },
     {
       "type": "clientAttestation",
-      "jwt": "eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0cHJvdG8tY2xpZW50LWF0dGVzdGF0aW9uK2p3dCIsImtpZCI6ImtleS0xIn0.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbS9jbGllbnQtbWV0YWRhdGEuanNvbiIsInN1YiI6Imh0dHBzOi8vYXBwLmV4YW1wbGUuY29tL2NsaWVudC1tZXRhZGF0YS5qc29uIiwiYXVkIjoiZGlkOmV4YW1wbGU6c3BhY2UjYXRwcm90b19wZHMiLCJpYXQiOjE3OTAwMDAwMDAsImV4cCI6MTc5MDAwMDA2MCwianRpIjoiMTNiZmU4OTBlOTU2NzA3Njg2ZjJlNjlmM2IwMDcyOTAifQ.sNZrvADhD2JSdwp5SCSS_4mD2qQlTStYF60lsBpvRgkRVyHLqzAubKilJC8tNcyaxy6IOdhlId8nq2JvXosjMQ",
+      "jwt": "eyJhbGciOiJFUzI1NiIsInR5cCI6ImF0cHJvdG8tY2xpZW50LWF0dGVzdGF0aW9uK2p3dCIsImtpZCI6ImtleS0xIn0.eyJpc3MiOiJodHRwczovL2FwcC5leGFtcGxlLmNvbS9jbGllbnQtbWV0YWRhdGEuanNvbiIsInN1YiI6Imh0dHBzOi8vYXBwLmV4YW1wbGUuY29tL2NsaWVudC1tZXRhZGF0YS5qc29uIiwiYXVkIjoiZGlkOmV4YW1wbGU6c3BhY2UjYXRwcm90b19wZHMiLCJpYXQiOjE3OTAwMDAwMDAsImV4cCI6MTc5MDAwMDA2MCwianRpIjoiODBmNDJhNzQ2NmM5OTIwOTUzZjQyMTI5NTEwYjYxOGQifQ.5aJ8YLzhkxGwl2J3IzPEjn6Hp2M6i2mNqbubJ0OWEwUPTyExJHBDg_tNPDO0Sr6vTXc8c3jDora6jfEwKZvYqQ",
       "signingKey": "did:key:zDnaeskqsgxXuT7Pz3HJEEtNpggoSnQX4SUsUPrZfXJvwQyqW",
-      "opts": {
+      "payload": {
         "iss": "https://app.example.com/client-metadata.json",
         "sub": "https://app.example.com/client-metadata.json",
         "aud": "did:example:space#atproto_pds",
+        "iat": 1790000000,
+        "exp": 1790000060,
+        "jti": "80f42a7466c9920953f42129510b618d"
+      },
+      "header": {
+        "alg": "ES256",
+        "typ": "atproto-client-attestation+jwt",
         "kid": "key-1"
       }
     }

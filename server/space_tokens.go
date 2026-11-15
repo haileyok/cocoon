@@ -20,7 +20,7 @@ import (
 )
 
 // Space token, request signature and service auth verification, following
-// the reference PDS's auth-verifier.ts at bluesky-social/atproto ac0c9f15.
+// the reference PDS's auth-verifier.ts at bluesky-social/atproto d4def6e9.
 
 // fetchDidDoc resolves a DID document, bypassing any cache when fresh is set.
 func (s *Server) fetchDidDoc(ctx context.Context, did string, fresh bool) (*identity.DidDoc, error) {
@@ -161,7 +161,7 @@ type delegationAuth struct {
 }
 
 // verifyDelegationToken verifies a delegation token presented in a
-// getSpaceCredential request body: the token, its audience, and single use.
+// authorizeSpaceSync request body: the token, its audience, and single use.
 // The token arrives in the body rather than as the request's authorization,
 // so a bad one is an invalid request (InvalidDelegationToken), not an auth
 // failure.

@@ -36,29 +36,32 @@ func (st *spaceStore) getSpace(uri string) (*models.Space, error) {
 	return &row, err
 }
 
-func (st *spaceStore) getSpaceConfig(uri string) (*models.SimplespaceConfig, error) {
-	var row models.SimplespaceConfig
+func (st *spaceStore) getSpacePolicy(uri string) (*spacePolicy, error) {
+	var row models.SpacePolicy
 	err := st.db.Where("did = ? AND uri = ?", st.did, uri).Take(&row).Error
 	if notFound(err) {
 		return nil, nil
 	}
-	return &row, err
+	if err != nil {
+		return nil, err
+	}
+	return parseStoredPolicy(row.PolicyJson)
 }
 
-// getActiveSpaceConfig returns the config of a live space, or SpaceNotFound.
-func (st *spaceStore) getActiveSpaceConfig(uri string) (*models.SimplespaceConfig, error) {
+// getActiveSpacePolicy returns the policy of a live space, or SpaceNotFound.
+func (st *spaceStore) getActiveSpacePolicy(uri string) (*spacePolicy, error) {
 	sp, err := st.getSpace(uri)
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := st.getSpaceConfig(uri)
+	policy, err := st.getSpacePolicy(uri)
 	if err != nil {
 		return nil, err
 	}
-	if sp == nil || sp.DeletedAt != nil || cfg == nil {
+	if sp == nil || sp.DeletedAt != nil || policy == nil {
 		return nil, errSpaceNotFound()
 	}
-	return cfg, nil
+	return policy, nil
 }
 
 func (st *spaceStore) ensureSpace(ref space.Ref) error {
@@ -73,34 +76,54 @@ func (st *spaceStore) ensureSpace(ref space.Ref) error {
 	return st.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&models.SpaceRepo{Did: st.did, Space: uri}).Error
 }
 
-func (st *spaceStore) createSpace(ref space.Ref, cfg models.SimplespaceConfig) error {
+// createSpace creates a governed space with its policy, or replaces the policy
+// of one that exists.
+func (st *spaceStore) createSpace(ref space.Ref, policy *spacePolicy) error {
 	if err := st.ensureSpace(ref); err != nil {
 		return err
 	}
-	cfg.Did, cfg.Uri = st.did, ref.String()
-	return st.db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&cfg).Error
+	return st.putSpacePolicy(ref.String(), policy)
 }
 
-func (st *spaceStore) updateSpaceConfig(uri string, set map[string]any) error {
-	if len(set) == 0 {
-		return nil
+func (st *spaceStore) putSpacePolicy(uri string, policy *spacePolicy) error {
+	j, err := policy.marshal()
+	if err != nil {
+		return err
 	}
-	return st.db.Model(&models.SimplespaceConfig{}).Where("did = ? AND uri = ?", st.did, uri).Updates(set).Error
+	return st.db.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "did"}, {Name: "uri"}},
+		DoUpdates: clause.AssignmentColumns([]string{"policy_json"}),
+	}).Create(&models.SpacePolicy{Did: st.did, Uri: uri, PolicyJson: j}).Error
 }
 
-func (st *spaceStore) listSpaces(limit int, cursor, typ, authority string) ([]models.Space, error) {
-	q := st.db.Where("did = ? AND deleted_at IS NULL", st.did).Order("uri asc").Limit(limit)
+// listedSpace is a space the account holds a repo in or governs, with the
+// state of its repo in it. SpaceRev is the latest revision in the space's
+// writer set, which is only kept for the spaces the account governs.
+type listedSpace struct {
+	Uri      string
+	RepoRev  *string
+	SetHash  []byte
+	SpaceRev *string
+}
+
+func (st *spaceStore) listSpaces(limit int, cursor, typ, authority string) ([]listedSpace, error) {
+	q := st.db.Table("spaces AS s").
+		Select("s.uri AS uri, r.rev AS repo_rev, r.set_hash AS set_hash, "+
+			"(SELECT MAX(w.space_rev) FROM space_writers w WHERE w.did = s.did AND w.space = s.uri) AS space_rev").
+		Joins("LEFT JOIN space_repos r ON r.did = s.did AND r.space = s.uri").
+		Where("s.did = ? AND s.deleted_at IS NULL", st.did).Order("s.uri asc").Limit(limit)
 	if authority != "" {
-		q = q.Where("authority = ?", authority)
+		q = q.Where("s.authority = ?", authority)
 	}
 	if typ != "" {
-		q = q.Where("type = ?", typ)
+		q = q.Where("s.type = ?", typ)
 	}
 	if cursor != "" {
-		q = q.Where("uri > ?", cursor)
+		q = q.Where("s.uri > ?", cursor)
 	}
-	var rows []models.Space
-	return rows, q.Find(&rows).Error
+	var rows []listedSpace
+	qerr := q.Scan(&rows).Error
+	return rows, qerr
 }
 
 func (st *spaceStore) getRepoState(uri string) (*models.SpaceRepo, error) {
@@ -133,32 +156,33 @@ func (st *spaceStore) getRecordCid(uri string) (*cid.Cid, error) {
 	return &c, nil
 }
 
-func (st *spaceStore) listRecords(uri string, limit int, cursor string, reverse bool, collection string) ([]models.SpaceRecord, error) {
-	q := st.db.Where("did = ? AND space = ?", st.did, uri).Limit(limit)
-	if reverse {
-		q = q.Order("uri asc")
-	} else {
-		q = q.Order("uri desc")
-	}
+func (st *spaceStore) listRecords(uri string, limit int, cursor string, collection string) ([]models.SpaceRecord, error) {
+	q := st.db.Where("did = ? AND space = ?", st.did, uri).Order("uri desc").Limit(limit)
 	if collection != "" {
 		q = q.Where("collection = ?", collection)
 	}
 	if cursor != "" {
-		if reverse {
-			q = q.Where("uri > ?", cursor)
-		} else {
-			q = q.Where("uri < ?", cursor)
-		}
+		q = q.Where("uri < ?", cursor)
 	}
 	var rows []models.SpaceRecord
-	return rows, q.Find(&rows).Error
+	qerr := q.Find(&rows).Error
+	return rows, qerr
+}
+
+// listCollections returns the collections this account has records in, in a
+// space.
+func (st *spaceStore) listCollections(uri string) ([]string, error) {
+	var cols []string
+	qerr := st.db.Model(&models.SpaceRecord{}).Where("did = ? AND space = ?", st.did, uri).Distinct().Pluck("collection", &cols).Error
+	return cols, qerr
 }
 
 // allRecords returns every record of this account's repo in a space, ordered
 // by uri.
 func (st *spaceStore) allRecords(uri string) ([]models.SpaceRecord, error) {
 	var rows []models.SpaceRecord
-	return rows, st.db.Where("did = ? AND space = ?", st.did, uri).Order("uri asc").Find(&rows).Error
+	qerr := st.db.Where("did = ? AND space = ?", st.did, uri).Order("uri asc").Find(&rows).Error
+	return rows, qerr
 }
 
 type oplogRow struct {
@@ -181,7 +205,8 @@ func (st *spaceStore) listRepoOps(uri string, limit int, since string, cursorRev
 		q = q.Where("(o.rev > ? OR (o.rev = ? AND o.idx > ?))", cursorRev, cursorRev, cursorIdx)
 	}
 	var rows []oplogRow
-	return rows, q.Scan(&rows).Error
+	qerr := q.Scan(&rows).Error
+	return rows, qerr
 }
 
 func (st *spaceStore) hasRecord(uri string) (bool, error) {
@@ -190,8 +215,8 @@ func (st *spaceStore) hasRecord(uri string) (bool, error) {
 	return n > 0, err
 }
 
-func (st *spaceStore) getMember(uri, member string) (*models.SimplespaceMember, error) {
-	var row models.SimplespaceMember
+func (st *spaceStore) getMember(uri, member string) (*models.MemberspaceMember, error) {
+	var row models.MemberspaceMember
 	err := st.db.Where("did = ? AND space = ? AND member_did = ?", st.did, uri, member).Take(&row).Error
 	if notFound(err) {
 		return nil, nil
@@ -200,20 +225,31 @@ func (st *spaceStore) getMember(uri, member string) (*models.SimplespaceMember, 
 }
 
 func (st *spaceStore) putMember(uri, member string, read, write bool) error {
-	return st.db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&models.SimplespaceMember{Did: st.did, Space: uri, MemberDid: member, Read: read, Write: write}).Error
+	return st.db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&models.MemberspaceMember{Did: st.did, Space: uri, MemberDid: member, Read: read, Write: write}).Error
 }
 
-func (st *spaceStore) removeMember(uri, member string) error {
-	return st.db.Where("did = ? AND space = ? AND member_did = ?", st.did, uri, member).Delete(&models.SimplespaceMember{}).Error
+// removeMember reports whether the DID was a member.
+func (st *spaceStore) removeMember(uri, member string) (bool, error) {
+	res := st.db.Where("did = ? AND space = ? AND member_did = ?", st.did, uri, member).Delete(&models.MemberspaceMember{})
+	return res.RowsAffected > 0, res.Error
 }
 
-func (st *spaceStore) listMembers(uri string, limit int, cursor string) ([]models.SimplespaceMember, error) {
-	q := st.db.Where("did = ? AND space = ?", st.did, uri).Order("member_did asc").Limit(limit)
+func (st *spaceStore) removeAllMembers(uri string) error {
+	return st.db.Where("did = ? AND space = ?", st.did, uri).Delete(&models.MemberspaceMember{}).Error
+}
+
+// listMembers pages the member list. A limit of 0 lists every member.
+func (st *spaceStore) listMembers(uri string, limit int, cursor string) ([]models.MemberspaceMember, error) {
+	q := st.db.Where("did = ? AND space = ?", st.did, uri).Order("member_did asc")
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
 	if cursor != "" {
 		q = q.Where("member_did > ?", cursor)
 	}
-	var rows []models.SimplespaceMember
-	return rows, q.Find(&rows).Error
+	var rows []models.MemberspaceMember
+	qerr := q.Find(&rows).Error
+	return rows, qerr
 }
 
 // spaceWrite is a prepared space write.
@@ -238,20 +274,7 @@ func (st *spaceStore) applyWrites(ref space.Ref, writes []spaceWrite) (*spaceCom
 	if len(writes) == 0 {
 		return nil, nil
 	}
-	// A write to another authority's space creates the repo without checking
-	// that the space exists. The authority's own spaces must already exist: a
-	// write must neither conjure an ungoverned space nor revive a deleted one,
-	// which would end its SpaceDeleted answers and pending deletion notices.
-	if ref.Authority == st.did {
-		sp, err := st.getSpace(ref.String())
-		if err != nil {
-			return nil, err
-		}
-		if sp == nil || sp.DeletedAt != nil {
-			return nil, errSpaceNotFound()
-		}
-	}
-	if err := st.ensureSpace(ref); err != nil {
+	if err := st.ensureRepo(ref); err != nil {
 		return nil, err
 	}
 	uri := ref.String()
@@ -349,6 +372,24 @@ func (st *spaceStore) applyWrites(ref space.Ref, writes []spaceWrite) (*spaceCom
 	return &spaceCommit{Rev: rev, SetHash: state2}, nil
 }
 
+// ensureRepo makes sure this account has a repo in a space. A write to another
+// authority's space creates the repo without checking that the space exists.
+// The authority's own spaces must already exist: a write must neither conjure
+// an ungoverned space nor revive a deleted one, which would end its
+// SpaceDeleted answers and pending deletion notices.
+func (st *spaceStore) ensureRepo(ref space.Ref) error {
+	if ref.Authority == st.did {
+		sp, err := st.getSpace(ref.String())
+		if err != nil {
+			return err
+		}
+		if sp == nil || sp.DeletedAt != nil {
+			return errSpaceNotFound()
+		}
+	}
+	return st.ensureSpace(ref)
+}
+
 // setRecordBlobs replaces the blobs a space record references.
 func (st *spaceStore) setRecordBlobs(recordURI string, blobs []cid.Cid) error {
 	if err := st.db.Where("record_uri = ?", recordURI).Delete(&models.SpaceRecordBlob{}).Error; err != nil {
@@ -362,35 +403,43 @@ func (st *spaceStore) setRecordBlobs(recordURI string, blobs []cid.Cid) error {
 	return nil
 }
 
-// activeRecipients lists the services registered for a governed space whose
-// registration has not expired.
-func (st *spaceStore) activeRecipients(uri string) ([]models.SpaceCredentialRecipient, error) {
-	var rows []models.SpaceCredentialRecipient
-	return rows, st.db.Where("did = ? AND space = ? AND expires_at > ?", st.did, uri, nowISO()).Find(&rows).Error
-}
-
 // deleteSpace deletes a governed space along with this account's own repo in
 // it. The space row stays as a tombstone.
 func (st *spaceStore) deleteSpace(uri string) error {
 	if err := st.db.Model(&models.Space{}).Where("did = ? AND uri = ?", st.did, uri).Update("deleted_at", nowISO()).Error; err != nil {
 		return err
 	}
-	var blobCids []string
-	if err := st.db.Raw("SELECT DISTINCT blob_cid FROM space_record_blobs WHERE did = ? AND record_uri IN (SELECT uri FROM space_records WHERE did = ? AND space = ?)", st.did, st.did, uri).Scan(&blobCids).Error; err != nil {
+	blobCids, err := st.dropSpaceBlobRefs(uri, nil)
+	if err != nil {
 		return err
 	}
-	if err := st.db.Exec("DELETE FROM space_record_blobs WHERE did = ? AND record_uri IN (SELECT uri FROM space_records WHERE did = ? AND space = ?)", st.did, st.did, uri).Error; err != nil {
+	if err := st.db.Where("did = ? AND uri = ?", st.did, uri).Delete(&models.SpacePolicy{}).Error; err != nil {
 		return err
 	}
-	if err := st.db.Where("did = ? AND uri = ?", st.did, uri).Delete(&models.SimplespaceConfig{}).Error; err != nil {
-		return err
-	}
-	for _, m := range []any{&models.SimplespaceMember{}, &models.SpaceWriter{}, &models.SpaceCredentialRecipient{}, &models.SpaceRecord{}, &models.SpaceRecordOplog{}, &models.SpaceRepo{}} {
+	for _, m := range []any{&models.MemberspaceMember{}, &models.SpaceWriter{}, &models.SpaceNotifyRegistration{}, &models.SpaceRecord{}, &models.SpaceRecordOplog{}, &models.SpaceRepo{}} {
 		if err := st.db.Where("did = ? AND space = ?", st.did, uri).Delete(m).Error; err != nil {
 			return err
 		}
 	}
 	return st.gcBlobs(blobCids)
+}
+
+// dropSpaceBlobRefs removes the blob references of this account's records in a
+// space, leaving those in the keep collections, and returns the blobs that
+// were referenced, for the caller to collect once the records are gone.
+func (st *spaceStore) dropSpaceBlobRefs(uri string, keep []string) ([]string, error) {
+	where := "record_uri IN (SELECT uri FROM space_records WHERE did = ? AND space = ?"
+	args := []any{st.did, st.did, uri}
+	if len(keep) > 0 {
+		where += " AND collection NOT IN ?"
+		args = append(args, keep)
+	}
+	where += ")"
+	var cids []string
+	if err := st.db.Raw("SELECT DISTINCT blob_cid FROM space_record_blobs WHERE did = ? AND "+where, args...).Scan(&cids).Error; err != nil {
+		return nil, err
+	}
+	return cids, st.db.Exec("DELETE FROM space_record_blobs WHERE did = ? AND "+where, args...).Error
 }
 
 // buildCommit is the repo's current commit. Nil when the repo has never been

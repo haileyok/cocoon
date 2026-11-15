@@ -190,7 +190,12 @@ func nextTID(prev string) string {
 	return tidClock.last
 }
 
-func nowISO() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z") }
+const isoLayout = "2006-01-02T15:04:05.000Z"
+
+func nowISO() string { return isoTime(time.Now()) }
+
+// isoTime formats a time as the datetime strings the space tables compare.
+func isoTime(t time.Time) string { return t.UTC().Format(isoLayout) }
 
 // spaceAuth is an authenticated caller of a space method.
 type spaceAuth struct {
@@ -302,14 +307,15 @@ func isSpaceSelfRead(a *spaceAuth, repo string) bool {
 	return a.credential == nil && a.did == repo
 }
 
-// assertSpaceOwner checks the caller governs the space (a simplespace is
-// anchored on its authority's own DID) and holds the manage grant.
-func assertSpaceOwner(a *spaceAuth, ref space.Ref, m scopes.SpaceMatch) error {
+// assertSpaceAuthority checks the caller governs the space (a space created on
+// a PDS is anchored on its creator's own DID, so being its authority is a
+// comparison against the space URI) and holds the grant for the operation.
+func assertSpaceAuthority(a *spaceAuth, ref space.Ref, m scopes.SpaceMatch) error {
 	if err := a.assertSpaceRef(ref, m); err != nil {
 		return err
 	}
 	if ref.Authority != a.did {
-		return errInvalid("NotSpaceOwner", "Not the space owner")
+		return errInvalid("NotAuthorized", "Not the space authority")
 	}
 	return nil
 }

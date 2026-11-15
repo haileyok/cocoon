@@ -125,20 +125,20 @@ func TestRepoCommitToCommit(t *testing.T) {
 }
 
 func TestVerifyCommit(t *testing.T) {
+	t.Parallel()
 	secret := bytes.Repeat([]byte{7}, 32)
 	c := NewRepoCommit().Add("app.bsky.feed.post", "1", cidA).ToCommit(testCtx)
-	mac := ComputeCommitMac(secret, c)
-	params := VerifyCommitParams{Space: testCtx.Space, Repo: testCtx.Repo, SharedSecret: secret, Mac: mac}
-	if !VerifyCommit(c, params) {
-		t.Fatal("does not verify its own commit")
+	mac := commitMacParams(t, c, secret, secret)
+	params := VerifyCommitParams{Space: testCtx.Space, Repo: testCtx.Repo, VerifyMacParams: mac}
+	if err := VerifyCommit(c, params); err != nil {
+		t.Fatalf("does not verify its own commit: %v", err)
 	}
 	for name, p := range map[string]VerifyCommitParams{
-		"other secret": {Space: testCtx.Space, Repo: testCtx.Repo, SharedSecret: bytes.Repeat([]byte{8}, 32), Mac: mac},
-		"other space":  {Space: "at://did:example:space/space/app.bsky.group/other", Repo: testCtx.Repo, SharedSecret: secret, Mac: mac},
-		"other repo":   {Space: testCtx.Space, Repo: "did:example:bob", SharedSecret: secret, Mac: mac},
-		"short mac":    {Space: testCtx.Space, Repo: testCtx.Repo, SharedSecret: secret, Mac: mac[:31]},
+		"other secret": {Space: testCtx.Space, Repo: testCtx.Repo, VerifyMacParams: commitMacParams(t, c, bytes.Repeat([]byte{8}, 32), secret)},
+		"other space":  {Space: "at://did:example:space/space/app.bsky.group/other", Repo: testCtx.Repo, VerifyMacParams: mac},
+		"other repo":   {Space: testCtx.Space, Repo: "did:example:bob", VerifyMacParams: mac},
 	} {
-		if VerifyCommit(c, p) {
+		if VerifyCommit(c, p) == nil {
 			t.Fatalf("verified with %s", name)
 		}
 	}
@@ -149,7 +149,7 @@ func TestVerifyCommit(t *testing.T) {
 	} {
 		tampered := c
 		mod(&tampered)
-		if VerifyCommit(tampered, params) {
+		if VerifyCommit(tampered, params) == nil {
 			t.Fatalf("verified with %s", name)
 		}
 	}
@@ -165,6 +165,7 @@ func TestFormatSetHashElement(t *testing.T) {
 }
 
 func TestCommitVectors(t *testing.T) {
+	t.Parallel()
 	for i, v := range loadVectors(t).Commits {
 		var recs []RecordRef
 		for _, r := range v.Records {
@@ -174,17 +175,6 @@ func TestCommitVectors(t *testing.T) {
 		c := repo.ToCommit(v.Ctx)
 		if hex.EncodeToString(c.Data) != v.Data {
 			t.Errorf("vector %d data", i)
-		}
-		secret := unhex(t, v.SharedSecret)
-		if got := hex.EncodeToString(ComputeCommitMac(secret, c)); got != v.Mac {
-			t.Errorf("vector %d mac %s", i, got)
-		}
-		if got := FormatMacHeader(CommitMacType, unhex(t, v.Mac)); got != v.MacHeader {
-			t.Errorf("vector %d header %s", i, got)
-		}
-		mac, err := ParseMacHeader([]string{v.MacHeader}, CommitMacType)
-		if err != nil || !VerifyCommit(c, VerifyCommitParams{Space: v.Ctx.Space, Repo: v.Ctx.Repo, SharedSecret: secret, Mac: mac}) {
-			t.Errorf("vector %d does not verify: %v", i, err)
 		}
 	}
 }

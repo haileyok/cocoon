@@ -2,10 +2,14 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base32"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/haileyok/cocoon/models"
@@ -16,10 +20,11 @@ import (
 )
 
 // The space credential chain: a member's PDS mints a delegation token, and the
-// authority issues a space credential bound to the key the request names,
-// given the delegation token and client attestation the space requires (the
-// reference's getDelegationToken.ts, getSpaceCredential.ts and
-// simplespace/manager.ts at bluesky-social/atproto ac0c9f15).
+// authority authorizes syncing with a space credential bound to the key the
+// request names, given the delegation token and client attestation the space
+// requires, optionally registering an endpoint for notifications (the
+// reference's getDelegationToken.ts and authorizeSpaceSync.ts at
+// bluesky-social/atproto d4def6e9).
 
 func (s *Server) handleSpaceGetDelegationToken(e echo.Context) error {
 	body, err := func() (any, error) {
@@ -50,7 +55,9 @@ func (s *Server) handleSpaceGetDelegationToken(e echo.Context) error {
 	return writeSpaceResult(e, body, err)
 }
 
-// assertSpaceHost checks this host is the space's authority.
+// assertSpaceHost checks this host is the space's authority. Space-host
+// methods reach straight into the authority's repo, which would otherwise fail
+// as an error none of their lexicons declare.
 func (s *Server) assertSpaceHost(ctx context.Context, ref space.Ref) (*models.RepoActor, error) {
 	repo, err := s.getRepoActorByDid(ctx, ref.Authority)
 	if err != nil {
@@ -62,14 +69,38 @@ func (s *Server) assertSpaceHost(ctx context.Context, ref space.Ref) (*models.Re
 	return repo, nil
 }
 
-func (s *Server) handleSpaceGetSpaceCredential(e echo.Context) error {
+// assertActiveSpaceHost is assertSpaceHost, but also refuses an authority that
+// is taken down or deactivated, as sync does for a repo. Notification routes
+// keep using assertSpaceHost so the authority's writer state stays current
+// while the space is suspended.
+func (s *Server) assertActiveSpaceHost(ctx context.Context, ref space.Ref) error {
+	authority, err := s.assertSpaceHost(ctx, ref)
+	if err != nil {
+		return err
+	}
+	if authority.Repo.TakedownRef != nil {
+		return errInvalid("RepoTakendown", "Repo has been takendown: %s", ref.Authority)
+	}
+	if authority.Repo.Deactivated {
+		return errInvalid("RepoDeactivated", "Repo has been deactivated: %s", ref.Authority)
+	}
+	return nil
+}
+
+type notifyInput struct {
+	Endpoint string `json:"endpoint"`
+	Token    string `json:"token"`
+}
+
+func (s *Server) handleSpaceAuthorizeSpaceSync(e echo.Context) error {
 	body, err := func() (any, error) {
 		ctx := e.Request().Context()
 		var in struct {
-			Space             string `json:"space"`
-			CredentialKid     string `json:"credentialKid"`
-			DelegationToken   string `json:"delegationToken"`
-			ClientAttestation string `json:"clientAttestation"`
+			Space             string       `json:"space"`
+			CredentialKey     string       `json:"credentialKey"`
+			DelegationToken   string       `json:"delegationToken"`
+			ClientAttestation string       `json:"clientAttestation"`
+			Notify            *notifyInput `json:"notify"`
 		}
 		if err := bindSpaceJSON(e, &in); err != nil {
 			return nil, err
@@ -78,28 +109,50 @@ func (s *Server) handleSpaceGetSpaceCredential(e echo.Context) error {
 		if err != nil {
 			return nil, err
 		}
-		if in.CredentialKid == "" {
-			return nil, errInvalid("", "Input must have the property \"credentialKid\"")
+		if in.CredentialKey == "" {
+			return nil, errInvalid("", "Input must have the property \"credentialKey\"")
 		}
-		if !space.IsP256DIDKey(in.CredentialKid) {
-			return nil, errInvalid("", "credentialKid must be a P-256 did:key")
+		notify := in.Notify
+		if notify != nil {
+			if u, err := url.Parse(notify.Endpoint); err != nil || notify.Endpoint == "" || u.Scheme == "" || u.Host == "" {
+				return nil, errInvalid("", "Input/notify/endpoint must be a valid URI")
+			}
+			if notify.Token == "" || len(notify.Token) > 512 {
+				return nil, errInvalid("", "Input/notify/token must be 1 to 512 characters")
+			}
 		}
+		if !space.IsP256DIDKey(in.CredentialKey) {
+			return nil, errInvalid("", "credentialKey must be a P-256 did:key")
+		}
+		uri := ref.String()
+		if err := s.assertActiveSpaceHost(ctx, ref); err != nil {
+			return nil, err
+		}
+		st := s.spaceStore(nil, ref.Authority)
+		// The durable signal that a space is gone: a syncer that missed its
+		// deletion notice learns it here, the next time it reauthorizes.
+		// Answered regardless of the request's authorization, since a public
+		// space's syncer may not have a delegation token.
+		sp, err := st.getSpace(uri)
+		if err != nil {
+			return nil, err
+		}
+		if sp != nil && sp.DeletedAt != nil {
+			return nil, errInvalid("SpaceDeleted", "Space has been deleted")
+		}
+
 		// Empty when the request carries no delegation token, which only a
-		// space that does not gate on the user accepts.
-		userDid := ""
+		// space that does not gate on the account accepts.
+		repo := ""
 		if in.DelegationToken != "" {
 			d, err := s.verifyDelegationToken(ctx, in.DelegationToken)
 			if err != nil {
 				return nil, err
 			}
-			if d.space != ref.String() {
+			if d.space != uri {
 				return nil, errInvalid("InvalidDelegationToken", "Delegation token subject does not match requested space")
 			}
-			userDid = d.userDid
-		}
-		authority, err := s.assertSpaceHost(ctx, ref)
-		if err != nil {
-			return nil, err
+			repo = d.userDid
 		}
 		clientID := ""
 		if in.ClientAttestation != "" {
@@ -107,151 +160,108 @@ func (s *Server) handleSpaceGetSpaceCredential(e echo.Context) error {
 				return nil, err
 			}
 		}
-		st := s.spaceStore(nil, ref.Authority)
-		sp, err := st.getSpace(ref.String())
+		policy, err := st.getActiveSpacePolicy(uri)
 		if err != nil {
 			return nil, err
 		}
-		// The durable signal that a space is gone: a syncer that missed
-		// notifySpaceDeleted learns it here, on its next renewal. Answered
-		// with or without a delegation token, since a public space's syncer
-		// may not have one.
-		if sp != nil && sp.DeletedAt != nil {
-			return nil, errInvalid("SpaceDeleted", "Space has been deleted")
-		}
-		cfg, err := st.getActiveSpaceConfig(ref.String())
-		if err != nil {
+
+		if err := s.authorizeCredential(ctx, ref, policy, repo, clientID); err != nil {
+			// A refused request withdraws the registration it carries, so a
+			// syncer that has lost access to the space stops being notified.
+			// A failure to decide, such as an unreachable managing app, is not
+			// a refusal, so it leaves the registration in place.
+			if xe, ok := err.(*xrpcError); ok && notify != nil && xe.Status == http.StatusBadRequest {
+				if rerr := st.removeNotifyRegistration(uri, notify.Endpoint, notify.Token); rerr != nil {
+					return nil, rerr
+				}
+			}
 			return nil, err
 		}
-		if err := s.authorizeCredential(ctx, cfg, userDid, clientID); err != nil {
+
+		if notify != nil {
+			registered, err := st.getNotifyRegistration(uri, notify.Endpoint, notify.Token)
+			if err != nil {
+				return nil, err
+			}
+			if registered == nil {
+				if err := s.confirmRegistration(ctx, uri, *notify); err != nil {
+					return nil, err
+				}
+			}
+		}
+
+		authority, err := s.assertSpaceHost(ctx, ref)
+		if err != nil {
 			return nil, err
 		}
 		key, err := s.accountSigner(authority.Repo)
 		if err != nil {
 			return nil, err
 		}
-		cred, err := space.CreateSpaceToken(space.TokenCredential, space.CreateTokenOpts{Iss: ref.Authority, Sub: ref.String(), KeyID: in.CredentialKid}, key)
+		cred, err := space.CreateSpaceToken(space.TokenCredential, space.CreateTokenOpts{Iss: ref.Authority, Sub: uri, KeyID: in.CredentialKey}, key)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"credential": cred}, nil
+
+		if notify != nil {
+			// Renewed by each authorization, so a syncer that keeps
+			// reauthorizing stays registered.
+			parsed, err := space.ParseSpaceToken(space.TokenCredential, cred)
+			if err != nil {
+				return nil, err
+			}
+			expiresAt := isoTime(time.Unix(parsed.Payload.Exp, 0))
+			err = s.db.Client().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+				return s.spaceStore(tx, ref.Authority).putNotifyRegistration(uri, notify.Endpoint, notify.Token, expiresAt)
+			})
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		// Read after registering, so any update past this revision is
+		// notified.
+		res := map[string]any{"credential": cred}
+		spaceRev, err := st.getSpaceRev(uri)
+		if err != nil {
+			return nil, err
+		}
+		if spaceRev != "" {
+			res["spaceRev"] = spaceRev
+		}
+		return res, nil
 	}()
 	return writeSpaceResult(e, body, err)
 }
 
-// authorizeCredential checks both perimeters a credential clears: the app
-// first, since it decides from the config alone, so a refused app is never
-// disclosed to a third-party managing app; then the user.
-//
-// userDid is empty when the request carries no delegation token, which only a
-// space with a public read policy accepts. Any other space answers as though
-// it does not exist, so a request without a token can't learn that it does.
-func (s *Server) authorizeCredential(ctx context.Context, cfg *models.SimplespaceConfig, userDid, clientID string) error {
-	if userDid == "" && cfg.ReadPolicy != policyPublic {
-		return errSpaceNotFound()
-	}
-	if cfg.AppAccessType == appAccessAllow {
-		var allowed []string
-		_ = json.Unmarshal([]byte(cfg.AppAllowed), &allowed)
-		ok := false
-		for _, a := range allowed {
-			ok = ok || (clientID != "" && a == clientID)
-		}
-		if !ok {
-			return errInvalid("AppNotAuthorized", "Application not authorized for this space")
-		}
-	}
-	if userDid == "" {
-		return nil
-	}
-	authorized, err := s.authorizeSpaceUser(ctx, cfg, userDid, "read", clientID)
-	if err != nil {
+// confirmRegistration checks, before registering an endpoint, that it asked
+// to be registered: the endpoint must recognize the token as one it issued for
+// this space, and echo back a random challenge.
+func (s *Server) confirmRegistration(ctx context.Context, spaceURI string, notify notifyInput) error {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
 		return err
 	}
-	if !authorized {
-		return errInvalid("UserNotAuthorized", "User not authorized for this space")
+	challenge := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw))
+	// The endpoint is chosen by the requester, so it is fetched as untrusted.
+	out, err := s.postXRPCJSON(ctx, strings.TrimRight(notify.Endpoint, "/"), lxmConfirmRegistration,
+		map[string]any{"space": spaceURI, "token": notify.Token, "challenge": challenge})
+	if err == nil {
+		var res struct {
+			Challenge string `json:"challenge"`
+		}
+		if json.Unmarshal(out, &res) == nil && res.Challenge == challenge {
+			return nil
+		}
+		err = fmt.Errorf("challenge mismatch")
 	}
-	return nil
+	s.logger.Warn("registration not confirmed", "space", spaceURI, "endpoint", notify.Endpoint, "err", err)
+	return errInvalid("RegistrationNotConfirmed", "Notify endpoint did not confirm the registration")
 }
 
-// authorizeSpaceUser applies a space's read or write policy to a user. The
-// authority is always admitted, so it can't lock itself out.
-func (s *Server) authorizeSpaceUser(ctx context.Context, cfg *models.SimplespaceConfig, userDid, access, clientID string) (bool, error) {
-	ref, err := space.ParseRef(cfg.Uri)
-	if err != nil {
-		return false, err
-	}
-	if userDid == ref.Authority {
-		return true, nil
-	}
-	policy, app := cfg.ReadPolicy, cfg.ReadManagingApp
-	if access == "write" {
-		policy, app = cfg.WritePolicy, cfg.WriteManagingApp
-	}
-	switch policy {
-	case policyPublic:
-		return true, nil
-	case policyMemberList:
-		m, err := s.spaceStore(nil, ref.Authority).getMember(cfg.Uri, userDid)
-		if err != nil || m == nil {
-			return false, err
-		}
-		if access == "read" {
-			return m.Read, nil
-		}
-		return m.Write, nil
-	case policyManagingApp:
-		if app == nil {
-			return false, nil
-		}
-		return s.checkManagingApp(ctx, ref, *app, userDid, access, clientID), nil
-	}
-	return false, nil
-}
-
-// checkManagingApp asks a space's managing app whether to admit a user. An
-// unreachable or failing app denies.
-func (s *Server) checkManagingApp(ctx context.Context, ref space.Ref, app, userDid, access, clientID string) bool {
-	const lxm = "com.atproto.simplespace.checkUserAccess"
-	target, err := s.resolveNotifyTarget(ctx, ref.Authority, app, lxm)
-	if err != nil || target == nil {
-		s.logger.Warn("could not resolve managing app", "space", ref.String(), "managingApp", app, "err", err)
-		return false
-	}
-	q := url.Values{"space": {ref.String()}, "user": {userDid}, "access": {access}}
-	if clientID != "" {
-		q.Set("clientId", clientID)
-	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.endpoint+"/xrpc/"+lxm+"?"+q.Encode(), nil)
-	if err != nil {
-		return false
-	}
-	for k, v := range target.headers {
-		req.Header.Set(k, v)
-	}
-	resp, err := s.spaceClient().Do(req)
-	if err != nil {
-		s.logger.Warn("managing app check failed", "space", ref.String(), "managingApp", app, "err", err)
-		return false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
-	var out struct {
-		Authorized bool `json:"authorized"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return false
-	}
-	return out.Authorized
-}
-
-func (s *Server) handleSpaceNotifyCredentialRevoked(e echo.Context) error {
+func (s *Server) handleSpaceNotifyCredentialsRevoked(e echo.Context) error {
 	body, err := func() (any, error) {
-		claims, err := s.verifyServiceAuth(e, "com.atproto.space.notifyCredentialRevoked")
+		claims, err := s.verifyServiceAuth(e, "com.atproto.space.notifyCredentialsRevoked")
 		if err != nil {
 			return nil, err
 		}
@@ -288,185 +298,6 @@ func (s *Server) handleSpaceNotifyCredentialRevoked(e echo.Context) error {
 	return writeSpaceResult(e, body, err)
 }
 
-func (s *Server) handleSimplespaceGetSpace(e echo.Context) error {
-	body, err := func() (any, error) {
-		a, err := s.spaceAuthFromRequest(e)
-		if err != nil {
-			return nil, err
-		}
-		ref, err := parseSpaceParam("space", e.QueryParam("space"))
-		if err != nil {
-			return nil, err
-		}
-		if a.credential != nil {
-			if err := assertCredentialSpace(a.credential, ref, ""); err != nil {
-				return nil, err
-			}
-		} else if err := assertSpaceOwner(a, ref, scopes.SpaceMatch{Action: "read_self"}); err != nil {
-			return nil, err
-		}
-		cfg, err := s.spaceStore(nil, ref.Authority).getActiveSpaceConfig(ref.String())
-		if err != nil {
-			return nil, err
-		}
-		return configToLex(cfg), nil
-	}()
-	return writeSpaceResult(e, body, err)
-}
-
-func (s *Server) handleSimplespaceUpdateSpace(e echo.Context) error {
-	body, err := func() (any, error) {
-		a, err := accountAuth(e)
-		if err != nil {
-			return nil, err
-		}
-		var in struct {
-			Space       string          `json:"space"`
-			ReadPolicy  json.RawMessage `json:"readPolicy"`
-			WritePolicy json.RawMessage `json:"writePolicy"`
-			AppAccess   json.RawMessage `json:"appAccess"`
-		}
-		if err := bindSpaceJSON(e, &in); err != nil {
-			return nil, err
-		}
-		ref, err := parseSpaceParam("space", in.Space)
-		if err != nil {
-			return nil, err
-		}
-		if err := assertSpaceOwner(a, ref, scopes.SpaceMatch{Manage: "update"}); err != nil {
-			return nil, err
-		}
-		set := map[string]any{}
-		if len(in.ReadPolicy) > 0 && string(in.ReadPolicy) != "null" {
-			p, app, err := policyToDB(in.ReadPolicy)
-			if err != nil {
-				return nil, err
-			}
-			set["read_policy"], set["read_managing_app"] = p, app
-		}
-		if len(in.WritePolicy) > 0 && string(in.WritePolicy) != "null" {
-			p, app, err := policyToDB(in.WritePolicy)
-			if err != nil {
-				return nil, err
-			}
-			set["write_policy"], set["write_managing_app"] = p, app
-		}
-		if len(in.AppAccess) > 0 && string(in.AppAccess) != "null" {
-			typ, allowed, err := appAccessToDB(in.AppAccess)
-			if err != nil {
-				return nil, err
-			}
-			set["app_access_type"], set["app_allowed"] = typ, allowed
-		}
-		return nil, s.db.Client().WithContext(e.Request().Context()).Transaction(func(tx *gorm.DB) error {
-			st := s.spaceStore(tx, a.did)
-			if _, err := st.getActiveSpaceConfig(ref.String()); err != nil {
-				return err
-			}
-			return st.updateSpaceConfig(ref.String(), set)
-		})
-	}()
-	return writeSpaceResult(e, body, err)
-}
-
-func (s *Server) handleSimplespaceListMembers(e echo.Context) error {
-	body, err := func() (any, error) {
-		a, err := accountAuth(e)
-		if err != nil {
-			return nil, err
-		}
-		q := e.QueryParams()
-		ref, err := parseSpaceParam("space", q.Get("space"))
-		if err != nil {
-			return nil, err
-		}
-		limit, err := parseLimitParam(q.Get("limit"), 100, 1, 1000)
-		if err != nil {
-			return nil, err
-		}
-		if err := assertSpaceOwner(a, ref, scopes.SpaceMatch{Action: "read_self"}); err != nil {
-			return nil, err
-		}
-		st := s.spaceStore(nil, a.did)
-		if _, err := st.getActiveSpaceConfig(ref.String()); err != nil {
-			return nil, err
-		}
-		rows, err := st.listMembers(ref.String(), limit, q.Get("cursor"))
-		if err != nil {
-			return nil, err
-		}
-		members := make([]map[string]any, 0, len(rows))
-		for _, m := range rows {
-			members = append(members, map[string]any{"did": m.MemberDid, "read": m.Read, "write": m.Write})
-		}
-		res := map[string]any{"members": members}
-		if len(rows) > 0 {
-			res["cursor"] = rows[len(rows)-1].MemberDid
-		}
-		return res, nil
-	}()
-	return writeSpaceResult(e, body, err)
-}
-
-func (s *Server) handleSimplespaceDeleteSpace(e echo.Context) error {
-	body, err := func() (any, error) {
-		a, err := accountAuth(e)
-		if err != nil {
-			return nil, err
-		}
-		var in struct {
-			Space string `json:"space"`
-		}
-		if err := bindSpaceJSON(e, &in); err != nil {
-			return nil, err
-		}
-		ref, err := parseSpaceParam("space", in.Space)
-		if err != nil {
-			return nil, err
-		}
-		if err := assertSpaceOwner(a, ref, scopes.SpaceMatch{Manage: "delete"}); err != nil {
-			return nil, err
-		}
-		st := s.spaceStore(nil, a.did)
-		sp, err := st.getSpace(ref.String())
-		if err != nil {
-			return nil, err
-		}
-		if sp == nil {
-			return nil, errSpaceNotFound()
-		}
-		if sp.DeletedAt != nil {
-			return nil, nil
-		}
-		return nil, s.deleteSpace(e.Request().Context(), ref)
-	}()
-	return writeSpaceResult(e, body, err)
-}
-
-// deleteSpace deletes a governed space with the authority's own repo in it,
-// keeping the space row as a tombstone so getSpaceCredential answers
-// SpaceDeleted, then tells every service registered at the time of deletion
-// (notifySpaceDeleted), queueing retryable failures.
-func (s *Server) deleteSpace(ctx context.Context, ref space.Ref) error {
-	uri := ref.String()
-	var recipients []models.SpaceCredentialRecipient
-	err := s.db.Client().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		st := s.spaceStore(tx, ref.Authority)
-		var err error
-		if recipients, err = st.activeRecipients(uri); err != nil {
-			return err
-		}
-		return st.deleteSpace(uri)
-	})
-	if err != nil {
-		return err
-	}
-	s.goSpace(func(ctx context.Context) {
-		s.notifySpaceDeleted(ctx, ref, recipients)
-	})
-	return nil
-}
-
 // goSpace runs background space work, tracked so tests can wait for it.
 func (s *Server) goSpace(fn func(ctx context.Context)) {
 	s.spaceJobs.Add(1)
@@ -494,15 +325,27 @@ func (s *Server) sendNotify(ctx context.Context, iss, service, lxm string, body 
 // postXRPC posts JSON to a target, returning the status. A non-2xx status is
 // an *xrpcCallError.
 func (s *Server) postXRPC(ctx context.Context, target *notifyTarget, lxm string, body any) (int, error) {
+	status, _, err := s.postXRPCBody(ctx, target, lxm, body)
+	return status, err
+}
+
+// postXRPCJSON posts JSON to an endpoint without service auth, returning the
+// response body.
+func (s *Server) postXRPCJSON(ctx context.Context, endpoint, lxm string, body any) ([]byte, error) {
+	_, out, err := s.postXRPCBody(ctx, &notifyTarget{endpoint: endpoint}, lxm, body)
+	return out, err
+}
+
+func (s *Server) postXRPCBody(ctx context.Context, target *notifyTarget, lxm string, body any) (int, []byte, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.endpoint+"/xrpc/"+lxm, bytesReader(b))
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range target.headers {
@@ -510,17 +353,21 @@ func (s *Server) postXRPC(ctx context.Context, target *notifyTarget, lxm string,
 	}
 	resp, err := s.spaceClient().Do(req)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
+	out, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return resp.StatusCode, nil, err
+	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		var xe struct {
 			Error string `json:"error"`
 		}
-		_ = json.NewDecoder(resp.Body).Decode(&xe)
-		return resp.StatusCode, &xrpcCallError{Status: resp.StatusCode, Name: xe.Error}
+		_ = json.Unmarshal(out, &xe)
+		return resp.StatusCode, nil, &xrpcCallError{Status: resp.StatusCode, Name: xe.Error}
 	}
-	return resp.StatusCode, nil
+	return resp.StatusCode, out, nil
 }
 
 type xrpcCallError struct {

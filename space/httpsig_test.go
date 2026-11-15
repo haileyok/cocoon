@@ -17,7 +17,7 @@ import (
 const (
 	sigAuthorization = "Atproto-Space-Credential credential"
 	sigAudience      = "did:example:repo"
-	sigPrefix        = "atproto-space-credential=:"
+	sigPrefix        = "sig=:"
 )
 
 func hdrs(m map[string]string) http.Header {
@@ -105,19 +105,36 @@ func TestHTTPSignatures(t *testing.T) {
 		}
 	})
 
+	t.Run("signs under the sig label", func(t *testing.T) {
+		h := signed()
+		if !strings.HasPrefix(h.Get("signature-input"), "sig=(") || !strings.HasPrefix(h.Get("signature"), "sig=:") {
+			t.Fatalf("%s / %s", h.Get("signature-input"), h.Get("signature"))
+		}
+	})
+
 	for name, tag := range map[string]string{"missing": "", "other": `;tag="other"`} {
 		t.Run("rejects a "+name+" tag on a credential use", func(t *testing.T) {
 			h := signed()
 			h.Set("signature-input", strings.Replace(h.Get("signature-input"), `;tag="atproto-space-credential"`, tag, 1))
-			expectSigErr(t, VerifyCredentialSig(h, keyID), `tag must be "atproto-space-credential"`)
+			expectSigErr(t, VerifyCredentialSig(h, keyID), `missing or malformed signature with tag "atproto-space-credential"`)
 		})
 	}
 
-	t.Run("rejects the old atproto-space label", func(t *testing.T) {
+	t.Run("finds the signature by its tag, under any label", func(t *testing.T) {
 		h := signed()
-		h.Set("signature-input", strings.Replace(h.Get("signature-input"), "atproto-space-credential=", "atproto-space=", 1))
-		h.Set("signature", strings.Replace(h.Get("signature"), "atproto-space-credential=", "atproto-space=", 1))
-		expectSigErr(t, VerifyCredentialSig(h, keyID), "missing or malformed")
+		h.Set("signature-input", strings.Replace(h.Get("signature-input"), "sig=", "atproto-space-credential=", 1))
+		h.Set("signature", strings.Replace(h.Get("signature"), "sig=", "atproto-space-credential=", 1))
+		if err := VerifyCredentialSig(h, keyID); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("rejects more than one signature with the tag", func(t *testing.T) {
+		h := signed()
+		in, sig := h.Get("signature-input"), h.Get("signature")
+		h.Set("signature-input", in+", "+strings.Replace(in, "sig=", "other=", 1))
+		h.Set("signature", sig+", "+strings.Replace(sig, "sig=", "other=", 1))
+		expectSigErr(t, VerifyCredentialSig(h, keyID), "more than one signature")
 	})
 
 	t.Run("signs the authorization exactly as sent, whatever its case", func(t *testing.T) {
@@ -154,8 +171,8 @@ func TestHTTPSignatures(t *testing.T) {
 		h := hdrs(map[string]string{
 			"authorization":          sigAuthorization,
 			"atproto-space-audience": sigAudience,
-			"signature-input":        `other=("authorization");keyid="other", atproto-space-credential=` + input,
-			"signature":              "other=:YWJj:, " + sigPrefix + signRaw(base) + ":",
+			"signature-input":        `other=("authorization");keyid="other", cred=` + input,
+			"signature":              "other=:YWJj:, cred=:" + signRaw(base) + ":",
 		})
 		if err := VerifyCredentialSig(h, keyID); err != nil {
 			t.Fatal(err)
@@ -183,7 +200,7 @@ func TestHTTPSignatures(t *testing.T) {
 		h := hdrs(map[string]string{
 			"authorization":          sigAuthorization,
 			"atproto-space-audience": sigAudience,
-			"signature-input":        "atproto-space-credential=" + input,
+			"signature-input":        "sig=" + input,
 			"signature":              sigPrefix + signRaw(base) + ":",
 		})
 		expectSigErr(t, VerifyCredentialSig(h, keyID), "must cover")
@@ -197,7 +214,7 @@ func TestHTTPSignatures(t *testing.T) {
 	t.Run("rejects an optional keyid that differs from the credential key", func(t *testing.T) {
 		h := signed()
 		h.Set("signature-input", h.Get("signature-input")+`;keyid="`+didKeyOf(t, newP256(t))+`"`)
-		expectSigErr(t, VerifyCredentialSig(h, keyID), "keyid does not match the credential key")
+		expectSigErr(t, VerifyCredentialSig(h, keyID), "keyid does not match the expected key")
 	})
 
 	for name, comps := range map[string]string{
@@ -209,7 +226,7 @@ func TestHTTPSignatures(t *testing.T) {
 		"malformed input":                 `not-a-list`,
 	} {
 		h := signed()
-		h.Set("signature-input", "atproto-space-credential="+comps)
+		h.Set("signature-input", "sig="+comps+`;tag="atproto-space-credential"`)
 		err := VerifyCredentialSig(h, keyID)
 		expectSigErr(t, err, "")
 		if !strings.Contains(err.Error(), "must cover exactly") && !strings.Contains(err.Error(), "missing or malformed") {
@@ -239,7 +256,7 @@ func TestHTTPSignatures(t *testing.T) {
 
 	for _, s := range []string{"not-a-byte-sequence", ":YWJj:", ":!!!:"} {
 		h := signed()
-		h.Set("signature", "atproto-space-credential="+s)
+		h.Set("signature", "sig="+s)
 		expectSigErr(t, VerifyCredentialSig(h, keyID), "")
 	}
 

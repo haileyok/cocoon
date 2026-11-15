@@ -66,11 +66,29 @@ func (p *sfParser) skipOWS() {
 	}
 }
 
-// parseSFDictionary parses a dictionary. Duplicate keys keep the last value,
-// as RFC 8941 requires.
-func parseSFDictionary(s string) (map[string]sfMember, error) {
+// sfDict is a parsed dictionary, keeping its members in order.
+type sfDict struct {
+	keys    []string
+	members map[string]sfMember
+}
+
+func (d *sfDict) get(key string) (sfMember, bool) {
+	m, ok := d.members[key]
+	return m, ok
+}
+
+func (d *sfDict) set(key string, m sfMember) {
+	if _, ok := d.members[key]; !ok {
+		d.keys = append(d.keys, key)
+	}
+	d.members[key] = m
+}
+
+// parseSFDictionary parses a dictionary. A duplicate key keeps the last value
+// at its first position, as RFC 8941 requires.
+func parseSFDictionary(s string) (*sfDict, error) {
 	p := &sfParser{s: strings.Trim(s, " ")}
-	out := map[string]sfMember{}
+	out := &sfDict{members: map[string]sfMember{}}
 	if p.eof() {
 		return out, nil
 	}
@@ -93,7 +111,7 @@ func parseSFDictionary(s string) (map[string]sfMember, error) {
 			}
 			m = sfItem{Value: true, Params: params}
 		}
-		out[key] = m
+		out.set(key, m)
 		p.skipOWS()
 		if p.eof() {
 			return out, nil
@@ -386,18 +404,43 @@ func serializeSFInnerList(l sfInnerList) string {
 	return "(" + strings.Join(parts, " ") + ")" + serializeSFParams(l.Params)
 }
 
-// sfDictMember is a dictionary member with a bare item value and no
-// parameters.
-type sfDictMember struct {
-	Key   string
-	Value any
+// sfDictEntry is a dictionary member: an item or an inner list.
+type sfDictEntry struct {
+	Key    string
+	Member sfMember
 }
 
-// serializeSFDictionary serializes a dictionary of bare items, in order.
-func serializeSFDictionary(members []sfDictMember) string {
-	parts := make([]string, len(members))
-	for i, m := range members {
-		parts[i] = m.Key + "=" + serializeSFBareItem(m.Value)
+func serializeSFMember(m sfMember) string {
+	switch x := m.(type) {
+	case sfItem:
+		return serializeSFItem(x)
+	case sfInnerList:
+		return serializeSFInnerList(x)
+	}
+	return ""
+}
+
+// serializeSFDictionary serializes a dictionary, in order. A member that is a
+// boolean true item serializes as its key alone, as RFC 8941 requires.
+func serializeSFDictionary(entries []sfDictEntry) string {
+	parts := make([]string, len(entries))
+	for i, e := range entries {
+		if it, ok := e.Member.(sfItem); ok {
+			if t, ok := it.Value.(bool); ok && t {
+				parts[i] = e.Key + serializeSFParams(it.Params)
+				continue
+			}
+		}
+		parts[i] = e.Key + "=" + serializeSFMember(e.Member)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// serialize re-serializes a parsed dictionary in its own order.
+func (d *sfDict) serialize() string {
+	entries := make([]sfDictEntry, len(d.keys))
+	for i, k := range d.keys {
+		entries[i] = sfDictEntry{Key: k, Member: d.members[k]}
+	}
+	return serializeSFDictionary(entries)
 }

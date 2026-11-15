@@ -1,7 +1,7 @@
 package server
 
 // A multi-PDS test network for Spaces, the Go counterpart of the reference's
-// packages/pds/tests/_space.ts (bluesky-social/atproto ac0c9f15): several PDSes
+// packages/pds/tests/_space.ts (bluesky-social/atproto d4def6e9): several PDSes
 // sharing one in-memory DID directory, accounts with password sessions, and
 // helpers for the space write and credential flows.
 
@@ -27,6 +27,7 @@ import (
 	"github.com/haileyok/cocoon/oauth/dpop"
 	"github.com/haileyok/cocoon/oauth/provider"
 	"github.com/haileyok/cocoon/space"
+	"github.com/ipfs/go-cid"
 	"github.com/labstack/echo/v4"
 )
 
@@ -342,28 +343,38 @@ func testSkey(t *testing.T) string {
 }
 
 type spaceOpts struct {
-	skey        string
-	spaceType   string
-	members     []*actor
-	readPolicy  map[string]any
-	writePolicy map[string]any
-	appAccess   map[string]any
-	ungoverned  bool
+	skey      string
+	spaceType string
+	members   []*actor
+	// policy defaults to a memberspace policy with its default configuration.
+	policy     map[string]any
+	ungoverned bool
 }
 
-func memberListPolicy() map[string]any {
-	return map[string]any{"$type": "com.atproto.simplespace.defs#memberListPolicy"}
+const (
+	personalspacePolicy = "com.atproto.personalspace.policy"
+	memberspacePolicy   = "com.atproto.memberspace.policy"
+	managedspacePolicy  = "com.atproto.managedspace.policy"
+)
+
+// memberPolicy is a memberspace policy, with the given fields.
+func memberPolicy(fields map[string]any) map[string]any {
+	p := map[string]any{"$type": memberspacePolicy}
+	for k, v := range fields {
+		p[k] = v
+	}
+	return p
 }
-func publicPolicy() map[string]any {
-	return map[string]any{"$type": "com.atproto.simplespace.defs#publicPolicy"}
+
+func managedPolicy(app string, fields map[string]any) map[string]any {
+	p := map[string]any{"$type": managedspacePolicy, "managingApp": app}
+	for k, v := range fields {
+		p[k] = v
+	}
+	return p
 }
-func managingAppPolicy(app string) map[string]any {
-	return map[string]any{"$type": "com.atproto.simplespace.defs#managingAppPolicy", "managingApp": app}
-}
-func openAccess() map[string]any { return map[string]any{"$type": "com.atproto.simplespace.defs#open"} }
-func allowList(ids ...string) map[string]any {
-	return map[string]any{"$type": "com.atproto.simplespace.defs#allowList", "allowed": ids}
-}
+
+func personalPolicy() map[string]any { return map[string]any{"$type": personalspacePolicy} }
 
 // createSpace creates a space governed by owner, adding members.
 func createSpace(t *testing.T, owner *actor, o spaceOpts) string {
@@ -376,22 +387,13 @@ func createSpace(t *testing.T, owner *actor, o spaceOpts) string {
 	}
 	uri := space.Ref{Authority: owner.did, Type: o.spaceType, Skey: o.skey}.String()
 	if !o.ungoverned {
-		body := map[string]any{"spaceType": o.spaceType, "skey": o.skey}
-		body["readPolicy"] = memberListPolicy()
-		if o.readPolicy != nil {
-			body["readPolicy"] = o.readPolicy
+		policy := o.policy
+		if policy == nil {
+			policy = memberPolicy(nil)
 		}
-		body["writePolicy"] = memberListPolicy()
-		if o.writePolicy != nil {
-			body["writePolicy"] = o.writePolicy
-		}
-		body["appAccess"] = openAccess()
-		if o.appAccess != nil {
-			body["appAccess"] = o.appAccess
-		}
-		r := mustOK(t, owner.post("com.atproto.simplespace.createSpace", body))
-		if r.str("uri") != uri {
-			t.Fatalf("expected space %s, got %s", uri, r.str("uri"))
+		r := mustOK(t, owner.post("com.atproto.space.createSpace", map[string]any{"spaceType": o.spaceType, "skey": o.skey, "policy": policy}))
+		if r.str("space") != uri {
+			t.Fatalf("expected space %s, got %s", uri, r.str("space"))
 		}
 	}
 	for _, m := range o.members {
@@ -402,7 +404,26 @@ func createSpace(t *testing.T, owner *actor, o spaceOpts) string {
 
 func putMember(t *testing.T, owner *actor, spaceURI string, m *actor, read, write bool) {
 	t.Helper()
-	mustOK(t, owner.post("com.atproto.simplespace.putMember", map[string]any{"space": spaceURI, "did": m.did, "read": read, "write": write}))
+	mustOK(t, putMemberRes(owner, spaceURI, m, read, write))
+}
+
+func putMemberRes(owner *actor, spaceURI string, m *actor, read, write bool) xres {
+	return owner.post("com.atproto.memberspace.putMembers", map[string]any{
+		"space": spaceURI, "members": []map[string]any{{"did": m.did, "read": read, "write": write}},
+	})
+}
+
+func removeMember(t *testing.T, owner *actor, spaceURI string, m *actor) {
+	t.Helper()
+	mustOK(t, owner.post("com.atproto.memberspace.removeMembers", map[string]any{"space": spaceURI, "dids": []string{m.did}}))
+}
+
+func removeWriter(owner *actor, spaceURI string, writer *actor) xres {
+	return owner.post("com.atproto.space.removeWriter", map[string]any{"space": spaceURI, "repo": writer.did})
+}
+
+func clearRecords(a *actor, spaceURI string) xres {
+	return a.post("com.atproto.space.clearRecords", map[string]any{"space": spaceURI, "repo": a.did})
 }
 
 func testRecord(collection, text string) map[string]any {
@@ -508,6 +529,15 @@ func expectSetHashMatchesStore(t *testing.T, a *actor, spaceURI string) {
 	if !space.RepoCommitFromRecords(refs).SetHash.Equal(stored.SetHash) {
 		t.Fatal("stored set hash diverged from the stored records")
 	}
+}
+
+func mustCid(t *testing.T, s string) cid.Cid {
+	t.Helper()
+	c, err := cid.Decode(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
 }
 
 func lastSegment(uri string) string { return uri[strings.LastIndex(uri, "/")+1:] }

@@ -64,23 +64,25 @@ func (r *IndigoResolver) resolveSpace(ctx context.Context, nsidStr string) ([]st
 type SpaceDeclaration struct {
 	// Key is the recommended space key type: any, nsid, tid or literal:<key>.
 	Key string
-	// Name is the human-readable name the consent screen shows (1-64 bytes).
-	Name string
-	// NameLang holds localized names by language tag.
-	NameLang map[string]string
+	// Title is the human-readable title the consent screen shows (1-64
+	// bytes), empty when the declaration has none, in which case the consent
+	// screen shows the type's NSID.
+	Title string
+	// TitleLang holds localized titles by language tag.
+	TitleLang map[string]string
 	// Description is for developers and is never shown to users.
 	Description string
 	// Collections are the default collections of a bare space: grant.
 	Collections []string
 }
 
-// maxSpaceNameLen is the longest a declaration's name may be, in UTF-8 bytes
+// maxSpaceTitleLen is the longest a declaration's title may be, in UTF-8 bytes
 // (the lexicon string length unit).
-const maxSpaceNameLen = 64
+const maxSpaceTitleLen = 64
 
 // ParseSpaceDeclaration validates a lexicon document's main definition against
-// the space declaration schema the reference PDS applies: key, name and
-// collections are required, name is 1 to 64 bytes, name:lang maps language
+// the space declaration schema the reference PDS applies: key and collections
+// are required, title is optional and 1 to 64 bytes, title:lang maps language
 // tags to strings, and collections lists NSIDs (never a wildcard).
 func ParseSpaceDeclaration(doc map[string]any) (*SpaceDeclaration, error) {
 	defs, _ := doc["defs"].(map[string]any)
@@ -97,30 +99,34 @@ func ParseSpaceDeclaration(doc map[string]any) (*SpaceDeclaration, error) {
 		return nil, fmt.Errorf("space type key %q must be any, nsid, tid or literal:<key>", key)
 	}
 
-	name, ok := main["name"].(string)
-	if !ok {
-		return nil, fmt.Errorf("space type is missing its name")
-	}
-	if n := len(name); n < 1 || n > maxSpaceNameLen {
-		return nil, fmt.Errorf("space type name must be 1 to %d bytes, got %d", maxSpaceNameLen, n)
+	var title string
+	if raw, present := main["title"]; present {
+		t, ok := raw.(string)
+		if !ok {
+			return nil, fmt.Errorf("space type title must be a string")
+		}
+		if n := len(t); n < 1 || n > maxSpaceTitleLen {
+			return nil, fmt.Errorf("space type title must be 1 to %d bytes, got %d", maxSpaceTitleLen, n)
+		}
+		title = t
 	}
 
-	var nameLang map[string]string
-	if raw, present := main["name:lang"]; present {
+	var titleLang map[string]string
+	if raw, present := main["title:lang"]; present {
 		m, ok := raw.(map[string]any)
 		if !ok {
-			return nil, fmt.Errorf("space type name:lang must map language tags to names")
+			return nil, fmt.Errorf("space type title:lang must map language tags to titles")
 		}
-		nameLang = make(map[string]string, len(m))
+		titleLang = make(map[string]string, len(m))
 		for lang, v := range m {
 			if _, err := syntax.ParseLanguage(lang); err != nil {
-				return nil, fmt.Errorf("space type name:lang key %q is not a language tag", lang)
+				return nil, fmt.Errorf("space type title:lang key %q is not a language tag", lang)
 			}
 			s, ok := v.(string)
 			if !ok {
-				return nil, fmt.Errorf("space type name:lang value for %q must be a string", lang)
+				return nil, fmt.Errorf("space type title:lang value for %q must be a string", lang)
 			}
-			nameLang[lang] = s
+			titleLang[lang] = s
 		}
 	}
 
@@ -153,7 +159,7 @@ func ParseSpaceDeclaration(doc map[string]any) (*SpaceDeclaration, error) {
 		cols = append(cols, s)
 	}
 
-	return &SpaceDeclaration{Key: key, Name: name, NameLang: nameLang, Description: description, Collections: cols}, nil
+	return &SpaceDeclaration{Key: key, Title: title, TitleLang: titleLang, Description: description, Collections: cols}, nil
 }
 
 // validSpaceKeyType reports whether key is a lexicon record key type.

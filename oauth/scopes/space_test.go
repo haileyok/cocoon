@@ -222,3 +222,23 @@ func TestParseAcceptsSpaceScopes(t *testing.T) {
 		t.Fatal("invalid space scope parsed")
 	}
 }
+
+// The named scope parameter for the space type is spaceType. The earlier
+// type parameter is no longer recognized.
+func TestParseSpacePermissionSpaceTypeParam(t *testing.T) {
+	t.Parallel()
+	p := mustSpace(t, "space?spaceType=com.example.forum&authority=*")
+	if p.Type != "com.example.forum" || p.Authority != "*" {
+		t.Fatalf("%+v", p)
+	}
+	if ParseSpacePermission("space?type=com.example.forum&authority=*") != nil {
+		t.Fatal("the old type parameter was accepted")
+	}
+	if ParseSpacePermission("space:com.example.forum?spaceType=com.example.forum") != nil {
+		t.Fatal("a positional type and a named one were both accepted")
+	}
+	// The positional form is unchanged.
+	if q := mustSpace(t, "space:com.example.forum?authority=*"); q.Type != "com.example.forum" {
+		t.Fatalf("%+v", q)
+	}
+}

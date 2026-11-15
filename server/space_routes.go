@@ -19,28 +19,33 @@ func (s *Server) addSpaceRoutes() {
 	s.echo.GET("/xrpc/com.atproto.space.listRepoOps", s.handleSpaceListRepoOps, s.spaceReadMiddleware)
 	s.echo.GET("/xrpc/com.atproto.space.getLatestCommit", s.handleSpaceGetLatestCommit, s.spaceReadMiddleware)
 
-	// simplespace host
-	s.echo.POST("/xrpc/com.atproto.simplespace.createSpace", s.handleSimplespaceCreateSpace, session...)
-	s.echo.POST("/xrpc/com.atproto.simplespace.putMember", s.handleSimplespacePutMember, session...)
-	s.echo.POST("/xrpc/com.atproto.simplespace.removeMember", s.handleSimplespaceRemoveMember, session...)
-	s.echo.POST("/xrpc/com.atproto.simplespace.updateSpace", s.handleSimplespaceUpdateSpace, session...)
-	s.echo.POST("/xrpc/com.atproto.simplespace.deleteSpace", s.handleSimplespaceDeleteSpace, session...)
-	s.echo.GET("/xrpc/com.atproto.simplespace.listMembers", s.handleSimplespaceListMembers, session...)
-	s.echo.GET("/xrpc/com.atproto.simplespace.getSpace", s.handleSimplespaceGetSpace, s.spaceReadMiddleware)
+	// space lifecycle and policy: the spaces an account governs
+	s.echo.POST("/xrpc/com.atproto.space.createSpace", s.handleSpaceCreateSpace, session...)
+	s.echo.POST("/xrpc/com.atproto.space.updateSpace", s.handleSpaceUpdateSpace, session...)
+	s.echo.POST("/xrpc/com.atproto.space.deleteSpace", s.handleSpaceDeleteSpace, session...)
+	s.echo.POST("/xrpc/com.atproto.space.removeWriter", s.handleSpaceRemoveWriter, session...)
+	s.echo.GET("/xrpc/com.atproto.space.getSpace", s.handleSpaceGetSpace, session...)
+	s.echo.POST("/xrpc/com.atproto.space.clearRecords", s.handleSpaceClearRecords, session...)
+	s.echo.POST("/xrpc/com.atproto.memberspace.putMembers", s.handleMemberspacePutMembers, session...)
+	s.echo.POST("/xrpc/com.atproto.memberspace.removeMembers", s.handleMemberspaceRemoveMembers, session...)
+	s.echo.GET("/xrpc/com.atproto.memberspace.listMembers", s.handleMemberspaceListMembers, session...)
+
+	// account migration: the host-side state of a space and an account's repo
+	s.echo.GET("/xrpc/com.atproto.space.exportSpaceMeta", s.handleSpaceExportSpaceMeta, session...)
+	s.echo.POST("/xrpc/com.atproto.space.importSpaceMeta", s.handleSpaceImportSpaceMeta, session...)
+	s.echo.POST("/xrpc/com.atproto.space.importRepo", s.handleSpaceImportRepo, session...)
 
 	// credentials
 	s.echo.GET("/xrpc/com.atproto.space.getDelegationToken", s.handleSpaceGetDelegationToken, session...)
 	// unauthenticated: a delegation token and client attestation, when the
 	// space requires them, arrive in the request body
-	s.echo.POST("/xrpc/com.atproto.space.getSpaceCredential", s.handleSpaceGetSpaceCredential)
+	s.echo.POST("/xrpc/com.atproto.space.authorizeSpaceSync", s.handleSpaceAuthorizeSpaceSync)
 	// service auth from the space authority, verified in the handler
-	s.echo.POST("/xrpc/com.atproto.space.notifyCredentialRevoked", s.handleSpaceNotifyCredentialRevoked)
+	s.echo.POST("/xrpc/com.atproto.space.notifyCredentialsRevoked", s.handleSpaceNotifyCredentialsRevoked)
 
-	// sync: write notifications, registrations and full-state recovery
-	s.echo.POST("/xrpc/com.atproto.space.notifyWrite", s.handleSpaceNotifyWrite)
-	s.echo.POST("/xrpc/com.atproto.space.registerNotify", s.handleSpaceRegisterNotify)
-	s.echo.POST("/xrpc/com.atproto.space.unregisterNotify", s.handleSpaceUnregisterNotify)
-	s.echo.GET("/xrpc/com.atproto.space.listRepos", s.handleSpaceListRepos)
+	// sync: repo update notifications, the writer set and full-state recovery
+	s.echo.POST("/xrpc/com.atproto.space.notifyRepoUpdate", s.handleSpaceNotifyRepoUpdate)
+	s.echo.GET("/xrpc/com.atproto.space.listWriters", s.handleSpaceListWriters)
 	s.echo.GET("/xrpc/com.atproto.space.getRepo", s.handleSpaceGetRepo, s.spaceReadMiddleware)
 
 	// blobs

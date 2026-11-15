@@ -44,7 +44,7 @@ func TestExpandSpaceCollections(t *testing.T) {
 }
 
 func TestSpaceCollectionsFromLexicon(t *testing.T) {
-	cols, err := SpaceCollectionsFromLexicon(map[string]any{"defs": map[string]any{"main": map[string]any{"type": "space", "key": "any", "name": "Group", "collections": []any{"com.example.groupNote"}}}})
+	cols, err := SpaceCollectionsFromLexicon(map[string]any{"defs": map[string]any{"main": map[string]any{"type": "space", "key": "any", "title": "Group", "collections": []any{"com.example.groupNote"}}}})
 	if err != nil || !reflect.DeepEqual(cols, []string{"com.example.groupNote"}) {
 		t.Fatalf("%v %v", cols, err)
 	}
@@ -61,13 +61,13 @@ func validSpaceMain() map[string]any {
 	return map[string]any{
 		"type":        "space",
 		"key":         "any",
-		"name":        "Group",
+		"title":       "Group",
 		"collections": []any{"com.example.groupNote"},
 	}
 }
 
 // The reference validates a space type declaration against the lexicon space
-// schema: key, name and collections are required.
+// schema: key and collections are required, and the title is optional.
 func TestParseSpaceDeclaration(t *testing.T) {
 	t.Parallel()
 
@@ -78,14 +78,16 @@ func TestParseSpaceDeclaration(t *testing.T) {
 	}
 
 	valid := map[string]map[string]any{
-		"minimal":         spaceDoc(validSpaceMain()),
-		"key nsid":        with(func(m map[string]any) { m["key"] = "nsid" }),
-		"key tid":         with(func(m map[string]any) { m["key"] = "tid" }),
-		"key literal":     with(func(m map[string]any) { m["key"] = "literal:self" }),
-		"no collections":  with(func(m map[string]any) { m["collections"] = []any{} }),
-		"description":     with(func(m map[string]any) { m["description"] = "A group" }),
-		"name 64 bytes":   with(func(m map[string]any) { m["name"] = strings.Repeat("a", 64) }),
-		"localized names": with(func(m map[string]any) { m["name:lang"] = map[string]any{"es": "Grupo", "ja": "グループ"} }),
+		"minimal":          spaceDoc(validSpaceMain()),
+		"key nsid":         with(func(m map[string]any) { m["key"] = "nsid" }),
+		"key tid":          with(func(m map[string]any) { m["key"] = "tid" }),
+		"key literal":      with(func(m map[string]any) { m["key"] = "literal:self" }),
+		"no collections":   with(func(m map[string]any) { m["collections"] = []any{} }),
+		"description":      with(func(m map[string]any) { m["description"] = "A group" }),
+		"title 64 bytes":   with(func(m map[string]any) { m["title"] = strings.Repeat("a", 64) }),
+		"no title":         with(func(m map[string]any) { delete(m, "title") }),
+		"localized titles": with(func(m map[string]any) { m["title:lang"] = map[string]any{"es": "Grupo", "ja": "グループ"} }),
+		"a leftover name":  with(func(m map[string]any) { m["name"] = "ignored" }),
 	}
 	for name, doc := range valid {
 		if _, err := ParseSpaceDeclaration(doc); err != nil {
@@ -101,19 +103,18 @@ func TestParseSpaceDeclaration(t *testing.T) {
 		"key unknown type":       with(func(m map[string]any) { m["key"] = "uuid" }),
 		"key empty literal":      with(func(m map[string]any) { m["key"] = "literal:" }),
 		"key bad literal":        with(func(m map[string]any) { m["key"] = "literal:a/b" }),
-		"missing name":           with(func(m map[string]any) { delete(m, "name") }),
-		"name not a string":      with(func(m map[string]any) { m["name"] = 7 }),
-		"empty name":             with(func(m map[string]any) { m["name"] = "" }),
-		"name over 64":           with(func(m map[string]any) { m["name"] = strings.Repeat("a", 65) }),
+		"title not a string":     with(func(m map[string]any) { m["title"] = 7 }),
+		"empty title":            with(func(m map[string]any) { m["title"] = "" }),
+		"title over 64":          with(func(m map[string]any) { m["title"] = strings.Repeat("a", 65) }),
 		"missing collections":    with(func(m map[string]any) { delete(m, "collections") }),
 		"collections wrong type": with(func(m map[string]any) { m["collections"] = "com.example.groupNote" }),
 		"collection not NSID":    with(func(m map[string]any) { m["collections"] = []any{"nope"} }),
 		"collection wildcard":    with(func(m map[string]any) { m["collections"] = []any{"*"} }),
 		"collection not string":  with(func(m map[string]any) { m["collections"] = []any{3} }),
 		"description not string": with(func(m map[string]any) { m["description"] = 3 }),
-		"name:lang not a map":    with(func(m map[string]any) { m["name:lang"] = "es" }),
-		"name:lang bad tag":      with(func(m map[string]any) { m["name:lang"] = map[string]any{"not a tag!": "x"} }),
-		"name:lang bad value":    with(func(m map[string]any) { m["name:lang"] = map[string]any{"es": 1} }),
+		"title:lang not a map":   with(func(m map[string]any) { m["title:lang"] = "es" }),
+		"title:lang bad tag":     with(func(m map[string]any) { m["title:lang"] = map[string]any{"not a tag!": "x"} }),
+		"title:lang bad value":   with(func(m map[string]any) { m["title:lang"] = map[string]any{"es": 1} }),
 	}
 	for name, doc := range invalid {
 		if _, err := ParseSpaceDeclaration(doc); err == nil {
@@ -122,12 +123,12 @@ func TestParseSpaceDeclaration(t *testing.T) {
 	}
 }
 
-// The declaration engram-garden published before it had key and name.
-func TestSpaceCollectionsFromLexiconRequiresKeyAndName(t *testing.T) {
+// The declaration engram-garden published before it had a key.
+func TestSpaceCollectionsFromLexiconRequiresKey(t *testing.T) {
 	t.Parallel()
 	doc := spaceDoc(map[string]any{"type": "space", "collections": []any{"com.example.groupNote"}})
 	if _, err := SpaceCollectionsFromLexicon(doc); err == nil {
-		t.Fatal("declaration without key and name accepted")
+		t.Fatal("declaration without a key accepted")
 	}
 }
 

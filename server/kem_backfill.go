@@ -18,7 +18,7 @@ import (
 // Spaces alpha) have none, so syncers can't establish a shared secret for
 // their space repos and space-credential reads of them fail. This gives each
 // one a key, following the reference's kem-key-backfill.ts at
-// bluesky-social/atproto ac0c9f15: when this PDS holds a rotation key for the
+// bluesky-social/atproto d4def6e9: when this PDS holds a rotation key for the
 // account and is its current PDS, it publishes the key to PLC and emits an
 // #identity event. Otherwise (did:web accounts, accounts that removed this
 // PDS's rotation key or migrated away) it stores a key the account must

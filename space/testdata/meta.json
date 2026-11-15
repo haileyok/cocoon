@@ -1,0 +1,43 @@
+{
+  "generatedBy": "gen-vectors.mjs: @atproto/space writeSpaceMetaStar at 0.0.0-spaces-alpha-20261112204144",
+  "space": "at://did:plc:vlpdsspacesrefexport2345/space/com.example.group/refmeta",
+  "policy": {
+    "$type": "com.atproto.memberspace.policy",
+    "publicRead": false,
+    "publicWrite": false,
+    "publishPolicy": true,
+    "publishMembers": false
+  },
+  "policyState": [
+    {
+      "key": "com.atproto.memberspace.member/did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+      "value": {
+        "read": true,
+        "$type": "com.atproto.memberspace.member",
+        "write": true
+      }
+    },
+    {
+      "key": "com.atproto.memberspace.member/did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+      "value": {
+        "read": true,
+        "$type": "com.atproto.memberspace.member",
+        "write": false
+      }
+    }
+  ],
+  "writers": [
+    {
+      "did": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+      "repoRev": "3mvzvh4fs2223",
+      "data": "0909090909090909090909090909090909090909090909090909090909090909",
+      "spaceRev": "3mvzvh4fs2224"
+    },
+    {
+      "did": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+      "repoRev": "3mvzvh4fs222b",
+      "data": "0707070707070707070707070707070707070707070707070707070707070707",
+      "spaceRev": "3mvzvh4fs222c"
+    }
+  ]
+}

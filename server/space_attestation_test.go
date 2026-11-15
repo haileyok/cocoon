@@ -1,5 +1,22 @@
 package server
 
+// Ported from packages/pds/tests/client-attestation.test.ts
+// (bluesky-social/atproto d4def6e9).
+//
+// The reference unit-tests ClientAttestationVerifier against an injected fetch
+// answering a fixed route table. Cocoon verifies attestations inside
+// authorizeSpaceSync (server/space_attestation.go: verifyClientAttestation),
+// so each reference case becomes an authorizeSpaceSync exchange for a
+// memberspace whose allowedApps names the client_id under test: a resolve
+// means a credential was minted, a reject means the error the reference pins.
+// The mock client app stands in for app.example.com, serving metadata and JWKS
+// over real HTTP (inline or by jwks_uri, per the reference's metadata()); a
+// client whose metadata or jwks_uri cannot be resolved is one served by
+// attestRoutesApp with the route missing, so the fetch 404s.
+//
+// Every reference case ports: the verifier itself is the same shape, so there
+// is nothing here that Cocoon cannot express.
+
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -18,23 +35,9 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jws"
 )
 
-// Ported from packages/pds/tests/client-attestation.test.ts
-// (bluesky-social/atproto 5b95b2f2).
-//
-// The reference unit-tests ClientAttestationVerifier against an injected fetch
-// answering a fixed route table. Cocoon verifies attestations inside
-// getSpaceCredential (server/space_attestation.go: verifyClientAttestation),
-// so each reference case becomes a getSpaceCredential exchange for an
-// allowList space whose allowed list holds the client_id under test: a resolve
-// means a credential was minted, a reject means the error the reference pins.
-// The mock client app stands in for app.example.com, serving metadata and JWKS
-// over real HTTP (inline or by jwks_uri, per the reference's metadata()); a
-// client whose metadata or jwks_uri cannot be resolved is one served by
-// attestRoutesApp with the route missing, so the fetch 404s.
-
 // attestNet is the network the attestation cases run on: an authority hosting
-// allowList spaces, a member exchanging delegation tokens for credentials, and
-// a mock client app installed so the authority can resolve it.
+// allowedApps memberspaces, a member exchanging delegation tokens for
+// credentials, and a mock client app installed so the authority can resolve it.
 type attestNet struct {
 	net       *spaceNet
 	authority *spacePDS
@@ -60,11 +63,15 @@ func (a *attestNet) hostAud() string {
 	return space.SpaceHostAud(a.alice.did)
 }
 
-// attestSpace creates an allowList space admitting clientID, the client_id the
-// case under test presents as.
+// attestSpace creates a space admitting clientID as an app, the client_id the
+// case under test presents as. Only memberspace restricts apps, so the
+// allowedApps list is the policy's whole point here.
 func (a *attestNet) attestSpace(t *testing.T, clientID string) string {
 	t.Helper()
-	return createSpace(t, a.alice, spaceOpts{members: []*actor{a.dan}, appAccess: allowList(clientID)})
+	return createSpace(t, a.alice, spaceOpts{
+		members: []*actor{a.dan},
+		policy:  memberPolicy(map[string]any{"allowedApps": []string{clientID}}),
+	})
 }
 
 // attestExchange exchanges a delegation token for a credential presenting the
@@ -165,7 +172,7 @@ func attestRoutesApp(t *testing.T, routesFor func(base string) map[string]any) (
 	return base + "/client-metadata.json", base + "/jwks.json"
 }
 
-func TestClientAttestationVerification(t *testing.T) {
+func TestSpaceAttestationVerification(t *testing.T) {
 	a := newAttestNet(t)
 
 	t.Run("accepts an attestation signed by a key in the client jwks", func(t *testing.T) {
@@ -192,7 +199,7 @@ func TestClientAttestationVerification(t *testing.T) {
 	t.Run("refuses a replayed attestation, but not a second fresh one", func(t *testing.T) {
 		// Single-use per the spec. A captured attestation would otherwise let
 		// anyone present as an allow-listed client until it expired, which is
-		// exactly the impersonation appAccess allowList is meant to stop.
+		// exactly the impersonation allowedApps is meant to stop.
 		sp := a.attestSpace(t, a.app.clientID)
 		replayed := a.app.attest(t, a.hostAud(), attestOpts{})
 
@@ -248,12 +255,11 @@ func TestClientAttestationVerification(t *testing.T) {
 
 	t.Run("refuses when the jwks_uri cannot be resolved", func(t *testing.T) {
 		// The metadata resolves, but the jwks_uri it names does not.
-		clientID, jwksURI := attestRoutesApp(t, func(base string) map[string]any {
+		clientID, _ := attestRoutesApp(t, func(base string) map[string]any {
 			return map[string]any{
 				"/client-metadata.json": attestClientMetadata(base+"/client-metadata.json", map[string]any{"jwks_uri": base + "/jwks.json"}),
 			}
 		})
-		_ = jwksURI
 		sp := a.attestSpace(t, clientID)
 		attestRejected(t, a.attestExchange(t, sp, a.app.attest(t, a.hostAud(), attestOpts{iss: clientID})), "Could not resolve client JWKS")
 	})
