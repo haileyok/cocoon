@@ -49,8 +49,8 @@
               {{ end }}
               <div class="menu-sep"></div>
               {{ end }}
-              <a class="menu-item" href="/account/signin?{{ .QueryParams }}">+ Sign in to another account</a>
-              <a class="menu-item" href="/account/signout?{{ .QueryParams }}">Sign out of {{ .Handle }}</a>
+              <a class="menu-item" href="{{ .SigninURL }}">+ Sign in to another account</a>
+              <a class="menu-item" href="{{ .SignoutURL }}">Sign out of {{ .Handle }}</a>
             </div>
           </details>
           {{ end }}

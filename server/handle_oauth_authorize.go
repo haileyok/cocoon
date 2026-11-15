@@ -25,6 +25,7 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 	ctx := e.Request().Context()
 
 	logger := s.logger.With("name", "handleOauthAuthorizeGet")
+	queryParams := e.QueryParams().Encode()
 
 	var input HandleOauthAuthorizeGetInput
 	if err := e.Bind(&input); err != nil {
@@ -56,6 +57,9 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 					"AppName":      "DEV MODE AUTHORIZATION PAGE",
 					"Handle":       "paula.cocoon.social",
 					"RequestUri":   "",
+					"QueryParams":  queryParams,
+					"SigninURL":    "/account/signin?" + queryParams,
+					"SignoutURL":   "/account/signout?" + queryParams,
 					"Accounts":     []string{},
 					"ActiveDid":    "",
 					"HasLoginHint": false,
@@ -184,7 +188,9 @@ func (s *Server) handleOauthAuthorizeGet(e echo.Context) error {
 		"AppHost":      clientHost(client.Metadata.ClientID),
 		"AppURI":       safeClientURI(client.Metadata.ClientURI),
 		"RequestUri":   input.RequestUri,
-		"QueryParams":  e.QueryParams().Encode(),
+		"QueryParams":  queryParams,
+		"SigninURL":    "/account/signin?" + queryParams,
+		"SignoutURL":   "/account/signout?" + queryParams,
 		"Handle":       repo.Actor.Handle,
 		"Accounts":     accounts,
 		"ActiveDid":    repo.Repo.Did,
