@@ -79,13 +79,13 @@ func TestProxyRPCPermissions(t *testing.T) {
 			}))
 			t.Cleanup(upstream.Close)
 			s := newTestServer(t)
-			s.proxyHTTPClient = upstream.Client()
+			s.proxyHTTPClient = proxyTestHTTPClient(t, upstream)
 			attachOauthProvider(t, s)
 			account := s.createTestAccount(t, "proxy.pds.test")
 			cache := identity.NewMemCache(10)
 			if err := cache.PutDoc("did:web:appview.test", &identity.DidDoc{
 				Id: "did:web:appview.test", Service: []identity.DidDocService{
-					{Id: "#view", ServiceEndpoint: upstream.URL}, {Id: "#other", ServiceEndpoint: upstream.URL},
+					{Id: "#view", ServiceEndpoint: "https://203.0.113.10"}, {Id: "#other", ServiceEndpoint: "https://203.0.113.10"},
 				},
 			}); err != nil {
 				t.Fatal(err)
@@ -241,8 +241,11 @@ func TestProxyTransport(t *testing.T) {
 		t.Run(method, func(t *testing.T) {
 			const payload = `{"text":"streamed request"}`
 			var compressed bytes.Buffer
-			zip := gzip.NewWriter(&compressed)
-			if _, err := zip.Write([]byte(`{"ok":true}`)); err != nil {
+			zip, err := gzip.NewWriterLevel(&compressed, gzip.NoCompression)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := zip.Write(bytes.Repeat([]byte("x"), 3<<20)); err != nil {
 				t.Fatal(err)
 			}
 			if err := zip.Close(); err != nil {
@@ -265,11 +268,11 @@ func TestProxyTransport(t *testing.T) {
 			}))
 			t.Cleanup(upstream.Close)
 			s := newTestServer(t)
-			s.proxyHTTPClient = upstream.Client()
+			s.proxyHTTPClient = proxyTestHTTPClient(t, upstream)
 			account := s.createTestAccount(t, "transport.pds.test")
 			cache := identity.NewMemCache(10)
 			if err := cache.PutDoc("did:web:appview.test", &identity.DidDoc{
-				Id: "did:web:appview.test", Service: []identity.DidDocService{{Id: "#view", ServiceEndpoint: upstream.URL}},
+				Id: "did:web:appview.test", Service: []identity.DidDocService{{Id: "#view", ServiceEndpoint: "https://203.0.113.10"}},
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -311,7 +314,7 @@ func TestProxyTransport(t *testing.T) {
 				t.Fatal(err)
 			}
 			if resp.StatusCode != 200 || resp.Uncompressed || resp.Header.Get("Content-Encoding") != "gzip" || resp.ContentLength != int64(compressed.Len()) || !bytes.Equal(raw, compressed.Bytes()) {
-				t.Fatalf("gzip response changed: status=%d headers=%v length=%d body=%x", resp.StatusCode, resp.Header, resp.ContentLength, raw)
+				t.Fatalf("gzip response changed: status=%d headers=%v length=%d bytes=%d", resp.StatusCode, resp.Header, resp.ContentLength, len(raw))
 			}
 			got := <-seen
 			wantBody, wantLength := "", int64(0)
