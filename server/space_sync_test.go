@@ -1,36 +1,44 @@
 package server
 
-// Ported from packages/pds/tests/space/sync.test.ts (bluesky-social/atproto
-// ac0c9f15): how a syncing service follows a space. The oplog is the
-// incremental path (page forward from a cursor, apply each op to a local set
-// hash, check it against the repo's commit); listRecords + getLatestCommit (or
-// a getRepo STAR archive) rebuilds from full state when the oplog no longer
-// reaches back far enough.
+// Ports packages/pds/tests/space/sync.test.ts from bluesky-social/atproto
+// d4def6e9 (the November 12, 2026 Spaces alpha): oplog and full-state sync,
+// HTTP-signature MACs, the sequenced writer set, space catch-up, and
+// notifyRepoUpdate service authentication.
+//
+// Reference cases which do not apply to Cocoon:
+//   - "prunes the oplog on its own, past a retention window" is also only an
+//     it.todo upstream; neither implementation has retention or compaction.
+//   - "migrates existing writer state" constructs the reference PDS's old SQL
+//     schema and runs its numbered migrations. Cocoon uses GORM AutoMigrate,
+//     so there is no corresponding old-schema migration to exercise.
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/bluesky-social/indigo/atproto/atcrypto"
 	"github.com/bluesky-social/indigo/atproto/atdata"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/haileyok/cocoon/identity"
 	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/plc"
 	"github.com/haileyok/cocoon/space"
 )
 
-// syncNet is a three-PDS network, as the reference's space_sync suite builds:
-// alice (authority) and dan co-located on pds1, bob on pds2, carol on pds3.
+// syncNet matches the reference suite's network: alice (the authority) and dan
+// are on pds1, bob is on pds2, and carol (usually the syncer) is on pds3.
 type syncNet struct {
 	net                    *spaceNet
 	pds1, pds2, pds3       *spacePDS
@@ -41,96 +49,59 @@ func newSyncNet(t *testing.T) *syncNet {
 	t.Helper()
 	n := newSpaceNet(t)
 	r := &syncNet{net: n, pds1: n.newPDS(), pds2: n.newPDS(), pds3: n.newPDS()}
-	r.alice = r.pds1.createActor("alice") // authority
-	r.dan = r.pds1.createActor("dan")     // member on the authority's PDS
-	r.bob = r.pds2.createActor("bob")     // member on pds2
-	r.carol = r.pds3.createActor("carol") // stands in for a syncing service
+	r.alice = r.pds1.createActor("alice")
+	r.dan = r.pds1.createActor("dan")
+	r.bob = r.pds2.createActor("bob")
+	r.carol = r.pds3.createActor("carol")
 	return r
 }
 
-// syncListRepoOps pages a repo's oplog as a syncer would, returning each
-// page, the rkeys in order, the last cursor and the last commit seen.
-func syncListRepoOps(t *testing.T, c *spaceCredential, p *spacePDS, sp, repo string, params map[string]string) ([][]string, string, map[string]any) {
+// syncListRepoOpsPages pages as a syncer does, retaining each complete
+// response so callers can check its commit and MAC as well as its ops.
+func syncListRepoOpsPages(t *testing.T, c *spaceCredential, p *spacePDS, sp, repo string, params map[string]string) []xres {
 	t.Helper()
-	if params == nil {
-		params = map[string]string{}
-	}
-	merged := map[string]string{"space": sp, "repo": repo}
+	query := map[string]string{"space": sp, "repo": repo}
 	for k, v := range params {
-		merged[k] = v
+		query[k] = v
 	}
-	var rkeys [][]string
 	cursor := ""
-	var commit map[string]any
+	var pages []xres
 	for i := 0; i < 10; i++ {
-		if cursor != "" {
-			merged["cursor"] = cursor
-		} else {
-			delete(merged, "cursor")
-		}
-		page := mustOK(t, c.get(t, p, "com.atproto.space.listRepoOps", merged))
-		var pageRkeys []string
-		for _, op := range page.list("ops") {
-			pageRkeys = append(pageRkeys, op["rkey"].(string))
-		}
-		rkeys = append(rkeys, pageRkeys)
-		cursor = page.str("cursor")
-		if cm, ok := page.body["commit"].(map[string]any); ok {
-			commit = cm
-		}
 		if cursor == "" {
-			break
+			delete(query, "cursor")
+		} else {
+			query["cursor"] = cursor
+		}
+		page := mustOK(t, c.get(t, p, "com.atproto.space.listRepoOps", query))
+		pages = append(pages, page)
+		cursor = page.str("cursor")
+		if cursor == "" {
+			return pages
 		}
 	}
-	return rkeys, cursor, commit
+	t.Fatal("listRepoOps did not drain within ten pages")
+	return nil
 }
 
-// syncOp is one oplog op in wire form, with its cid/prev decoded.
+// syncOp is the subset of an oplog entry needed to rebuild a RepoCommit.
 type syncOp struct {
-	rev        string
-	collection string
-	rkey       string
-	cid        *string
-	prev       *string
+	rev, collection, rkey string
+	cid, prev             *string
 }
 
-// syncWireOps pulls every op of a repo in one page and converts them for
-// folding into a local RepoCommit.
-func syncWireOps(t *testing.T, c *spaceCredential, p *spacePDS, sp, repo string) []syncOp {
-	t.Helper()
-	page := mustOK(t, c.get(t, p, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": repo, "limit": "100"}))
-	var ops []syncOp
-	for _, m := range page.list("ops") {
-		op := syncOp{rev: m["rev"].(string), collection: m["collection"].(string), rkey: m["rkey"].(string)}
-		if v, ok := m["cid"].(string); ok {
-			op.cid = &v
-		}
-		if v, ok := m["prev"].(string); ok {
-			op.prev = &v
-		}
-		ops = append(ops, op)
-	}
-	return ops
-}
-
-// syncWireOp converts one wire op object into its decoded form.
 func syncWireOp(t *testing.T, m map[string]any) syncOp {
 	t.Helper()
-	op := syncOp{collection: m["collection"].(string), rkey: m["rkey"].(string)}
-	if op.rev, _ = m["rev"].(string); true {
-	}
-	if v, ok := m["cid"].(string); ok {
+	op := syncOp{rev: m["rev"].(string), collection: m["collection"].(string), rkey: m["rkey"].(string)}
+	if v, ok := m["cid"].(string); ok && v != "" {
 		op.cid = &v
 	}
-	if v, ok := m["prev"].(string); ok {
+	if v, ok := m["prev"].(string); ok && v != "" {
 		op.prev = &v
 	}
 	return op
 }
 
-// syncApplyOp folds one wire op into a local repo, as the reference's
-// local.applyOp does.
-func syncApplyOp(t *testing.T, rc *space.RepoCommit, op syncOp) {
+func syncApplyOp(t *testing.T, local *space.RepoCommit, op syncOp) {
 	t.Helper()
 	ro := space.RepoOp{Collection: op.collection, Rkey: op.rkey}
 	if op.cid != nil {
@@ -141,11 +112,16 @@ func syncApplyOp(t *testing.T, rc *space.RepoCommit, op syncOp) {
 		c := mustCid(t, *op.prev)
 		ro.Prev = &c
 	}
-	rc.ApplyOp(ro)
+	local.ApplyOp(ro)
 }
 
-// syncCommit converts a wire commit object into space.Commit, asserting
-// ver == 1.
+func syncApplyWireOps(t *testing.T, local *space.RepoCommit, ops []map[string]any) {
+	t.Helper()
+	for _, m := range ops {
+		syncApplyOp(t, local, syncWireOp(t, m))
+	}
+}
+
 func syncCommit(t *testing.T, m map[string]any) space.Commit {
 	t.Helper()
 	raw, err := json.Marshal(m)
@@ -156,70 +132,97 @@ func syncCommit(t *testing.T, m map[string]any) space.Commit {
 	if err := json.Unmarshal(raw, &c); err != nil {
 		t.Fatal(err)
 	}
-	if c.Ver != 1 {
-		t.Fatalf("commit ver %d, want 1", c.Ver)
+	if c.Ver != space.CommitVersion {
+		t.Fatalf("commit version %d, want %d", c.Ver, space.CommitVersion)
 	}
 	return c
 }
 
-// syncFetchRepoStar fetches a getRepo archive with the credential, as the
-// reference's cred.fetch does for a raw download.
-func syncFetchRepoStar(t *testing.T, c *spaceCredential, p *spacePDS, params map[string]string) (int, string, []byte) {
+func syncResponseCommit(t *testing.T, res xres) space.Commit {
 	t.Helper()
-	res := c.get(t, p, "com.atproto.space.getRepo", params)
-	return res.status, res.header.Get("Content-Type"), res.raw
+	m, ok := res.body["commit"].(map[string]any)
+	if !ok {
+		t.Fatalf("response has no commit: %s", res.raw)
+	}
+	return syncCommit(t, m)
 }
 
-// syncWriterDids reads the writer set as stored by the authority, as the
-// reference's sc.writerDids does through storage.
-func syncWriterDids(t *testing.T, n *syncNet, sp string) []string {
+func syncVerifyResponseCommit(t *testing.T, c *spaceCredential, res xres, sp, repo string) space.Commit {
 	t.Helper()
-	ref, err := space.ParseRef(sp)
+	commit := syncResponseCommit(t, res)
+	if err := c.verifyCommit(t, commit, sp, repo); err != nil {
+		t.Fatalf("commit MAC does not verify: %v", err)
+	}
+	return commit
+}
+
+func syncFetchRepo(t *testing.T, c *spaceCredential, p *spacePDS, sp, repo string) xres {
+	t.Helper()
+	return c.get(t, p, "com.atproto.space.getRepo", map[string]string{"space": sp, "repo": repo})
+}
+
+func syncVerifyRepo(t *testing.T, c *spaceCredential, archive []byte, sp, repo string) *space.VerifiedRepo {
+	t.Helper()
+	got, err := space.VerifyRepoStarFull(bytes.NewReader(archive), space.VerifyRepoParams{
+		Space: sp, Repo: repo, VerifyMacParams: c.macParams(t),
+	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("STAR repo does not verify: %v", err)
 	}
-	var rows []struct {
-		WriterDid string
-	}
-	if err := n.pds1.s.db.Raw(context.Background(),
-		"SELECT writer_did FROM space_writers WHERE did = ? AND space = ? ORDER BY space_rev ASC", nil, ref.Authority, sp).Scan(&rows).Error; err != nil {
-		t.Fatal(err)
-	}
-	var out []string
-	for _, r := range rows {
-		out = append(out, r.WriterDid)
-	}
-	return out
+	return got
 }
 
-// syncNotify sends a notifyWrite as signer's PDS would: service auth from the
-// signer's own repo key, addressed to the space host by default.
-func syncNotify(t *testing.T, n *syncNet, signer *actor, body map[string]any, aud string) xres {
+// syncCheckStarFraming checks the wire framing independently of the higher
+// level verifier: magic and metadata, one 0x01 before every key/value pair,
+// then exactly one 0x00 terminator and no trailing bytes.
+func syncCheckStarFraming(t *testing.T, raw []byte, pairs int) {
 	t.Helper()
-	if aud == "" {
-		aud = space.SpaceHostAud(n.alice.did)
+	if !bytes.HasPrefix(raw, space.StarMagic) {
+		t.Fatalf("STAR magic %x, want %x", raw, space.StarMagic)
 	}
-	tok, err := mintServiceAuth(signer.key, signer.did, aud, "com.atproto.space.notifyWrite", time.Minute)
-	if err != nil {
-		t.Fatal(err)
+	off := len(space.StarMagic)
+	frame := func() {
+		t.Helper()
+		if off >= len(raw) {
+			t.Fatal("truncated STAR frame length")
+		}
+		n, size := binary.Uvarint(raw[off:])
+		if size <= 0 {
+			t.Fatal("invalid STAR frame varint")
+		}
+		off += size
+		if n > uint64(len(raw)-off) {
+			t.Fatalf("STAR frame of %d bytes exceeds remaining archive", n)
+		}
+		off += int(n)
 	}
-	return n.pds1.post("com.atproto.space.notifyWrite", body, map[string]string{"Authorization": "Bearer " + tok})
+	frame() // canonical-DRISL metadata
+	for i := 0; i < pairs; i++ {
+		if off >= len(raw) {
+			t.Fatalf("pair %d: missing control byte", i)
+		}
+		if raw[off] != 0x01 {
+			t.Fatalf("pair %d control byte %x, want 01", i, raw[off])
+		}
+		off++
+		frame() // record path
+		frame() // record value
+	}
+	if off >= len(raw) {
+		t.Fatal("missing STAR end control byte")
+	}
+	if raw[off] != 0x00 {
+		t.Fatalf("end control byte %x, want 00", raw[off])
+	}
+	off++
+	if off != len(raw) {
+		t.Fatalf("%d trailing bytes after STAR terminator", len(raw)-off)
+	}
 }
 
-// syncNotifyBody builds a notifyWrite body. hash may be nil for a 32-byte
-// zero hash, as the reference's new Uint8Array(32).
-func syncNotifyBody(sp, repo, repoRev string, hash []byte) map[string]any {
-	if hash == nil {
-		hash = make([]byte, 32)
-	}
-	return map[string]any{"space": sp, "repo": repo, "repoRev": repoRev, "data": space.LexBytes(hash)}
-}
-
-// syncLtHashDigest is the hash a repo's set hash digests to, as listRepos
-// publishes it.
-func syncLtHashDigest(t *testing.T, setHash []byte) []byte {
+func syncLtHashDigest(t *testing.T, state []byte) []byte {
 	t.Helper()
-	h, err := space.LtHashFromState(setHash)
+	h, err := space.LtHashFromState(state)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,999 +230,159 @@ func syncLtHashDigest(t *testing.T, setHash []byte) []byte {
 	return d[:]
 }
 
-// syncRegisterNotify registers a mock service for a space with the authority.
-func syncRegisterNotify(t *testing.T, c *spaceCredential, p *spacePDS, sp, serviceRef string) {
-	t.Helper()
-	mustOK(t, c.post(t, p, "com.atproto.space.registerNotify", map[string]any{"space": sp, "service": serviceRef}))
-}
-
-// syncListRepos pages listRepos once with the given params.
-func syncListRepos(t *testing.T, c *spaceCredential, p *spacePDS, sp string, params map[string]string) xres {
-	t.Helper()
-	merged := map[string]string{"space": sp}
-	for k, v := range params {
-		merged[k] = v
-	}
-	return mustOK(t, c.get(t, p, "com.atproto.space.listRepos", merged))
-}
-
-func TestSpaceSyncOplogPaging(t *testing.T) {
-	r := newSyncNet(t)
-	alice, dan := r.alice, r.dan
-
-	t.Run("pages through a single rev without dropping ops", func(t *testing.T) {
-		// One batch is one rev, so a page boundary can land inside it. The
-		// cursor carries (rev, idx), so resuming picks up mid-rev rather than
-		// re-reading or skipping the rest of it.
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
-		var writes []any
-		for i := 0; i < 5; i++ {
-			writes = append(writes, map[string]any{
-				"$type":      "com.atproto.space.applyWrites#create",
-				"collection": testCollection,
-				"rkey":       fmt.Sprintf("atomic-%d", i),
-				"value":      testRecord(testCollection, fmt.Sprintf("atomic %d", i)),
-			})
-		}
-		mustOK(t, dan.post("com.atproto.space.applyWrites", map[string]any{"space": sp, "repo": dan.did, "writes": writes}))
-
-		cred := credentialFor(t, dan, r.pds1, sp)
-		pages, _, _ := syncListRepoOps(t, cred, r.pds1, sp, dan.did, map[string]string{"limit": "2"})
-		var rkeys []string
-		for _, pg := range pages {
-			rkeys = append(rkeys, pg...)
-		}
-		want := []string{"atomic-0", "atomic-1", "atomic-2", "atomic-3", "atomic-4"}
-		if strings.Join(rkeys, ",") != strings.Join(want, ",") {
-			t.Fatalf("got %v, want %v", rkeys, want)
-		}
-	})
-
-	t.Run("withholds the commit until the oplog is drained to head", func(t *testing.T) {
-		// The commit is the syncer's checkpoint, so handing it out mid-backfill
-		// would let it believe it had caught up.
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
-		for i := 0; i < 3; i++ {
-			mustOK(t, doWrite(dan, sp, writeOpts{rkey: fmt.Sprintf("paged-%d", i)}))
-		}
-
-		cred := credentialFor(t, dan, r.pds1, sp)
-		first := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": dan.did, "limit": "1"}))
-		if _, ok := first.body["commit"]; ok {
-			t.Fatalf("first page carried a commit: %s", first.raw)
-		}
-		cursor := first.str("cursor")
-		if cursor == "" {
-			t.Fatalf("first page had no cursor: %s", first.raw)
-		}
-
-		var seen []string
-		if ops := first.list("ops"); len(ops) > 0 {
-			seen = append(seen, ops[0]["rev"].(string))
-		}
-		var commit map[string]any
-		for i := 0; i < 5 && cursor != ""; i++ {
-			next := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": dan.did, "cursor": cursor, "limit": "1"}))
-			if ops := next.list("ops"); len(ops) > 0 {
-				seen = append(seen, ops[0]["rev"].(string))
-			}
-			cursor = next.str("cursor")
-			if cm, ok := next.body["commit"].(map[string]any); ok {
-				commit = cm
-			}
-		}
-		// Each page advances: paging on a cursor that was ignored would repeat
-		// a rev.
-		dedup := map[string]bool{}
-		for _, rev := range seen {
-			if dedup[rev] {
-				t.Fatalf("rev %s repeated across pages: %v", rev, seen)
-			}
-			dedup[rev] = true
-		}
-		if commit == nil {
-			t.Fatal("drained the oplog without ever seeing a commit")
-		}
-	})
-
-	t.Run("pages with since and cursor together", func(t *testing.T) {
-		// A syncer holds `since` at its own last-synced position and passes
-		// back each `cursor`, so the two have to compose rather than one
-		// overriding the other.
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
-		for i := 0; i < 4; i++ {
-			mustOK(t, doWrite(dan, sp, writeOpts{rkey: fmt.Sprintf("prec-%d", i)}))
-		}
-
-		cred := credentialFor(t, dan, r.pds1, sp)
-		all := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": dan.did, "limit": "100"}))
-		if len(all.list("ops")) != 4 {
-			t.Fatalf("%s", all.raw)
-		}
-
-		// Synced through op 0; page the rest one at a time, holding `since`
-		// steady.
-		since := all.list("ops")[0]["rev"].(string)
-		pages, _, _ := syncListRepoOps(t, cred, r.pds1, sp, dan.did, map[string]string{"since": since, "limit": "1"})
-		var rkeys []string
-		for _, pg := range pages {
-			rkeys = append(rkeys, pg...)
-		}
-		want := []string{"prec-1", "prec-2", "prec-3"}
-		if strings.Join(rkeys, ",") != strings.Join(want, ",") {
-			t.Fatalf("got %v, want %v", rkeys, want)
-		}
-	})
-
-	t.Run("inlines only a record current value", func(t *testing.T) {
-		// The oplog join matches on cid as well as uri, so an op a later one
-		// superseded inlines nothing rather than serving a stale value.
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
-		mustOK(t, doPut(dan, sp, writeOpts{rkey: "inlined", text: "first"}))
-		mustOK(t, doPut(dan, sp, writeOpts{rkey: "inlined", text: "second"}))
-
-		cred := credentialFor(t, dan, r.pds1, sp)
-		res := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": dan.did, "limit": "100"}))
-		ops := res.list("ops")
-		if len(ops) != 2 {
-			t.Fatalf("%s", res.raw)
-		}
-		if _, ok := ops[0]["value"]; ok {
-			t.Fatalf("superseded op inlined a value: %v", ops[0])
-		}
-		v, _ := ops[1]["value"].(map[string]any)
-		if v == nil || v["text"] != "second" {
-			t.Fatalf("current op did not inline its value: %v", ops[1])
-		}
-	})
-
-	t.Run("omits values entirely with excludeValues", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
-		mustOK(t, doWrite(dan, sp, writeOpts{rkey: "no-value", text: "body"}))
-
-		cred := credentialFor(t, dan, r.pds1, sp)
-		res := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": dan.did, "excludeValues": "true"}))
-		ops := res.list("ops")
-		if len(ops) != 1 {
-			t.Fatalf("%s", res.raw)
-		}
-		if _, ok := ops[0]["value"]; ok {
-			t.Fatalf("excludeValues still inlined a value: %v", ops[0])
-		}
-		// The op still names the record, so a syncer can fetch what it needs.
-		if ops[0]["rkey"] != "no-value" {
-			t.Fatalf("%v", ops[0])
-		}
-	})
-
-	t.Run("rejects a malformed cursor", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
-		mustOK(t, doWrite(dan, sp, writeOpts{rkey: "cursor-check"}))
-		cred := credentialFor(t, dan, r.pds1, sp)
-
-		expectErr(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": dan.did, "cursor": "not-a-cursor"}), 400, "MalformedCursor")
-	})
-}
-
-func TestSpaceSyncIncrementalCatchUp(t *testing.T) {
-	r := newSyncNet(t)
-	alice, dan, bob := r.alice, r.dan, r.bob
-
-	t.Run("replays the oplog to the repo commit", func(t *testing.T) {
-		// The whole point of the oplog: a syncer that applies every op ends up
-		// with a set hash matching the author's commit.
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
-		mustOK(t, doWrite(dan, sp, writeOpts{rkey: "one", text: "one"}))
-		mustOK(t, doPut(dan, sp, writeOpts{rkey: "two", text: "two"}))
-		mustOK(t, doPut(dan, sp, writeOpts{rkey: "two", text: "two revised"}))
-		mustOK(t, doDel(dan, sp, "", "one"))
-
-		cred := credentialFor(t, dan, r.pds1, sp)
-		res := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": dan.did, "limit": "100"}))
-		commit, ok := res.body["commit"].(map[string]any)
-		if !ok {
-			t.Fatalf("no commit: %s", res.raw)
-		}
-		if !cred.verifyCommit(t, syncCommit(t, commit), sp, dan.did) {
-			t.Fatal("commit does not verify against its MAC")
-		}
-
-		local := space.NewRepoCommit()
-		for _, m := range res.list("ops") {
-			op := syncOp{collection: m["collection"].(string), rkey: m["rkey"].(string)}
-			if v, ok := m["cid"].(string); ok {
-				op.cid = &v
-			}
-			if v, ok := m["prev"].(string); ok {
-				op.prev = &v
-			}
-			syncApplyOp(t, local, op)
-		}
-		if !local.Matches(syncCommit(t, commit)) {
-			t.Fatal("replayed oplog does not match the commit")
-		}
-	})
-
-	t.Run("detects divergence when an op is missed", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
-		mustOK(t, doWrite(dan, sp, writeOpts{rkey: "kept", text: "kept"}))
-		mustOK(t, doWrite(dan, sp, writeOpts{rkey: "missed", text: "missed"}))
-
-		cred := credentialFor(t, dan, r.pds1, sp)
-		res := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": dan.did, "limit": "100"}))
-		commit, ok := res.body["commit"].(map[string]any)
-		if !ok {
-			t.Fatalf("no commit: %s", res.raw)
-		}
-
-		// Apply all but the last: the mismatch is what tells a syncer to
-		// recover.
-		ops := res.list("ops")
-		local := space.NewRepoCommit()
-		for _, m := range ops[:len(ops)-1] {
-			op := syncOp{collection: m["collection"].(string), rkey: m["rkey"].(string)}
-			if v, ok := m["cid"].(string); ok {
-				op.cid = &v
-			}
-			if v, ok := m["prev"].(string); ok {
-				op.prev = &v
-			}
-			syncApplyOp(t, local, op)
-		}
-		if local.Matches(syncCommit(t, commit)) {
-			t.Fatal("missed op still matched the commit")
-		}
-	})
-
-	// Known gap in the reference too: nothing prunes the oplog on its own yet
-	// (no retention window, no compaction), so the recovery path below is
-	// tested by forcing a prune by hand.
-	t.Run("prunes the oplog on its own, past a retention window", func(t *testing.T) {
-		t.Skip("reference it.todo: nothing prunes the oplog on its own yet")
-	})
-
-	t.Run("recovers from a pruned oplog via listRecords", func(t *testing.T) {
-		// When the oplog no longer reaches back to a consumer's cursor, an
-		// incremental pull yields an incomplete diff — detectable as a setHash
-		// mismatch. Recovery is listRecords + getLatestCommit; no new endpoint.
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
-
-		for _, text := range []string{"pre 1", "pre 2", "pre 3"} {
-			mustOK(t, doWrite(bob, sp, writeOpts{text: text}))
-		}
-		consumerSince := repoState(t, bob, sp).Rev
-
-		mustOK(t, doWrite(bob, sp, writeOpts{text: "post 1"}))
-		mustOK(t, doWrite(bob, sp, writeOpts{text: "post 2"}))
-
-		// Simulate retention by dropping oplog rows at or below the cursor. No
-		// endpoint prunes, so this reaches into storage deliberately.
-		if err := bob.pds.s.db.Exec(context.Background(),
-			"DELETE FROM space_record_oplogs WHERE space = ? AND rev <= ?", nil, sp, *consumerSince).Error; err != nil {
-			t.Fatal(err)
-		}
-
-		cred := credentialFor(t, bob, r.pds1, sp)
-		incremental := mustOK(t, cred.get(t, r.pds2, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": bob.did, "since": *consumerSince, "limit": "100"}))
-		if len(incremental.list("ops")) != 2 {
-			t.Fatalf("%s", incremental.raw)
-		}
-
-		applied := space.NewRepoCommit()
-		for _, m := range incremental.list("ops") {
-			op := syncOp{collection: m["collection"].(string), rkey: m["rkey"].(string)}
-			if v, ok := m["cid"].(string); ok {
-				op.cid = &v
-			}
-			if v, ok := m["prev"].(string); ok {
-				op.prev = &v
-			}
-			syncApplyOp(t, applied, op)
-		}
-		commit, ok := incremental.body["commit"].(map[string]any)
-		if !ok {
-			t.Fatalf("no commit: %s", incremental.raw)
-		}
-		if applied.Matches(syncCommit(t, commit)) {
-			t.Fatal("incremental diff matched the commit despite the pruned oplog")
-		}
-
-		// Recovery: page listRecords across all collections, recompute, compare.
-		type rec struct{ collection, rkey, cidStr string }
-		var recovered []rec
-		cursor := ""
-		for page := 0; page < 10; page++ {
-			params := map[string]string{"space": sp, "repo": bob.did, "limit": "2"}
-			if cursor != "" {
-				params["cursor"] = cursor
-			}
-			res := mustOK(t, cred.get(t, r.pds2, "com.atproto.space.listRecords", params))
-			for _, m := range res.list("records") {
-				recovered = append(recovered, rec{m["collection"].(string), m["rkey"].(string), m["cid"].(string)})
-			}
-			cursor = res.str("cursor")
-			if cursor == "" {
-				break
-			}
-		}
-		if len(recovered) != 5 {
-			t.Fatalf("recovered %d records, want 5: %v", len(recovered), recovered)
-		}
-
-		refs := make([]space.RecordRef, 0, len(recovered))
-		for _, rc := range recovered {
-			refs = append(refs, space.RecordRef{Collection: rc.collection, Rkey: rc.rkey, Cid: mustCid(t, rc.cidStr)})
-		}
-		latest := mustOK(t, cred.get(t, r.pds2, "com.atproto.space.getLatestCommit", map[string]string{"space": sp, "repo": bob.did}))
-		latestCommit, ok := latest.body["commit"].(map[string]any)
-		if !ok {
-			t.Fatalf("no commit: %s", latest.raw)
-		}
-		if !cred.verifyCommit(t, syncCommit(t, latestCommit), sp, bob.did) {
-			t.Fatal("latest commit does not verify against its MAC")
-		}
-		if !space.RepoCommitFromRecords(refs).Matches(syncCommit(t, latestCommit)) {
-			t.Fatal("rebuild from listRecords does not match the latest commit")
-		}
-	})
-}
-
-func TestSpaceSyncGetRepo(t *testing.T) {
-	r := newSyncNet(t)
-	alice, bob, carol := r.alice, r.bob, r.carol
-
-	t.Run("serves a verifiable STAR archive for full-state recovery", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, carol}})
-		for _, collection := range []string{testCollection, testCollectionAlt} {
-			for i := 0; i < 2; i++ {
-				mustOK(t, doWrite(bob, sp, writeOpts{collection: collection, rkey: fmt.Sprintf("star-%d", i), text: fmt.Sprintf("star %d", i)}))
-			}
-		}
-
-		// Carol syncs bob's repo in full, as a syncing service would.
-		cred := credentialFor(t, carol, r.pds1, sp)
-		status, ct, star := syncFetchRepoStar(t, cred, r.pds2, map[string]string{"space": sp, "repo": bob.did})
-		if status != 200 {
-			t.Fatalf("status %d: %s", status, star)
-		}
-		if !strings.Contains(ct, "application/octet-stream") {
-			t.Fatalf("content-type %s", ct)
-		}
-
-		state := repoState(t, bob, sp)
-		secret, mac := cred.lastMacParams(t)
-		recovered, err := space.VerifyRepoStarFull(strings.NewReader(string(star)), space.VerifyRepoParams{Space: sp, Repo: bob.did, SharedSecret: secret, Mac: mac})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		if len(recovered.Records) != 4 {
-			t.Fatalf("recovered %d records, want 4", len(recovered.Records))
-		}
-		if recovered.Commit.Rev != *state.Rev {
-			t.Fatalf("commit rev %s, want %s", recovered.Commit.Rev, *state.Rev)
-		}
-		stored, err := space.RepoCommitFromState(state.SetHash)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var refs []space.RecordRef
-		for _, rec := range recovered.Records {
-			refs = append(refs, space.RecordRef{Collection: rec.Collection, Rkey: rec.Rkey, Cid: rec.Cid})
-		}
-		if !space.RepoCommitFromRecords(refs).SetHash.Equal(stored.SetHash) {
-			t.Fatal("recovered set hash diverged from the stored set hash")
-		}
-
-		var texts []string
-		for _, rec := range recovered.Records {
-			if rec.Collection == testCollection {
-				if text, _ := rec.Record["text"].(string); text != "" {
-					texts = append(texts, text)
-				}
-			}
-		}
-		sort.Strings(texts)
-		if strings.Join(texts, ",") != "star 0,star 1" {
-			t.Fatalf("texts %v", texts)
-		}
-	})
-
-	t.Run("refuses a repo without a credential for that space", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{skey: "star-auth", members: []*actor{bob}})
-		other := createSpace(t, alice, spaceOpts{skey: "star-auth-other", members: []*actor{carol}})
-
-		wrongCred := credentialFor(t, carol, r.pds1, other)
-		status, _, _ := syncFetchRepoStar(t, wrongCred, r.pds2, map[string]string{"space": sp, "repo": bob.did})
-		if status < 400 {
-			t.Fatalf("wrong-space credential accepted: %d", status)
-		}
-	})
-
-	t.Run("reports RepoNotFound for an unwritten repo", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{carol}})
-		cred := credentialFor(t, carol, r.pds1, sp)
-		expectErr(t, cred.get(t, r.pds1, "com.atproto.space.getLatestCommit", map[string]string{"space": sp, "repo": alice.did}), 400, "RepoNotFound")
-	})
-}
-
-func TestSpaceSyncWriterSet(t *testing.T) {
-	r := newSyncNet(t)
-	alice, dan, bob, _ := r.alice, r.dan, r.bob, r.carol
-
-	t.Run("records a co-located writer without resolving its public PDS endpoint", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{writePolicy: publicPolicy()})
-
-		// The reference mocks the DID resolver to fail; taking the directory
-		// down has the same effect: no DID document can be resolved at all
-		// during the write.
-		r.net.dir.down.Store(true)
-		mustOK(t, doWrite(dan, sp, writeOpts{text: "same PDS"}))
-		r.net.dir.down.Store(false)
-
-		if got := syncWriterDids(t, r, sp); len(got) != 1 || got[0] != dan.did {
-			t.Fatalf("writer set %v, want [%s]", got, dan.did)
-		}
-	})
-
-	t.Run("records a writer from notifyWrite, and it is not the member list", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
-
-		// Bob writes on pds2; his PDS delivers notifyWrite at the authority,
-		// which records him in the writer set.
-		mustOK(t, doWrite(bob, sp, writeOpts{text: "writer set entry"}))
-
-		cred := credentialFor(t, bob, r.pds1, sp)
-		var repos []map[string]any
-		if !awaitCond(t, func() bool {
-			res := syncListRepos(t, cred, r.pds1, sp, nil)
-			repos = res.list("repos")
-			for _, rp := range repos {
-				if rp["did"] == bob.did {
-					return true
-				}
-			}
-			return false
-		}) {
-			t.Fatal("bob never reached the writer set")
-		}
-		var dids []string
-		for _, rp := range repos {
-			dids = append(dids, rp["did"].(string))
-		}
-		if !containsStr(dids, bob.did) {
-			t.Fatalf("writer set %v misses bob", dids)
-		}
-		// Alice is a member who hasn't written, so she is absent: the writer
-		// set is the sync boundary, not the membership list.
-		if containsStr(dids, alice.did) {
-			t.Fatalf("writer set %v carries non-writer alice", dids)
-		}
-
-		// And it carries where each writer is up to, so a syncer knows what to
-		// pull.
-		var entry map[string]any
-		for _, rp := range repos {
-			if rp["did"] == bob.did {
-				entry = rp
-			}
-		}
-		state := repoState(t, bob, sp)
-		if entry["repoRev"] != *state.Rev {
-			t.Fatalf("repoRev %v, want %s", entry["repoRev"], *state.Rev)
-		}
-		want := syncLtHashDigest(t, state.SetHash)
-		got, err := lexBytesOf(entry["data"])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytesEqual(got, want) {
-			t.Fatalf("data %v, want %v", entry["data"], want)
-		}
-	})
-
-	t.Run("records a writer admitted by public write policy, who was never a member", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{writePolicy: publicPolicy()})
-		mustOK(t, doWrite(bob, sp, writeOpts{text: "from a non-member"}))
-
-		if !awaitCond(t, func() bool {
-			return containsStr(syncWriterDids(t, r, sp), bob.did)
-		}) {
-			t.Fatal("bob never reached the writer set")
-		}
-
-		cred := credentialFor(t, alice, r.pds1, sp)
-		res := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRepos", map[string]string{"space": sp}))
-		var dids []string
-		for _, rp := range res.list("repos") {
-			dids = append(dids, rp["did"].(string))
-		}
-		if len(dids) != 1 || dids[0] != bob.did {
-			t.Fatalf("published writer set %v, want [%s]", dids, bob.did)
-		}
-	})
-
-	t.Run("records a writer into an allowList space, whose PDS presents no attestation", func(t *testing.T) {
-		// notifyWrite comes from the writer's PDS, not an app, so there is no
-		// client attestation to present. Applying the app perimeter here would
-		// reject every write into an app-gated space.
-		sp := createSpace(t, alice, spaceOpts{
-			members:   []*actor{bob},
-			appAccess: allowList("https://app.example.com/client-metadata.json"),
-		})
-		mustOK(t, doWrite(bob, sp, writeOpts{text: "app-gated space"}))
-
-		if !awaitCond(t, func() bool {
-			return containsStr(syncWriterDids(t, r, sp), bob.did)
-		}) {
-			t.Fatal("bob never reached the writer set")
-		}
-		if !containsStr(syncWriterDids(t, r, sp), bob.did) {
-			t.Fatal("bob missing from the writer set")
-		}
-	})
-
-	// The reference's "migrates existing writer state" case is a SQLite
-	// migration test (packages/pds/src/actor-store/db migrations 003->latest
-	// on a hand-built space_writer table). Cocoon uses GORM AutoMigrate from
-	// struct models, so there is no equivalent migration to exercise: N/A.
-}
-
-func TestSpaceSyncCatchUp(t *testing.T) {
-	r := newSyncNet(t)
-	alice, bob, dan, carol := r.alice, r.bob, r.dan, r.carol
-
-	t.Run("recovers missed notifications with a space checkpoint", func(t *testing.T) {
-		syncer := r.net.newMockService("atproto_space_syncer", func(*http.Request, mockCall) (int, any) {
-			return 503, map[string]any{}
-		})
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, dan, carol}})
-		cred := credentialFor(t, carol, r.pds1, sp)
-		syncRegisterNotify(t, cred, r.pds1, sp, syncer.serviceRef())
-		empty := syncListRepos(t, cred, r.pds1, sp, nil)
-		if len(empty.list("repos")) != 0 {
-			t.Fatalf("%s", empty.raw)
-		}
-
-		mustOK(t, doWrite(bob, sp, writeOpts{}))
-		initial := syncListRepos(t, cred, r.pds1, sp, nil)
-		cursor := initial.str("cursor")
-		repos := initial.list("repos")
-		if cursor == "" || cursor != repos[len(repos)-1]["spaceRev"] {
-			t.Fatalf("cursor %q vs last spaceRev %v", cursor, repos[len(repos)-1])
-		}
-		mustOK(t, doWrite(dan, sp, writeOpts{}))
-		mustOK(t, doWrite(bob, sp, writeOpts{}))
-		r.net.waitSpaceJobs()
-
-		first := syncListRepos(t, cred, r.pds1, sp, map[string]string{"cursor": cursor, "limit": "1"})
-		if dids := listRepoDids(first); len(dids) != 1 || dids[0] != dan.did {
-			t.Fatalf("first page dids %v, want [%s]", dids, dan.did)
-		}
-
-		// A repo already returned can move forward while the caller paginates.
-		mustOK(t, doWrite(dan, sp, writeOpts{}))
-		second := syncListRepos(t, cred, r.pds1, sp, map[string]string{"cursor": first.str("cursor"), "limit": "1"})
-		if dids := listRepoDids(second); len(dids) != 1 || dids[0] != bob.did {
-			t.Fatalf("second page dids %v, want [%s]", dids, bob.did)
-		}
-		last := syncListRepos(t, cred, r.pds1, sp, map[string]string{"cursor": second.str("cursor"), "limit": "1"})
-		if dids := listRepoDids(last); len(dids) != 1 || dids[0] != dan.did {
-			t.Fatalf("last page dids %v, want [%s]", dids, dan.did)
-		}
-		nextCursor := last.str("cursor")
-		if nextCursor == "" || nextCursor != last.list("repos")[0]["spaceRev"] {
-			t.Fatalf("nextCursor %q vs %v", nextCursor, last.list("repos")[0])
-		}
-		caughtUp := syncListRepos(t, cred, r.pds1, sp, map[string]string{"cursor": nextCursor})
-		if len(caughtUp.list("repos")) != 0 {
-			t.Fatalf("not caught up: %s", caughtUp.raw)
-		}
-		if caughtUp.str("cursor") != "" {
-			t.Fatalf("caught-up page carried a cursor: %s", caughtUp.raw)
-		}
-	})
-
-	t.Run("resumes after an empty page using the last processed repo revision", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
-		mustOK(t, doWrite(bob, sp, writeOpts{}))
-		cred := credentialFor(t, alice, r.pds1, sp)
-		initial := syncListRepos(t, cred, r.pds1, sp, nil)
-		cursor := initial.str("cursor")
-		empty := syncListRepos(t, cred, r.pds1, sp, map[string]string{"cursor": cursor})
-		if len(empty.list("repos")) != 0 {
-			t.Fatalf("%s", empty.raw)
-		}
-		if empty.str("cursor") != "" {
-			t.Fatalf("empty page carried a cursor: %s", empty.raw)
-		}
-		if empty.str("cursor") != "" {
-			cursor = empty.str("cursor")
-		}
-
-		mustOK(t, doWrite(bob, sp, writeOpts{}))
-		catchUp := syncListRepos(t, cred, r.pds1, sp, map[string]string{"cursor": cursor})
-		if dids := listRepoDids(catchUp); len(dids) != 1 || dids[0] != bob.did {
-			t.Fatalf("catch-up dids %v, want [%s]", dids, bob.did)
-		}
-		if got := catchUp.list("repos")[0]["spaceRev"].(string); got <= cursor {
-			t.Fatalf("spaceRev %s did not advance past cursor %s", got, cursor)
-		}
-	})
-
-	t.Run("accepts arbitrary string listRepos cursors", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{})
-		mustOK(t, doWrite(alice, sp, writeOpts{}))
-		cred := credentialFor(t, alice, r.pds1, sp)
-		before := syncListRepos(t, cred, r.pds1, sp, map[string]string{"cursor": "0"})
-		if dids := listRepoDids(before); len(dids) != 1 || dids[0] != alice.did {
-			t.Fatalf("dids %v, want [%s]", dids, alice.did)
-		}
-		after := syncListRepos(t, cred, r.pds1, sp, map[string]string{"cursor": "not-a-tid"})
-		if len(after.list("repos")) != 0 {
-			t.Fatalf("%s", after.raw)
-		}
-		if after.str("cursor") != "" {
-			t.Fatalf("page carried a cursor: %s", after.raw)
-		}
-	})
-
-	t.Run("chains forwarded notifications across local and remote writers", func(t *testing.T) {
-		syncer := r.net.newMockService("atproto_space_syncer", nil)
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, dan, carol}})
-		cred := credentialFor(t, carol, r.pds1, sp)
-		syncRegisterNotify(t, cred, r.pds1, sp, syncer.serviceRef())
-		mustOK(t, doWrite(alice, sp, writeOpts{}))
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() { defer wg.Done(); mustOK(t, doWrite(bob, sp, writeOpts{})) }()
-		go func() { defer wg.Done(); mustOK(t, doWrite(dan, sp, writeOpts{})) }()
-		wg.Wait()
-		r.net.waitSpaceJobs()
-
-		calls := syncer.callsTo("com.atproto.space.notifyWrite")
-		if len(calls) != 3 {
-			t.Fatalf("got %d notifyWrite calls, want 3", len(calls))
-		}
-		type note struct{ spaceRev, prevSpaceRev string }
-		var notes []note
-		for _, c := range calls {
-			sr, _ := c.body["spaceRev"].(string)
-			psr, _ := c.body["prevSpaceRev"].(string)
-			notes = append(notes, note{sr, psr})
-		}
-		sort.Slice(notes, func(i, j int) bool { return notes[i].spaceRev < notes[j].spaceRev })
-		if notes[0].prevSpaceRev != "" {
-			t.Fatalf("first notification carried prevSpaceRev %q", notes[0].prevSpaceRev)
-		}
-		if notes[1].prevSpaceRev != notes[0].spaceRev || notes[2].prevSpaceRev != notes[1].spaceRev {
-			t.Fatalf("notifications do not chain: %+v", notes)
-		}
-		listed := syncListRepos(t, cred, r.pds1, sp, nil)
-		repos := listed.list("repos")
-		if got := repos[len(repos)-1]["spaceRev"].(string); got != notes[2].spaceRev {
-			t.Fatalf("last spaceRev %s, want %s", got, notes[2].spaceRev)
-		}
-		revs := map[string]bool{}
-		for _, rp := range repos {
-			revs[rp["spaceRev"].(string)] = true
-		}
-		if len(revs) != 3 {
-			t.Fatalf("distinct spaceRevs %d, want 3: %s", len(revs), listed.raw)
-		}
-	})
-
-	t.Run("resolves a space host through the authority's #atproto_pds entry", func(t *testing.T) {
-		host := r.net.newMockService("atproto_space_syncer", nil)
-		s := bob.pds.s
-		resolve := func(service string) (string, bool) {
-			return s.resolveServiceEndpoint(context.Background(), service)
-		}
-		if got, ok := resolve(host.serviceRef()); !ok || got != host.url {
-			t.Fatalf("service resolved %q ok=%v, want %s", got, ok, host.url)
-		}
-		if got, ok := resolve(space.SpaceHostAud(alice.did)); !ok || got != alice.pds.url {
-			t.Fatalf("space host resolved %q ok=%v, want %s", got, ok, alice.pds.url)
-		}
-		// A dedicated #atproto_space_host entry is ignored now.
-		doc := r.net.dir.get(alice.did)
-		withHost := *doc
-		withHost.Service = append(append([]identity.DidDocService{}, doc.Service...), identity.DidDocService{
-			Id: "#atproto_space_host", Type: "AtprotoSpaceHost", ServiceEndpoint: "https://elsewhere.example",
-		})
-		r.net.dir.put(&withHost)
-		defer r.net.dir.put(doc)
-		if got, ok := resolve(space.SpaceHostAud(alice.did)); !ok || got != alice.pds.url {
-			t.Fatalf("space host resolved %q ok=%v, want %s", got, ok, alice.pds.url)
-		}
-	})
-
-	t.Run("retries the latest state after delivery failure and worker restart", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
-		func() {
-			r.net.dir.down.Store(true)
-			defer r.net.dir.down.Store(false)
-			mustOK(t, doWrite(bob, sp, writeOpts{}))
-			mustOK(t, doWrite(bob, sp, writeOpts{}))
-		}()
-		if got := syncWriterDids(t, r, sp); len(got) != 0 {
-			t.Fatalf("writer set %v, want empty (directory was down)", got)
-		}
-		state := repoState(t, bob, sp)
-		// Silence the worker's logs for the hand-driven pass below (errors
-		// from delivery are expected while it is exercised).
-		bob.pds.s.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
-		// Stop the running worker, as the reference's destroy() does, so the
-		// hand-driven pass below is the only mover.
-		bob.pds.s.stopSpaceWorkers()
-
-		// A retry is queued holding the newest state. (The last write wins:
-		// the retry row keeps the repo's latest rev.)
-		var retries []models.SpaceNotificationRetry
-		if err := bob.pds.s.db.Raw(context.Background(), "SELECT * FROM space_notification_retries WHERE space = ?", nil, sp).Scan(&retries).Error; err != nil {
-			t.Fatal(err)
-		}
-		if len(retries) != 1 || retries[0].Repo != bob.did || retries[0].Space != sp || retries[0].RepoRev != *state.Rev {
-			t.Fatalf("retries %+v, want one for %s/%s at %s", retries, bob.did, sp, *state.Rev)
-		}
-
-		// Restart, as the reference's destroy + new SpaceNotifications does:
-		// stop the running worker first, then clear the timers and run one
-		// pass synchronously.
-		if err := bob.pds.s.db.Exec(context.Background(), "UPDATE space_notification_retries SET retry_at = 0 WHERE space = ?", nil, sp).Error; err != nil {
-			t.Fatal(err)
-		}
-		bob.pds.s.retrySpaceNotifications(context.Background())
-
-		// A fresh slice: Scan leaves a reused one as it was when no rows match.
-		var left []models.SpaceNotificationRetry
-		if err := bob.pds.s.db.Raw(context.Background(), "SELECT * FROM space_notification_retries WHERE space = ?", nil, sp).Scan(&left).Error; err != nil {
-			t.Fatal(err)
-		}
-		if len(left) != 0 {
-			t.Fatalf("retry rows survived the pass: %+v", left)
-		}
-		cred := credentialFor(t, bob, r.pds1, sp)
-		var listed xres
-		if !awaitCond(t, func() bool {
-			listed = syncListRepos(t, cred, r.pds1, sp, nil)
-			return len(listed.list("repos")) == 1
-		}) {
-			t.Fatalf("writer set never filled: %s", listed.raw)
-		}
-		repos := listed.list("repos")
-		if repos[0]["repoRev"] != *state.Rev {
-			t.Fatalf("repoRev %v, want %s", repos[0]["repoRev"], *state.Rev)
-		}
-		want := syncLtHashDigest(t, state.SetHash)
-		got, err := lexBytesOf(repos[0]["data"])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytesEqual(got, want) {
-			t.Fatalf("hash %v, want %v", repos[0]["data"], want)
-		}
-		// The retry is gone, so another pass is a no-op. The worker is stopped,
-		// so the pass runs without contending for it.
-		bob.pds.s.retrySpaceNotifications(context.Background())
-		again := syncListRepos(t, cred, r.pds1, sp, nil)
-		if len(again.list("repos")) != 1 || again.list("repos")[0]["repoRev"] != *state.Rev {
-			t.Fatalf("state changed after a redundant pass: %s", again.raw)
-		}
-	})
-}
-
-func TestSpaceSyncNotifyWrite(t *testing.T) {
-	r := newSyncNet(t)
-	alice, bob, carol := r.alice, r.bob, r.carol
-
-	t.Run("ignores duplicate and older revisions without forwarding them", func(t *testing.T) {
-		syncer := r.net.newMockService("atproto_space_syncer", nil)
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
-		cred := credentialFor(t, alice, r.pds1, sp)
-		syncRegisterNotify(t, cred, r.pds1, sp, syncer.serviceRef())
-		mustOK(t, doWrite(bob, sp, writeOpts{}))
-		older := repoState(t, bob, sp).Rev
-		mustOK(t, doWrite(bob, sp, writeOpts{}))
-		r.net.waitSpaceJobs()
-		before := syncListRepos(t, cred, r.pds1, sp, nil)
-		calls := len(syncer.callsTo("com.atproto.space.notifyWrite"))
-
-		for _, repoRev := range []*string{older, syncStrPtr(before.list("repos")[0]["repoRev"].(string))} {
-			mustOK(t, syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, *repoRev, nil), ""))
-		}
-		r.net.waitSpaceJobs()
-
-		after := syncListRepos(t, cred, r.pds1, sp, nil)
-		if !sameJSON(t, before.raw, after.raw) {
-			t.Fatalf("writer set moved: before %s after %s", before.raw, after.raw)
-		}
-		if got := len(syncer.callsTo("com.atproto.space.notifyWrite")); got != calls {
-			t.Fatalf("notifyWrite calls grew from %d to %d", calls, got)
-		}
-	})
-
-	t.Run("keeps the newest repo revision when notifications race", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
-		older := syntax.NewTIDNow(0)
-		newer := syntax.NewTIDFromInteger(older.Integer() + 1)
-		hash := space.NewLtHash().Digest()
-		h := hash[:]
-
-		start := make(chan struct{})
-		responses := make(chan xres, 2)
-		go func() {
-			<-start
-			responses <- syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, newer.String(), h), "")
-		}()
-		go func() {
-			<-start
-			responses <- syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, older.String(), nil), "")
-		}()
-		close(start)
-		first, second := <-responses, <-responses
-		mustOK(t, first)
-		mustOK(t, second)
-
-		cred := credentialFor(t, bob, r.pds1, sp)
-		listed := syncListRepos(t, cred, r.pds1, sp, nil)
-		repos := listed.list("repos")
-		if len(repos) != 1 {
-			t.Fatalf("%s", listed.raw)
-		}
-		if repos[0]["repoRev"] != newer.String() {
-			t.Fatalf("repoRev %v, want %s", repos[0]["repoRev"], newer)
-		}
-		got, err := lexBytesOf(repos[0]["data"])
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !bytesEqual(got, h) {
-			t.Fatalf("hash %v, want %v", repos[0]["data"], h)
-		}
-	})
-
-	t.Run("sequences concurrent notifications from different writers", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, carol}})
-		syncer := r.net.newMockService("atproto_space_syncer", nil)
-		cred := credentialFor(t, alice, r.pds1, sp)
-		syncRegisterNotify(t, cred, r.pds1, sp, syncer.serviceRef())
-		rev := syntax.NewTIDNow(0).String()
-		start := make(chan struct{})
-		responses := make(chan xres, 2)
-		for _, writer := range []*actor{bob, carol} {
-			go func() {
-				<-start
-				responses <- syncNotify(t, r, writer, syncNotifyBody(sp, writer.did, rev, nil), "")
-			}()
-		}
-		close(start)
-		first, second := <-responses, <-responses
-		mustOK(t, first)
-		mustOK(t, second)
-		r.net.waitSpaceJobs()
-		repos := syncListRepos(t, cred, r.pds1, sp, nil).list("repos")
-		if len(repos) != 2 || repos[0]["did"] == repos[1]["did"] || repos[0]["repoRev"] != rev || repos[1]["repoRev"] != rev {
-			t.Fatalf("expected both writers at %s: %+v", rev, repos)
-		}
-		calls := syncer.callsTo("com.atproto.space.notifyWrite")
-		if len(calls) != 2 {
-			t.Fatalf("got %d notifications, want 2", len(calls))
-		}
-		sort.Slice(calls, func(i, j int) bool { return calls[i].body["spaceRev"].(string) < calls[j].body["spaceRev"].(string) })
-		if prev, _ := calls[0].body["prevSpaceRev"].(string); prev != "" || calls[1].body["prevSpaceRev"] != calls[0].body["spaceRev"] {
-			t.Fatal("notifications did not form a single space revision chain")
-		}
-		for i := range repos {
-			if repos[i]["spaceRev"] != calls[i].body["spaceRev"] || repos[i]["did"] != calls[i].body["repo"] {
-				t.Fatal("listed writers differ from the published sequence")
-			}
-		}
-	})
-
-	t.Run("rejects future revisions while allowing a small clock skew", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
-		future := syntax.NewTIDFromTime(time.Now().Add(10*time.Minute), 0).String()
-		expectErr(t, syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, future, syncEmptyHash()), ""), 400, "FutureRev")
-		if got := syncWriterDids(t, r, sp); len(got) != 0 {
-			t.Fatalf("writer set %v after a rejected future rev", got)
-		}
-		skew := syntax.NewTIDFromTime(time.Now().Add(time.Minute), 0).String()
-		mustOK(t, syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, skew, syncEmptyHash()), ""))
-		if got := syncWriterDids(t, r, sp); len(got) != 1 || got[0] != bob.did {
-			t.Fatalf("writer set %v, want [%s]", got, bob.did)
-		}
-	})
-
-	t.Run("rejects one that spoofs the writer", func(t *testing.T) {
-		// Bob signs but claims carol wrote. The authority refuses on iss ≠ repo,
-		// which is what keeps a PDS from moving another account's sync position.
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, carol}})
-		res := syncNotify(t, r, bob, syncNotifyBody(sp, carol.did, syntax.NewTIDNow(0).String(), syncEmptyHash()), "")
-		if res.status != 403 || !strings.Contains(res.message(), "iss does not match claimed writer") {
-			t.Fatalf("want 403 iss mismatch, got %d %s", res.status, res.raw)
-		}
-	})
-
-	t.Run("rejects one addressed to another authority", func(t *testing.T) {
-		// Everything but the audience checks out: bob is a member signing for
-		// himself, off a real write. Only the aud stands between him and
-		// moving the writer set that listRepos publishes.
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
-		mustOK(t, doWrite(bob, sp, writeOpts{text: "misaddressed"}))
-		state := repoState(t, bob, sp)
-
-		res := syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, *state.Rev, syncLtHashDigest(t, state.SetHash)), carol.did)
-		if res.status != 403 || !strings.Contains(res.message(), "aud does not match the space authority") {
-			t.Fatalf("want 403 aud mismatch, got %d %s", res.status, res.raw)
-		}
-	})
-
-	t.Run("rejects one from a non-member", func(t *testing.T) {
-		// iss === repo, but the signer isn't admitted by the write policy.
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
-		res := syncNotify(t, r, carol, syncNotifyBody(sp, carol.did, syntax.NewTIDNow(0).String(), syncEmptyHash()), "")
-		if res.status != 403 || !strings.Contains(res.message(), "not authorized") {
-			t.Fatalf("want 403 not authorized, got %d %s", res.status, res.raw)
-		}
-	})
-
-	t.Run("rejects a member without write access", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{})
-		putMember(t, alice, sp, bob, true, false)
-
-		res := syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, syntax.NewTIDNow(0).String(), syncEmptyHash()), "")
-		if res.status != 403 || !strings.Contains(res.message(), "not authorized") {
-			t.Fatalf("want 403 not authorized, got %d %s", res.status, res.raw)
-		}
-	})
-
-	t.Run("rejects a repoRev that is not a TID before any auth check", func(t *testing.T) {
-		// `repoRev` is typed as a tid, so a malformed one is refused before the
-		// service auth is even checked. Worth pinning: an adversarial test that
-		// passes a junk rev would be rejected here and never exercise the
-		// check it means to.
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
-		res := syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, "not-a-tid", syncEmptyHash()), "")
-		if res.status != 400 || !strings.Contains(res.message(), "TID") {
-			t.Fatalf("want 400 invalid TID, got %d %s", res.status, res.raw)
-		}
-	})
-}
-
-// sync helpers ------------------------------------------------------------
-
-func containsStr(xs []string, s string) bool {
-	for _, x := range xs {
-		if x == s {
-			return true
-		}
-	}
-	return false
-}
-
-func listRepoDids(res xres) []string {
-	var out []string
-	for _, rp := range res.list("repos") {
-		if did, ok := rp["did"].(string); ok {
-			out = append(out, did)
-		}
-	}
-	return out
-}
-
-// syncStrPtr boxes a string.
-func syncStrPtr(s string) *string { return &s }
-
-// syncEmptyHash is a fresh empty-repo hash, the reference's new LtHash().digest().
 func syncEmptyHash() []byte {
 	d := space.NewLtHash().Digest()
 	return d[:]
 }
 
-// lexBytesOf decodes an atproto {"$bytes": base64} value from JSON-decoded
-// output, as space.LexBytes encodes it (raw, unpadded std base64).
-func lexBytesOf(v any) ([]byte, error) {
+// syncWriterDids reads the effective (not removed) writer set on the
+// authority. This is useful while polling for best-effort notifications.
+func syncWriterDids(t *testing.T, n *syncNet, sp string) []string {
+	t.Helper()
+	ref, err := space.ParseRef(sp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []struct{ WriterDid string }
+	if err := n.pds1.s.db.Raw(context.Background(),
+		"SELECT writer_did FROM space_writers WHERE did = ? AND space = ? AND removed_at IS NULL ORDER BY space_rev ASC",
+		nil, ref.Authority, sp).Scan(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.WriterDid)
+	}
+	return out
+}
+
+func syncListWriters(t *testing.T, c *spaceCredential, p *spacePDS, sp string, params map[string]string) xres {
+	t.Helper()
+	query := map[string]string{"space": sp}
+	for k, v := range params {
+		query[k] = v
+	}
+	return mustOK(t, c.get(t, p, "com.atproto.space.listWriters", query))
+}
+
+// syncAwaitListedWriter waits for a best-effort remote notifyRepoUpdate to
+// publish a writer, optionally requiring a revision after the saved cursor.
+func syncAwaitListedWriter(t *testing.T, c *spaceCredential, p *spacePDS, sp, repo, after string, params map[string]string) xres {
+	t.Helper()
+	var listed xres
+	ok := awaitCond(t, func() bool {
+		listed = syncListWriters(t, c, p, sp, params)
+		for _, entry := range listed.list("repos") {
+			if entry["$type"] == "com.atproto.space.defs#repoWrite" && entry["repo"] == repo {
+				rev, _ := entry["spaceRev"].(string)
+				return after == "" || rev > after
+			}
+		}
+		return false
+	})
+	if !ok {
+		t.Fatalf("writer %s did not advance past %q: %s", repo, after, listed.raw)
+	}
+	return listed
+}
+
+func syncListedWriterDids(res xres) []string {
+	var out []string
+	for _, entry := range res.list("repos") {
+		if repo, ok := entry["repo"].(string); ok {
+			out = append(out, repo)
+		}
+	}
+	return out
+}
+
+func syncActiveWriterDids(res xres) []string {
+	var out []string
+	for _, entry := range res.list("repos") {
+		if entry["$type"] == "com.atproto.space.defs#repoWrite" {
+			out = append(out, entry["repo"].(string))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func syncExpectActiveWriters(t *testing.T, c *spaceCredential, p *spacePDS, sp string, want ...string) {
+	t.Helper()
+	got := syncActiveWriterDids(syncListWriters(t, c, p, sp, nil))
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("active writers %v, want %v", got, want)
+	}
+}
+
+func syncWriterEntry(t *testing.T, res xres, repo, typ string) map[string]any {
+	t.Helper()
+	for _, entry := range res.list("repos") {
+		if entry["repo"] == repo && (typ == "" || entry["$type"] == typ) {
+			return entry
+		}
+	}
+	t.Fatalf("no %s entry for %s in %s", typ, repo, res.raw)
+	return nil
+}
+
+// syncMockSyncer confirms registrations like the reference MockService does,
+// and can reject only subsequent update delivery to exercise catch-up.
+func syncMockSyncer(n *syncNet, rejectUpdates bool) *mockService {
+	return n.net.newMockService("atproto_space_syncer", func(_ *http.Request, call mockCall) (int, any) {
+		if call.lxm == "com.atproto.space.confirmRegistration" {
+			return 200, map[string]any{"challenge": call.body["challenge"]}
+		}
+		if rejectUpdates && call.lxm == "com.atproto.space.notifySpaceUpdate" {
+			return 503, map[string]any{}
+		}
+		return 200, map[string]any{}
+	})
+}
+
+func syncSpaceUpdates(m *mockService) []map[string]any {
+	calls := m.callsTo("com.atproto.space.notifySpaceUpdate")
+	out := make([]map[string]any, 0, len(calls))
+	for _, call := range calls {
+		if update, ok := call.body["update"].(map[string]any); ok {
+			out = append(out, update)
+		}
+	}
+	return out
+}
+
+type syncNotifyOpts struct {
+	aud string
+	lxm string
+}
+
+// syncNotify sends notifyRepoUpdate as the signer's PDS would, with service
+// auth signed by its own repo key. Options deliberately corrupt aud or lxm in
+// the authentication tests.
+func syncNotify(t *testing.T, n *syncNet, signer *actor, body map[string]any, opts syncNotifyOpts) xres {
+	t.Helper()
+	if opts.aud == "" {
+		opts.aud = space.SpaceHostAud(n.alice.did)
+	}
+	if opts.lxm == "" {
+		opts.lxm = "com.atproto.space.notifyRepoUpdate"
+	}
+	tok, err := mintServiceAuth(signer.key, signer.did, opts.aud, opts.lxm, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n.pds1.post("com.atproto.space.notifyRepoUpdate", body, map[string]string{"Authorization": "Bearer " + tok})
+}
+
+func syncNotifyBody(sp, repo, repoRev string, hash []byte) map[string]any {
+	if hash == nil {
+		hash = make([]byte, 32)
+	}
+	return map[string]any{"space": sp, "repo": repo, "repoRev": repoRev, "data": space.LexBytes(hash)}
+}
+
+func syncLexBytes(v any) ([]byte, error) {
 	m, ok := v.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("not $bytes: %v", v)
@@ -1231,143 +394,537 @@ func lexBytesOf(v any) ([]byte, error) {
 	return base64.RawStdEncoding.DecodeString(strings.TrimRight(s, "="))
 }
 
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
+func syncContains(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
-// sameJSON compares two JSON bodies by their decoded form.
-func sameJSON(t *testing.T, a, b []byte) bool {
-	t.Helper()
-	var av, bv any
-	if err := json.Unmarshal(a, &av); err != nil {
-		t.Fatal(err)
+func syncAtdataFromJSON(v map[string]any) (map[string]any, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(b, &bv); err != nil {
-		t.Fatal(err)
-	}
-	ab, _ := json.Marshal(av)
-	bb, _ := json.Marshal(bv)
-	return string(ab) == string(bb)
+	return atdata.UnmarshalJSON(raw)
 }
 
-// Ported from describe('MACs') in the reference's sync.test.ts.
+func TestSpaceSyncOplogPaging(t *testing.T) {
+	r := newSyncNet(t)
+	alice, dan := r.alice, r.dan
+
+	t.Run("pages through a single rev without dropping ops", func(t *testing.T) {
+		// Reference: oplog paging / pages through a single rev without dropping ops.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
+		var writes []any
+		for i := 0; i < 5; i++ {
+			writes = append(writes, map[string]any{
+				"$type": "com.atproto.space.applyWrites#create", "collection": testCollection,
+				"rkey": fmt.Sprintf("atomic-%d", i), "value": testRecord(testCollection, fmt.Sprintf("atomic %d", i)),
+			})
+		}
+		mustOK(t, dan.post("com.atproto.space.applyWrites", map[string]any{"space": sp, "repo": dan.did, "writes": writes}))
+
+		cred := credentialFor(t, dan, r.pds1, sp)
+		pages := syncListRepoOpsPages(t, cred, r.pds1, sp, dan.did, map[string]string{"limit": "2"})
+		var got []string
+		for _, page := range pages {
+			ops := page.list("ops")
+			_, hasCursor := page.body["cursor"]
+			if hasCursor != (len(ops) == 2) {
+				t.Fatalf("%d-op page has incorrect cursor presence: %s", len(ops), page.raw)
+			}
+			for _, op := range ops {
+				got = append(got, op["rkey"].(string))
+			}
+		}
+		want := []string{"atomic-0", "atomic-1", "atomic-2", "atomic-3", "atomic-4"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("rkeys %v, want %v", got, want)
+		}
+	})
+
+	t.Run("carries the current commit on every page and cursors only full pages", func(t *testing.T) {
+		// Reference: oplog paging / carries the current commit on every page.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
+		for i := 0; i < 3; i++ {
+			mustOK(t, doWrite(dan, sp, writeOpts{rkey: fmt.Sprintf("paged-%d", i)}))
+		}
+		state := repoState(t, dan, sp)
+		cred := credentialFor(t, dan, r.pds1, sp)
+		local := space.NewRepoCommit()
+		var seen []string
+		var pages []xres
+		var commits []space.Commit
+		query := map[string]string{"space": sp, "repo": dan.did, "limit": "1"}
+		cursor := ""
+		for i := 0; i < 10; i++ {
+			if cursor == "" {
+				delete(query, "cursor")
+			} else {
+				query["cursor"] = cursor
+			}
+			page := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", query))
+			// Verify now: each request has a distinct encapsulation and MAC, and
+			// the credential helper retains only the latest request's state.
+			commits = append(commits, syncVerifyResponseCommit(t, cred, page, sp, dan.did))
+			pages = append(pages, page)
+			cursor = page.str("cursor")
+			if cursor == "" {
+				break
+			}
+		}
+		if len(pages) != 4 {
+			t.Fatalf("got %d pages, want three full pages plus the empty drain", len(pages))
+		}
+		for i, page := range pages {
+			commit := commits[i]
+			if commit.Rev != *state.Rev || !reflect.DeepEqual(commit, commits[len(commits)-1]) {
+				t.Fatalf("page %d commit differs from current head: got %+v, final %+v", i, commit, commits[len(commits)-1])
+			}
+			ops := page.list("ops")
+			syncApplyWireOps(t, local, ops)
+			_, hasCursor := page.body["cursor"]
+			if hasCursor != (len(ops) == 1) {
+				t.Fatalf("page %d has %d ops and cursor presence %v: %s", i, len(ops), hasCursor, page.raw)
+			}
+			if i == 0 && local.Matches(commit) {
+				t.Fatal("one op unexpectedly matched the three-op head")
+			}
+			if i == len(pages)-1 && !local.Matches(commit) {
+				t.Fatal("fully replayed oplog does not match the final page's commit")
+			}
+			for _, op := range ops {
+				seen = append(seen, op["rev"].(string))
+			}
+		}
+		if len(seen) != 3 || len(map[string]bool{seen[0]: true, seen[1]: true, seen[2]: true}) != 3 {
+			t.Fatalf("paging repeated or dropped revisions: %v", seen)
+		}
+	})
+
+	t.Run("pages with since and cursor together", func(t *testing.T) {
+		// Reference: oplog paging / pages with since and cursor together.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
+		for i := 0; i < 4; i++ {
+			mustOK(t, doWrite(dan, sp, writeOpts{rkey: fmt.Sprintf("prec-%d", i)}))
+		}
+		cred := credentialFor(t, dan, r.pds1, sp)
+		all := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": dan.did, "limit": "100"}))
+		if len(all.list("ops")) != 4 {
+			t.Fatalf("all ops: %s", all.raw)
+		}
+		since := all.list("ops")[0]["rev"].(string)
+		pages := syncListRepoOpsPages(t, cred, r.pds1, sp, dan.did, map[string]string{"since": since, "limit": "1"})
+		var got []string
+		for _, page := range pages {
+			for _, op := range page.list("ops") {
+				got = append(got, op["rkey"].(string))
+			}
+		}
+		want := []string{"prec-1", "prec-2", "prec-3"}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("rkeys %v, want %v", got, want)
+		}
+	})
+
+	t.Run("inlines only a record current value", func(t *testing.T) {
+		// Reference: oplog paging / inlines only a record current value.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
+		mustOK(t, doPut(dan, sp, writeOpts{rkey: "inlined", text: "first"}))
+		mustOK(t, doPut(dan, sp, writeOpts{rkey: "inlined", text: "second"}))
+		cred := credentialFor(t, dan, r.pds1, sp)
+		res := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": dan.did, "limit": "100"}))
+		ops := res.list("ops")
+		if len(ops) != 2 {
+			t.Fatalf("ops: %s", res.raw)
+		}
+		if _, ok := ops[0]["value"]; ok {
+			t.Fatalf("superseded op inlined a stale value: %v", ops[0])
+		}
+		value, _ := ops[1]["value"].(map[string]any)
+		if value["text"] != "second" {
+			t.Fatalf("current op did not inline its value: %v", ops[1])
+		}
+	})
+
+	t.Run("omits values entirely with excludeValues", func(t *testing.T) {
+		// Reference: oplog paging / omits values entirely with excludeValues.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
+		mustOK(t, doWrite(dan, sp, writeOpts{rkey: "no-value", text: "body"}))
+		cred := credentialFor(t, dan, r.pds1, sp)
+		res := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": dan.did, "excludeValues": "true"}))
+		ops := res.list("ops")
+		if len(ops) != 1 || ops[0]["rkey"] != "no-value" {
+			t.Fatalf("ops: %s", res.raw)
+		}
+		if _, ok := ops[0]["value"]; ok {
+			t.Fatalf("excludeValues returned a value: %v", ops[0])
+		}
+	})
+
+	t.Run("rejects a malformed cursor", func(t *testing.T) {
+		// Reference: oplog paging / rejects a malformed cursor.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
+		mustOK(t, doWrite(dan, sp, writeOpts{rkey: "cursor-check"}))
+		cred := credentialFor(t, dan, r.pds1, sp)
+		expectErr(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": dan.did, "cursor": "not-a-cursor"}), 400, "InvalidCursor")
+	})
+}
+
+func TestSpaceSyncIncrementalCatchUp(t *testing.T) {
+	r := newSyncNet(t)
+	alice, dan, bob := r.alice, r.dan, r.bob
+
+	t.Run("replays the oplog to the repo commit", func(t *testing.T) {
+		// Reference: incremental catch-up / replays the oplog to the repo commit.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
+		mustOK(t, doWrite(dan, sp, writeOpts{rkey: "one", text: "one"}))
+		mustOK(t, doPut(dan, sp, writeOpts{rkey: "two", text: "two"}))
+		mustOK(t, doPut(dan, sp, writeOpts{rkey: "two", text: "two revised"}))
+		mustOK(t, doDel(dan, sp, "", "one"))
+		cred := credentialFor(t, dan, r.pds1, sp)
+		res := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": dan.did, "limit": "100"}))
+		commit := syncVerifyResponseCommit(t, cred, res, sp, dan.did)
+		local := space.NewRepoCommit()
+		syncApplyWireOps(t, local, res.list("ops"))
+		if !local.Matches(commit) {
+			t.Fatal("replayed oplog does not match the authenticated commit")
+		}
+	})
+
+	t.Run("detects divergence when an op is missed", func(t *testing.T) {
+		// Reference: incremental catch-up / detects divergence when an op is missed.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
+		mustOK(t, doWrite(dan, sp, writeOpts{rkey: "kept", text: "kept"}))
+		mustOK(t, doWrite(dan, sp, writeOpts{rkey: "missed", text: "missed"}))
+		cred := credentialFor(t, dan, r.pds1, sp)
+		res := mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": dan.did, "limit": "100"}))
+		commit := syncResponseCommit(t, res)
+		ops := res.list("ops")
+		local := space.NewRepoCommit()
+		syncApplyWireOps(t, local, ops[:len(ops)-1])
+		if local.Matches(commit) {
+			t.Fatal("missing an op still matched the repo commit")
+		}
+	})
+
+	t.Run("prunes the oplog on its own past a retention window", func(t *testing.T) {
+		t.Skip("reference it.todo: neither implementation has an oplog retention job")
+	})
+
+	t.Run("recovers from a pruned oplog via listRecords", func(t *testing.T) {
+		// Reference: incremental catch-up / recovers from a pruned oplog via listRecords.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		for _, text := range []string{"pre 1", "pre 2", "pre 3"} {
+			mustOK(t, doWrite(bob, sp, writeOpts{text: text}))
+		}
+		consumerSince := *repoState(t, bob, sp).Rev
+		mustOK(t, doWrite(bob, sp, writeOpts{text: "post 1"}))
+		mustOK(t, doWrite(bob, sp, writeOpts{text: "post 2"}))
+
+		// Deliberately reach into storage to simulate the retention gap, as the
+		// reference does; no public endpoint prunes oplog rows.
+		if err := bob.pds.s.db.Exec(context.Background(), "DELETE FROM space_record_oplogs WHERE space = ? AND rev <= ?", nil, sp, consumerSince).Error; err != nil {
+			t.Fatal(err)
+		}
+		cred := credentialFor(t, bob, r.pds1, sp)
+		// Rebuild an empty consumer from whatever history remains. Keeping
+		// since=consumerSince here would filter out the pre writes even without
+		// pruning, so the mismatch would not exercise the retention gap.
+		incremental := mustOK(t, cred.get(t, r.pds2, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": bob.did, "limit": "100"}))
+		if len(incremental.list("ops")) != 2 {
+			t.Fatalf("incremental ops: %s", incremental.raw)
+		}
+		commit := syncResponseCommit(t, incremental)
+		applied := space.NewRepoCommit()
+		syncApplyWireOps(t, applied, incremental.list("ops"))
+		if applied.Matches(commit) {
+			t.Fatal("incomplete post-prune diff unexpectedly matched the commit")
+		}
+
+		var recovered []space.RecordRef
+		cursor := ""
+		for i := 0; i < 10; i++ {
+			params := map[string]string{"space": sp, "repo": bob.did, "limit": "2"}
+			if cursor != "" {
+				params["cursor"] = cursor
+			}
+			res := mustOK(t, cred.get(t, r.pds2, "com.atproto.space.listRecords", params))
+			for _, rec := range res.list("records") {
+				recovered = append(recovered, space.RecordRef{Collection: rec["collection"].(string), Rkey: rec["rkey"].(string), Cid: mustCid(t, rec["cid"].(string))})
+			}
+			cursor = res.str("cursor")
+			if cursor == "" {
+				break
+			}
+		}
+		if cursor != "" {
+			t.Fatal("listRecords did not drain within ten pages")
+		}
+		if len(recovered) != 5 {
+			t.Fatalf("recovered %d records, want five", len(recovered))
+		}
+		latest := mustOK(t, cred.get(t, r.pds2, "com.atproto.space.getLatestCommit", map[string]string{"space": sp, "repo": bob.did}))
+		latestCommit := syncVerifyResponseCommit(t, cred, latest, sp, bob.did)
+		if !space.RepoCommitFromRecords(recovered).Matches(latestCommit) {
+			t.Fatal("full-state listRecords rebuild does not match getLatestCommit")
+		}
+	})
+}
+
+func TestSpaceSyncGetRepo(t *testing.T) {
+	r := newSyncNet(t)
+	alice, bob, carol := r.alice, r.bob, r.carol
+
+	t.Run("serves a verifiable STAR archive for full-state recovery", func(t *testing.T) {
+		// Reference: getRepo / serves a verifiable STAR archive for full-state recovery.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, carol}})
+		for _, collection := range []string{testCollection, testCollectionAlt} {
+			for i := 0; i < 2; i++ {
+				mustOK(t, doWrite(bob, sp, writeOpts{collection: collection, rkey: fmt.Sprintf("star-%d", i), text: fmt.Sprintf("star %d", i)}))
+			}
+		}
+		cred := credentialFor(t, carol, r.pds1, sp)
+		res := mustOK(t, syncFetchRepo(t, cred, r.pds2, sp, bob.did))
+		if ct := res.header.Get("Content-Type"); !strings.Contains(ct, "application/vnd.dasl.star") {
+			t.Fatalf("Content-Type %q, want application/vnd.dasl.star", ct)
+		}
+		syncCheckStarFraming(t, res.raw, 4)
+		recovered := syncVerifyRepo(t, cred, res.raw, sp, bob.did)
+		state := repoState(t, bob, sp)
+		if len(recovered.Records) != 4 || recovered.Commit.Rev != *state.Rev {
+			t.Fatalf("recovered %d records at rev %s, want four at %s", len(recovered.Records), recovered.Commit.Rev, *state.Rev)
+		}
+		stored, err := space.RepoCommitFromState(state.SetHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var refs []space.RecordRef
+		var texts []string
+		for _, rec := range recovered.Records {
+			refs = append(refs, space.RecordRef{Collection: rec.Collection, Rkey: rec.Rkey, Cid: rec.Cid})
+			if rec.Collection == testCollection {
+				texts = append(texts, rec.Record["text"].(string))
+			}
+		}
+		sort.Strings(texts)
+		if !reflect.DeepEqual(texts, []string{"star 0", "star 1"}) {
+			t.Fatalf("recovered record texts %v", texts)
+		}
+		if !space.RepoCommitFromRecords(refs).SetHash.Equal(stored.SetHash) {
+			t.Fatal("recovered archive's set hash differs from stored state")
+		}
+	})
+
+	t.Run("recovers from a cleared repo", func(t *testing.T) {
+		// Reference: getRepo / recovers from a cleared repo.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, carol}})
+		mustOK(t, doWrite(bob, sp, writeOpts{rkey: "one", text: "one"}))
+		mustOK(t, doWrite(bob, sp, writeOpts{rkey: "two", text: "two"}))
+		cred := credentialFor(t, carol, r.pds1, sp)
+		synced := mustOK(t, cred.get(t, r.pds2, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": bob.did}))
+		syncedCommit := syncResponseCommit(t, synced)
+		local := space.NewRepoCommit()
+		syncApplyWireOps(t, local, synced.list("ops"))
+		if !local.Matches(syncedCommit) {
+			t.Fatal("initial oplog did not sync")
+		}
+
+		mustOK(t, clearRecords(bob, sp))
+		incremental := mustOK(t, cred.get(t, r.pds2, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": bob.did, "since": syncedCommit.Rev}))
+		if len(incremental.list("ops")) != 0 {
+			t.Fatalf("cleared oplog returned ops: %s", incremental.raw)
+		}
+		emptyCommit := syncVerifyResponseCommit(t, cred, incremental, sp, bob.did)
+		if local.Matches(emptyCommit) {
+			t.Fatal("old local state matches the cleared commit")
+		}
+		res := mustOK(t, syncFetchRepo(t, cred, r.pds2, sp, bob.did))
+		syncCheckStarFraming(t, res.raw, 0)
+		recovered := syncVerifyRepo(t, cred, res.raw, sp, bob.did)
+		if len(recovered.Records) != 0 || recovered.Commit.Rev != emptyCommit.Rev {
+			t.Fatalf("cleared recovery returned %d records at %s, want zero at %s", len(recovered.Records), recovered.Commit.Rev, emptyCommit.Rev)
+		}
+	})
+
+	t.Run("refuses a repo without a credential for that space", func(t *testing.T) {
+		// Reference: getRepo / refuses a repo without a credential for that space.
+		sp := createSpace(t, alice, spaceOpts{skey: "star-auth", members: []*actor{bob}})
+		mustOK(t, doWrite(bob, sp, writeOpts{rkey: "auth-check"}))
+		other := createSpace(t, alice, spaceOpts{skey: "star-auth-other", members: []*actor{carol}})
+		wrongCred := credentialFor(t, carol, r.pds1, other)
+		res := syncFetchRepo(t, wrongCred, r.pds2, sp, bob.did)
+		if res.status < 400 {
+			t.Fatalf("wrong-space credential was accepted: %d %s", res.status, res.raw)
+		}
+	})
+
+	t.Run("reports RepoNotFound for an unwritten repo", func(t *testing.T) {
+		// Reference: getRepo / reports RepoNotFound for an unwritten repo.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{carol}})
+		cred := credentialFor(t, carol, r.pds1, sp)
+		params := map[string]string{"space": sp, "repo": alice.did}
+		expectErr(t, cred.get(t, r.pds1, "com.atproto.space.getLatestCommit", params), 400, "RepoNotFound")
+		expectErr(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", params), 400, "RepoNotFound")
+		expectErr(t, syncFetchRepo(t, cred, r.pds1, sp, alice.did), 400, "RepoNotFound")
+	})
+}
+
 func TestSpaceSyncMacs(t *testing.T) {
 	r := newSyncNet(t)
 	alice, bob, carol := r.alice, r.bob, r.carol
-	latest := func(sp string, a *actor) map[string]string {
+	latestParams := func(sp string, a *actor) map[string]string {
 		return map[string]string{"space": sp, "repo": a.did}
 	}
 
 	t.Run("publishes a KEM key for each account", func(t *testing.T) {
+		// Reference: MACs / publishes a KEM key for each account.
 		repo, err := bob.pds.s.getRepoActorByDid(context.Background(), bob.did)
 		if err != nil {
 			t.Fatal(err)
 		}
 		kem, err := accountKemDIDKey(repo.Repo)
 		if err != nil || kem == "" {
-			t.Fatalf("kem key %q: %v", kem, err)
+			t.Fatalf("stored KEM key %q: %v", kem, err)
 		}
 		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
 		cred := credentialFor(t, bob, r.pds1, sp)
 		if got := cred.kemKey(t, bob.did); got != kem {
-			t.Fatalf("published %s, want %s", got, kem)
+			t.Fatalf("published KEM key %s, want %s", got, kem)
+		}
+		// newTestServer leaves network collaborators nil. Supply a real PLC
+		// client for this endpoint: CreateDidCredentials itself is local and
+		// only needs a rotation key, not network access.
+		plcClient, err := plc.NewClient(&plc.ClientArgs{H: r.net.http, Service: r.net.dir.srv.URL, RotationKey: bob.key.Bytes(), PdsHostname: bob.pds.s.config.Hostname})
+		if err != nil {
+			t.Fatal(err)
+		}
+		bob.pds.s.plcClient = plcClient
+		defer func() { bob.pds.s.plcClient = nil }()
+		recommended := mustOK(t, bob.get("com.atproto.identity.getRecommendedDidCredentials", nil))
+		methods, _ := recommended.body["verificationMethods"].(map[string]any)
+		if methods["atproto_kem"] != kem {
+			t.Fatalf("recommended atproto_kem %v, want %s", methods["atproto_kem"], kem)
 		}
 	})
 
 	t.Run("macs a record served to a syncer", func(t *testing.T) {
+		// Reference: MACs / macs a record served to a syncer.
 		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, carol}})
 		mustOK(t, doWrite(bob, sp, writeOpts{rkey: "maced"}))
-
 		cred := credentialFor(t, carol, r.pds1, sp)
 		res := mustOK(t, cred.get(t, r.pds2, "com.atproto.space.getRecord", map[string]string{"space": sp, "repo": bob.did, "collection": testCollection, "rkey": "maced"}))
-		if cred.lastMac.typ != space.RecordMacType {
-			t.Fatalf("mac type %s", cred.lastMac.typ)
+		if cred.lastMac.profile != space.RecordMacProfile {
+			t.Fatalf("request MAC profile %s, want %s", cred.lastMac.profile, space.RecordMacProfile)
 		}
-		secret, mac := cred.lastMacParams(t)
-		uri := sp + "/" + bob.did + "/" + testCollection + "/maced"
+		if res.header.Get(space.HeaderRecord) == "" || res.header.Get("Signature") == "" || res.header.Get("Signature-Input") == "" {
+			t.Fatalf("record response lacks MAC headers: %v", res.header)
+		}
 		value, _ := res.body["value"].(map[string]any)
-		rec, err := atdataFromJSON(value)
+		record, err := syncAtdataFromJSON(value)
 		if err != nil {
 			t.Fatal(err)
 		}
-		params := space.VerifyRecordParams{URI: uri, SharedSecret: secret, Mac: mac}
-		if !space.VerifyRecord(res.str("uri"), res.str("cid"), rec, params) {
-			t.Fatal("record does not verify against its MAC")
+		uri := sp + "/" + bob.did + "/" + testCollection + "/maced"
+		params := space.VerifyRecordParams{URI: uri, VerifyMacParams: cred.macParams(t)}
+		if err := space.VerifyRecord(res.str("uri"), res.str("cid"), record, params); err != nil {
+			t.Fatalf("record MAC does not verify: %v", err)
 		}
-		// The MAC is bound to this one record.
-		params.URI = uri + "x"
-		if space.VerifyRecord(res.str("uri"), res.str("cid"), rec, params) {
-			t.Fatal("record verified as another")
+		params.URI += "x"
+		if err := space.VerifyRecord(res.str("uri"), res.str("cid"), record, params); err == nil {
+			t.Fatal("record verified under another URI")
 		}
 	})
 
-	t.Run("omits the MAC from an oplog page without a commit", func(t *testing.T) {
+	t.Run("macs every oplog page", func(t *testing.T) {
+		// Reference: MACs / macs every oplog page.
 		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
 		mustOK(t, doWrite(bob, sp, writeOpts{rkey: "page-0"}))
 		mustOK(t, doWrite(bob, sp, writeOpts{rkey: "page-1"}))
-
 		cred := credentialFor(t, bob, r.pds1, sp)
-		page := mustOK(t, cred.get(t, r.pds2, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": bob.did, "limit": "1"}))
-		if page.body["commit"] != nil {
-			t.Fatalf("commit on a partial page: %s", page.raw)
+		first := mustOK(t, cred.get(t, r.pds2, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": bob.did, "limit": "1"}))
+		if first.str("cursor") == "" {
+			t.Fatalf("full first page has no cursor: %s", first.raw)
 		}
-		if len(cred.lastMac.header) != 0 {
-			t.Fatalf("mac on a page without a commit: %v", cred.lastMac.header)
-		}
+		syncVerifyResponseCommit(t, cred, first, sp, bob.did)
+		second := mustOK(t, cred.get(t, r.pds2, "com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": bob.did, "limit": "1", "cursor": first.str("cursor")}))
+		syncVerifyResponseCommit(t, cred, second, sp, bob.did)
 	})
 
-	t.Run("requires a MAC request with a space credential", func(t *testing.T) {
+	t.Run("requires a well formed MAC request with a space credential", func(t *testing.T) {
+		// Reference: MACs / requires a MAC request with a space credential; also
+		// pins the November Accept-Signature parser cases from space/mac.test.ts.
 		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
 		mustOK(t, doWrite(bob, sp, writeOpts{}))
 		cred := credentialFor(t, bob, r.pds1, sp)
-		sig := cred.headers(t, bob.did)
-		with := func(want string) map[string]string {
-			h := map[string]string{}
-			for k, v := range sig {
-				h[k] = v
-			}
-			if want != "" {
-				h[space.HeaderWantMac] = want
-			}
-			return h
-		}
-		for _, nsid := range []string{"com.atproto.space.getLatestCommit", "com.atproto.space.getRepo", "com.atproto.space.listRepoOps"} {
-			expectErr(t, r.pds2.get(nsid, latest(sp, bob), with("")), 400, "BadSpaceMac")
-		}
-		expectErr(t, r.pds2.get("com.atproto.space.getRecord", map[string]string{"space": sp, "repo": bob.did, "collection": testCollection, "rkey": "x"}, with("")), 400, "BadSpaceMac")
-
+		sigHeaders := cred.headers(t, bob.did)
 		enc, err := space.Encapsulate(cred.kemKey(t, bob.did))
 		if err != nil {
 			t.Fatal(err)
 		}
-		// A record MAC type on a method that returns a commit.
-		expectErr(t, r.pds2.get("com.atproto.space.getLatestCommit", latest(sp, bob), with(space.FormatWantMacHeader(space.RecordMacType, enc.KeyShare))), 400, "BadSpaceMac")
-		expectErr(t, r.pds2.get("com.atproto.space.getLatestCommit", latest(sp, bob), with(space.FormatWantMacHeader(space.CommitMacType, "did:key:nope"))), 400, "BadSpaceMac")
-		expectErr(t, r.pds2.get("com.atproto.space.getLatestCommit", latest(sp, bob), with(`type="atproto-space-repo", ver=2, key_share="`+enc.KeyShare+`"`)), 400, "BadSpaceMac")
-		// Even a page that turns out to have no commit.
-		expectErr(t, r.pds2.get("com.atproto.space.listRepoOps", map[string]string{"space": sp, "repo": bob.did, "limit": "1", "since": nextTID("")}, with("")), 400, "BadSpaceMac")
-		// Reads that carry no MAC don't need one.
-		mustOK(t, r.pds2.get("com.atproto.space.listRecords", latest(sp, bob), with("")))
+		valid := space.FormatMacRequest(space.CommitMacProfile, enc.KeyShare)
+		second := strings.Replace(valid, "mac=", "other=", 1)
+		cases := []struct {
+			name, header string
+		}{
+			{"missing", ""},
+			{"malformed", "???"},
+			{"two requests with the same tag", valid + ", " + second},
+			{"created parameter", valid + ";created=1700000000"},
+			{"expires parameter", valid + ";expires=1700000000"},
+			{"nonce parameter", valid + `;nonce="abc"`},
+			{"wrong covered header", strings.Replace(valid, space.CommitMacProfile+`";sf`, space.RecordMacProfile+`";sf`, 1)},
+			{"wrong profile", space.FormatMacRequest(space.RecordMacProfile, enc.KeyShare)},
+			{"wrong algorithm", valid + `;alg="ecdsa-p256-sha256"`},
+			{"missing key", `mac=("atproto-space-commit";sf);tag="atproto-space-commit"`},
+			{"bad key", space.FormatMacRequest(space.CommitMacProfile, "did:key:nope")},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				h := map[string]string{}
+				for k, v := range sigHeaders {
+					h[k] = v
+				}
+				if tc.header != "" {
+					h[space.HeaderAcceptSignature] = tc.header
+				}
+				for _, method := range []string{"com.atproto.space.getLatestCommit", "com.atproto.space.getRepo", "com.atproto.space.listRepoOps"} {
+					expectErr(t, r.pds2.get(method, latestParams(sp, bob), h), 400, "InvalidSpaceMac")
+				}
+			})
+		}
+
+		// The record profile is likewise mandatory before looking up a record.
+		h := map[string]string{}
+		for k, v := range sigHeaders {
+			h[k] = v
+		}
+		expectErr(t, r.pds2.get("com.atproto.space.getRecord", map[string]string{"space": sp, "repo": bob.did, "collection": testCollection, "rkey": "missing"}, h), 400, "InvalidSpaceMac")
+		// Reads which do not return authenticated values need no MAC request.
+		mustOK(t, r.pds2.get("com.atproto.space.listRecords", latestParams(sp, bob), h))
 	})
 
 	t.Run("macs an account its own data only when asked", func(t *testing.T) {
+		// Reference: MACs / macs an account its own data only when asked.
 		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
 		mustOK(t, doWrite(bob, sp, writeOpts{}))
-
-		unasked := mustOK(t, bob.get("com.atproto.space.getLatestCommit", latest(sp, bob)))
-		if unasked.header.Get(space.HeaderMac) != "" {
-			t.Fatal("mac without a request")
+		params := latestParams(sp, bob)
+		unasked := mustOK(t, bob.get("com.atproto.space.getLatestCommit", params))
+		if unasked.header.Get("Signature") != "" || unasked.header.Get(space.HeaderCommit) != "" {
+			t.Fatal("unrequested response carried a MAC")
 		}
-		if !strings.Contains(strings.ToLower(strings.Join(unasked.header.Values("Vary"), ",")), "atproto-space-want-mac") {
-			t.Fatalf("vary %v", unasked.header.Values("Vary"))
+		if !strings.Contains(strings.ToLower(strings.Join(unasked.header.Values("Vary"), ",")), "accept-signature") {
+			t.Fatalf("Vary does not include Accept-Signature: %v", unasked.header.Values("Vary"))
+		}
+
+		other := bob.auth()
+		other[space.HeaderAcceptSignature] = `other=("@status");tag="other"`
+		otherRes := mustOK(t, r.pds2.get("com.atproto.space.getLatestCommit", params, other))
+		if otherRes.header.Get("Signature") != "" {
+			t.Fatal("request for another signature tag was not ignored")
 		}
 
 		cred := credentialFor(t, bob, r.pds1, sp)
@@ -1375,65 +932,664 @@ func TestSpaceSyncMacs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		h := bob.auth()
-		h[space.HeaderWantMac] = space.FormatWantMacHeader(space.CommitMacType, enc.KeyShare)
-		asked := mustOK(t, r.pds2.get("com.atproto.space.getLatestCommit", latest(sp, bob), h))
-		if !strings.Contains(strings.ToLower(strings.Join(asked.header.Values("Access-Control-Expose-Headers"), ",")), "atproto-space-mac") {
-			t.Fatalf("expose headers %v", asked.header.Values("Access-Control-Expose-Headers"))
+		askedHeaders := bob.auth()
+		askedHeaders[space.HeaderAcceptSignature] = space.FormatMacRequest(space.CommitMacProfile, enc.KeyShare)
+		asked := mustOK(t, r.pds2.get("com.atproto.space.getLatestCommit", params, askedHeaders))
+		exposed := strings.ToLower(strings.Join(asked.header.Values("Access-Control-Expose-Headers"), ","))
+		for _, name := range []string{"atproto-space-commit", "signature-input", "signature"} {
+			if !strings.Contains(exposed, name) {
+				t.Fatalf("Access-Control-Expose-Headers %q lacks %s", exposed, name)
+			}
 		}
-		mac, err := space.ParseMacHeader(asked.header.Values(space.HeaderMac), space.CommitMacType)
-		if err != nil {
-			t.Fatal(err)
+		commit := syncResponseCommit(t, asked)
+		macParams := space.VerifyMacParams{Encapsulation: *enc, Headers: asked.header}
+		if err := space.VerifyCommit(commit, space.VerifyCommitParams{Space: sp, Repo: bob.did, VerifyMacParams: macParams}); err != nil {
+			t.Fatalf("self-read commit MAC does not verify: %v", err)
 		}
-		commit := syncCommit(t, asked.body["commit"].(map[string]any))
-		if !space.VerifyCommit(commit, space.VerifyCommitParams{Space: sp, Repo: bob.did, SharedSecret: enc.SharedSecret, Mac: mac}) {
-			t.Fatal("commit does not verify against its MAC")
-		}
-	})
-
-	t.Run("retries with a fresh key share after the KEM key rotates", func(t *testing.T) {
-		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, carol}})
-		mustOK(t, doWrite(bob, sp, writeOpts{}))
-		cred := credentialFor(t, carol, r.pds1, sp)
-		stale := cred.kemKey(t, bob.did)
-
-		// The repo host rotates bob's KEM key; the syncer still holds the old
-		// one, so its MAC fails until it refreshes the DID document.
-		newKem, err := atcrypto.GeneratePrivateKeyP256()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := bob.pds.s.db.Exec(context.Background(), "UPDATE repos SET kem_key = ? WHERE did = ?", nil, newKem.Bytes(), bob.did).Error; err != nil {
-			t.Fatal(err)
-		}
-		enc, err := space.Encapsulate(stale)
-		if err != nil {
-			t.Fatal(err)
-		}
-		h := cred.headers(t, bob.did)
-		h[space.HeaderWantMac] = space.FormatWantMacHeader(space.CommitMacType, enc.KeyShare)
-		res := mustOK(t, r.pds2.get("com.atproto.space.getLatestCommit", latest(sp, bob), h))
-		mac, err := space.ParseMacHeader(res.header.Values(space.HeaderMac), space.CommitMacType)
-		if err != nil {
-			t.Fatal(err)
-		}
-		commit := syncCommit(t, res.body["commit"].(map[string]any))
-		if space.VerifyCommit(commit, space.VerifyCommitParams{Space: sp, Repo: bob.did, SharedSecret: enc.SharedSecret, Mac: mac}) {
-			t.Fatal("verified under the stale KEM key")
+		if asked.header.Get(space.HeaderCommit) == "" {
+			t.Fatal("response lacks the covered Atproto-Space-Commit header")
 		}
 
-		r.net.dir.put(withKemKey(didDocFor(bob.did, bob.key, bob.pds.url), newKem))
-		res = mustOK(t, cred.get(t, r.pds2, "com.atproto.space.getLatestCommit", latest(sp, bob)))
-		if !cred.verifyCommit(t, syncCommit(t, res.body["commit"].(map[string]any)), sp, bob.did) {
-			t.Fatal("does not verify after refreshing the KEM key")
+		// The covered header is bound to the returned body, and verification
+		// uses the 32-byte secret exported by HPKE, not merely the key share.
+		changed := commit
+		changed.Rev = nextTID(commit.Rev)
+		if err := space.VerifyCommit(changed, space.VerifyCommitParams{Space: sp, Repo: bob.did, VerifyMacParams: macParams}); err == nil {
+			t.Fatal("a body that differs from the covered commit header verified")
+		}
+		wrongSecret := macParams
+		wrongSecret.SharedSecret = bytes.Clone(enc.SharedSecret)
+		wrongSecret.SharedSecret[0] ^= 0xff
+		if err := space.VerifyCommit(commit, space.VerifyCommitParams{Space: sp, Repo: bob.did, VerifyMacParams: wrongSecret}); err == nil {
+			t.Fatal("commit verified under the wrong HPKE secret")
+		}
+		serverSecret, err := space.Decapsulate(bob.kem, enc.KeyShare)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(serverSecret, enc.SharedSecret) {
+			t.Fatal("HPKE decapsulation exported a different secret")
+		}
+
+		// Labels have no protocol meaning: the server responds under the
+		// requested label, and the verifier selects the response by tag.
+		labelRequest := strings.Replace(space.FormatMacRequest(space.CommitMacProfile, enc.KeyShare), "mac=", "proof=", 1)
+		cred.getWith(t, r.pds2, "com.atproto.space.getLatestCommit", params, map[string]string{space.HeaderAcceptSignature: labelRequest})
+		labeled := cred.lastMac.headers
+		if !strings.HasPrefix(labeled.Get("Signature-Input"), "proof=") || !strings.HasPrefix(labeled.Get("Signature"), "proof=") {
+			t.Fatalf("response did not use requested label: %v", labeled)
+		}
+		labelParams := space.VerifyMacParams{Encapsulation: *enc, Headers: labeled}
+		if err := space.VerifyCommit(commit, space.VerifyCommitParams{Space: sp, Repo: bob.did, VerifyMacParams: labelParams}); err != nil {
+			t.Fatalf("MAC under another label was not found by tag: %v", err)
 		}
 	})
 }
 
-func atdataFromJSON(v map[string]any) (map[string]any, error) {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return nil, err
+func TestSpaceSyncWriterSet(t *testing.T) {
+	r := newSyncNet(t)
+	alice, dan, bob, carol := r.alice, r.dan, r.bob, r.carol
+
+	t.Run("records a co-located writer without resolving its public PDS endpoint", func(t *testing.T) {
+		// Reference: writer set / records a co-located writer without resolving its public PDS endpoint.
+		sp := createSpace(t, alice, spaceOpts{policy: memberPolicy(map[string]any{"publicWrite": true})})
+		r.net.dir.down.Store(true)
+		res := doWrite(dan, sp, writeOpts{text: "same PDS"})
+		r.net.dir.down.Store(false)
+		mustOK(t, res)
+		if got := syncWriterDids(t, r, sp); !reflect.DeepEqual(got, []string{dan.did}) {
+			t.Fatalf("writer set %v, want only dan", got)
+		}
+	})
+
+	t.Run("records a writer from notifyRepoUpdate and it is not the member list", func(t *testing.T) {
+		// Reference: writer set / records a writer from notifyRepoUpdate, and it is not the member list.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		mustOK(t, doWrite(bob, sp, writeOpts{text: "writer set entry"}))
+		cred := credentialFor(t, bob, r.pds1, sp)
+		var listed xres
+		if !awaitCond(t, func() bool {
+			listed = syncListWriters(t, cred, r.pds1, sp, nil)
+			return syncContains(syncActiveWriterDids(listed), bob.did)
+		}) {
+			t.Fatal("bob never reached the writer set")
+		}
+		dids := syncListedWriterDids(listed)
+		if !syncContains(dids, bob.did) || syncContains(dids, alice.did) {
+			t.Fatalf("writer set %v is not the actual writer boundary", dids)
+		}
+		entry := syncWriterEntry(t, listed, bob.did, "com.atproto.space.defs#repoWrite")
+		state := repoState(t, bob, sp)
+		spaceRev, ok := entry["spaceRev"].(string)
+		if entry["repoRev"] != *state.Rev || !ok || spaceRev == "" {
+			t.Fatalf("writer entry lacks repo/space positions: %v", entry)
+		}
+		gotHash, err := syncLexBytes(entry["data"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(gotHash, syncLtHashDigest(t, state.SetHash)) {
+			t.Fatal("writer entry carries the wrong commit data")
+		}
+	})
+
+	t.Run("records a writer admitted by public write access who was never a member", func(t *testing.T) {
+		// Reference: writer set / records a writer admitted by public write access, who was never a member.
+		sp := createSpace(t, alice, spaceOpts{policy: memberPolicy(map[string]any{"publicWrite": true})})
+		mustOK(t, doWrite(bob, sp, writeOpts{text: "from a non-member"}))
+		if !awaitCond(t, func() bool { return syncContains(syncWriterDids(t, r, sp), bob.did) }) {
+			t.Fatal("public writer never reached the writer set")
+		}
+		cred := credentialFor(t, alice, r.pds1, sp)
+		syncExpectActiveWriters(t, cred, r.pds1, sp, bob.did)
+	})
+
+	t.Run("records a writer into an app gated space whose PDS presents no attestation", func(t *testing.T) {
+		// Reference: writer set / records a writer into an app-gated space, whose PDS presents no attestation.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}, policy: memberPolicy(map[string]any{"allowedApps": []string{"https://app.example.com/client-metadata.json"}})})
+		mustOK(t, doWrite(bob, sp, writeOpts{text: "app-gated space"}))
+		if !awaitCond(t, func() bool { return syncContains(syncWriterDids(t, r, sp), bob.did) }) {
+			t.Fatal("app-gated writer never reached the writer set")
+		}
+	})
+
+	for _, removal := range []string{"removeWriter", "removeMembers"} {
+		t.Run("announces "+removal+" and tracks the writer again after a write", func(t *testing.T) {
+			// Reference: writer set / drops a writer on removeWriter, and tracks
+			// it again once it writes. The removeMembers variant exercises the
+			// same removal announcement through membership changes.
+			syncer := syncMockSyncer(r, false)
+			sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, carol}, policy: memberPolicy(map[string]any{"publicWrite": true})})
+			cred, _ := credentialWithNotify(t, carol, r.pds1, sp, &notifyReg{endpoint: syncer.url, token: "writer-removal-" + removal})
+			mustOK(t, doWrite(bob, sp, writeOpts{text: "before removal"}))
+			r.net.waitSpaceJobs()
+			before := syncListWriters(t, cred, r.pds1, sp, nil)
+			beforeCursor := before.str("cursor")
+			if beforeCursor == "" {
+				t.Fatalf("initial writer page has no cursor: %s", before.raw)
+			}
+
+			if removal == "removeWriter" {
+				mustOK(t, removeWriter(alice, sp, bob))
+			} else {
+				removeMember(t, alice, sp, bob)
+			}
+			r.net.waitSpaceJobs()
+			syncExpectActiveWriters(t, cred, r.pds1, sp)
+			caughtUp := syncListWriters(t, cred, r.pds1, sp, map[string]string{"cursor": beforeCursor})
+			removed := syncWriterEntry(t, caughtUp, bob.did, "com.atproto.space.defs#repoRemoved")
+			if len(caughtUp.list("repos")) != 1 || removed["spaceRev"] != caughtUp.str("cursor") || caughtUp.str("cursor") <= beforeCursor {
+				t.Fatalf("bad removal checkpoint: before %s after %s", before.raw, caughtUp.raw)
+			}
+			if !awaitCond(t, func() bool {
+				for _, update := range syncSpaceUpdates(syncer) {
+					if update["$type"] == "com.atproto.space.defs#repoRemoved" && update["repo"] == bob.did {
+						return update["spaceRev"] == removed["spaceRev"]
+					}
+				}
+				return false
+			}) {
+				t.Fatalf("%s removal was not announced: %+v", removal, syncSpaceUpdates(syncer))
+			}
+
+			// publicWrite still authorizes bob even after removeMembers.
+			mustOK(t, doWrite(bob, sp, writeOpts{text: "after removal"}))
+			r.net.waitSpaceJobs()
+			syncExpectActiveWriters(t, cred, r.pds1, sp, bob.did)
+			readded := syncListWriters(t, cred, r.pds1, sp, map[string]string{"cursor": caughtUp.str("cursor")})
+			write := syncWriterEntry(t, readded, bob.did, "com.atproto.space.defs#repoWrite")
+			if write["spaceRev"].(string) <= removed["spaceRev"].(string) {
+				t.Fatalf("re-added writer did not advance the space revision: %s", readded.raw)
+			}
+		})
 	}
-	return atdata.UnmarshalJSON(raw)
+
+	t.Run("ignores removeWriter for a repo outside the writer set", func(t *testing.T) {
+		// Reference: writer set / ignores removeWriter for a repo outside the writer set.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, dan}})
+		mustOK(t, doWrite(dan, sp, writeOpts{}))
+		mustOK(t, removeWriter(alice, sp, dan))
+		cred := credentialFor(t, alice, r.pds1, sp)
+		before := syncListWriters(t, cred, r.pds1, sp, nil)
+		mustOK(t, removeWriter(alice, sp, bob))
+		mustOK(t, removeWriter(alice, sp, dan))
+		after := syncListWriters(t, cred, r.pds1, sp, nil)
+		if !reflect.DeepEqual(before.body, after.body) {
+			t.Fatalf("no-op removals advanced writer state: before %s after %s", before.raw, after.raw)
+		}
+	})
+
+	t.Run("refuses removeWriter from anyone but the authority", func(t *testing.T) {
+		// Reference: writer set / refuses removeWriter from anyone but the authority.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
+		mustOK(t, doWrite(dan, sp, writeOpts{text: "still tracked"}))
+		expectErr(t, removeWriter(dan, sp, dan), 400, "NotAuthorized")
+		if got := syncWriterDids(t, r, sp); !reflect.DeepEqual(got, []string{dan.did}) {
+			t.Fatalf("writer set changed after unauthorized removal: %v", got)
+		}
+	})
+
+	t.Run("keeps a cleared repo in the writer set at the empty digest", func(t *testing.T) {
+		// Reference: writer set / keeps a cleared repo in the writer set, at the empty digest.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan}})
+		mustOK(t, doWrite(dan, sp, writeOpts{text: "to be cleared"}))
+		mustOK(t, clearRecords(dan, sp))
+		cred := credentialFor(t, alice, r.pds1, sp)
+		listed := syncListWriters(t, cred, r.pds1, sp, nil)
+		entry := syncWriterEntry(t, listed, dan.did, "com.atproto.space.defs#repoWrite")
+		state := repoState(t, dan, sp)
+		if entry["repoRev"] != *state.Rev {
+			t.Fatalf("cleared writer repoRev %v, want %s", entry["repoRev"], *state.Rev)
+		}
+		got, err := syncLexBytes(entry["data"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, syncEmptyHash()) {
+			t.Fatal("cleared repo is not listed at the empty LtHash digest")
+		}
+	})
+}
+
+func TestSpaceSyncCatchUp(t *testing.T) {
+	r := newSyncNet(t)
+	alice, bob, dan, carol := r.alice, r.bob, r.dan, r.carol
+
+	t.Run("recovers missed notifications with a space checkpoint", func(t *testing.T) {
+		// Reference: space catch-up / recovers missed notifications with a space checkpoint.
+		syncer := syncMockSyncer(r, true)
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, dan, carol}})
+		cred, _ := credentialWithNotify(t, carol, r.pds1, sp, &notifyReg{endpoint: syncer.url, token: "missed-notifications"})
+		empty := syncListWriters(t, cred, r.pds1, sp, nil)
+		if len(empty.list("repos")) != 0 {
+			t.Fatalf("initial writers: %s", empty.raw)
+		}
+		mustOK(t, doWrite(bob, sp, writeOpts{}))
+		initial := syncAwaitListedWriter(t, cred, r.pds1, sp, bob.did, "", nil)
+		cursor := initial.str("cursor")
+		if cursor == "" || cursor != initial.list("repos")[len(initial.list("repos"))-1]["spaceRev"] {
+			t.Fatalf("initial checkpoint: %s", initial.raw)
+		}
+		mustOK(t, doWrite(dan, sp, writeOpts{}))
+		mustOK(t, doWrite(bob, sp, writeOpts{}))
+		r.net.waitSpaceJobs()
+		if got := len(syncSpaceUpdates(syncer)); got != 3 {
+			t.Fatalf("rejecting syncer received %d update attempts, want all three writes", got)
+		}
+
+		first := syncListWriters(t, cred, r.pds1, sp, map[string]string{"cursor": cursor, "limit": "1"})
+		if got := syncListedWriterDids(first); !reflect.DeepEqual(got, []string{dan.did}) {
+			t.Fatalf("first catch-up page %v, want dan", got)
+		}
+		// A repo already seen can advance while a syncer is still paging.
+		mustOK(t, doWrite(dan, sp, writeOpts{}))
+		second := syncListWriters(t, cred, r.pds1, sp, map[string]string{"cursor": first.str("cursor"), "limit": "1"})
+		if got := syncListedWriterDids(second); !reflect.DeepEqual(got, []string{bob.did}) {
+			t.Fatalf("second catch-up page %v, want bob", got)
+		}
+		last := syncListWriters(t, cred, r.pds1, sp, map[string]string{"cursor": second.str("cursor"), "limit": "1"})
+		if got := syncListedWriterDids(last); !reflect.DeepEqual(got, []string{dan.did}) {
+			t.Fatalf("last catch-up page %v, want dan", got)
+		}
+		nextCursor := last.str("cursor")
+		if nextCursor == "" || nextCursor != last.list("repos")[0]["spaceRev"] {
+			t.Fatalf("last checkpoint: %s", last.raw)
+		}
+		caughtUp := syncListWriters(t, cred, r.pds1, sp, map[string]string{"cursor": nextCursor})
+		if len(caughtUp.list("repos")) != 0 || caughtUp.str("cursor") != "" {
+			t.Fatalf("not caught up: %s", caughtUp.raw)
+		}
+	})
+
+	t.Run("returns the current space revision on authorization and listSpaces", func(t *testing.T) {
+		// Reference: space catch-up / returns the space's current revision on
+		// each authorization. Also checks the same checkpoint in listSpaces.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan, carol}})
+		authorize := func() xres {
+			key := newP256Key(t)
+			return mustOK(t, exchange(t, r.pds1, sp, delegationTokenFor(t, carol, sp), key, ""))
+		}
+		if got := authorize().str("spaceRev"); got != "" {
+			t.Fatalf("new space has spaceRev %q", got)
+		}
+		mustOK(t, doWrite(dan, sp, writeOpts{}))
+		cred := credentialFor(t, carol, r.pds1, sp)
+		written := syncListWriters(t, cred, r.pds1, sp, nil)
+		writerEntry := syncWriterEntry(t, written, dan.did, "com.atproto.space.defs#repoWrite")
+		if written.str("cursor") == "" || writerEntry["spaceRev"] != written.str("cursor") {
+			t.Fatalf("write did not publish a nonempty checkpoint: %s", written.raw)
+		}
+		if got := authorize().str("spaceRev"); got != written.str("cursor") {
+			t.Fatalf("authorization spaceRev %q, want %q", got, written.str("cursor"))
+		}
+		mustOK(t, removeWriter(alice, sp, dan))
+		removed := syncListWriters(t, cred, r.pds1, sp, nil)
+		if removed.str("cursor") <= written.str("cursor") {
+			t.Fatalf("removal cursor did not advance: %s -> %s", written.str("cursor"), removed.str("cursor"))
+		}
+		if got := authorize().str("spaceRev"); got != removed.str("cursor") {
+			t.Fatalf("authorization after removal spaceRev %q, want %q", got, removed.str("cursor"))
+		}
+		spaces := mustOK(t, alice.get("com.atproto.space.listSpaces", map[string]string{"spaceDid": alice.did}))
+		var entry map[string]any
+		for _, candidate := range spaces.list("spaces") {
+			if candidate["space"] == sp {
+				entry = candidate
+			}
+		}
+		if entry == nil || entry["spaceRev"] != removed.str("cursor") {
+			t.Fatalf("listSpaces did not publish the checkpoint %q: %s", removed.str("cursor"), spaces.raw)
+		}
+	})
+
+	t.Run("resumes after an empty page using the last processed repo revision", func(t *testing.T) {
+		// Reference: space catch-up / resumes after an empty page using the last processed repo revision.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		mustOK(t, doWrite(bob, sp, writeOpts{}))
+		cred := credentialFor(t, alice, r.pds1, sp)
+		initial := syncAwaitListedWriter(t, cred, r.pds1, sp, bob.did, "", nil)
+		cursor := initial.str("cursor")
+		empty := syncListWriters(t, cred, r.pds1, sp, map[string]string{"cursor": cursor})
+		if len(empty.list("repos")) != 0 || empty.str("cursor") != "" {
+			t.Fatalf("expected an empty page without a new cursor: %s", empty.raw)
+		}
+		if empty.str("cursor") != "" {
+			cursor = empty.str("cursor")
+		}
+		mustOK(t, doWrite(bob, sp, writeOpts{}))
+		catchUp := syncAwaitListedWriter(t, cred, r.pds1, sp, bob.did, cursor, map[string]string{"cursor": cursor})
+		if got := syncListedWriterDids(catchUp); !reflect.DeepEqual(got, []string{bob.did}) {
+			t.Fatalf("catch-up writers %v, want bob", got)
+		}
+		if catchUp.list("repos")[0]["spaceRev"].(string) <= cursor {
+			t.Fatal("catch-up did not advance the saved revision")
+		}
+	})
+
+	t.Run("accepts arbitrary string listWriters cursors", func(t *testing.T) {
+		// Reference: space catch-up / accepts arbitrary string listWriters cursors.
+		sp := createSpace(t, alice, spaceOpts{})
+		mustOK(t, doWrite(alice, sp, writeOpts{}))
+		cred := credentialFor(t, alice, r.pds1, sp)
+		before := syncListWriters(t, cred, r.pds1, sp, map[string]string{"cursor": "0"})
+		if got := syncListedWriterDids(before); !reflect.DeepEqual(got, []string{alice.did}) {
+			t.Fatalf("writers after cursor 0: %v", got)
+		}
+		after := syncListWriters(t, cred, r.pds1, sp, map[string]string{"cursor": "not-a-tid"})
+		if len(after.list("repos")) != 0 || after.str("cursor") != "" {
+			t.Fatalf("future arbitrary cursor returned entries: %s", after.raw)
+		}
+	})
+
+	t.Run("chains forwarded notifications across local and remote writers", func(t *testing.T) {
+		// Reference: space catch-up / chains forwarded notifications across local and remote writers.
+		syncer := syncMockSyncer(r, false)
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, dan, carol}})
+		cred, _ := credentialWithNotify(t, carol, r.pds1, sp, &notifyReg{endpoint: syncer.url, token: "sequence-chain"})
+		mustOK(t, doWrite(alice, sp, writeOpts{}))
+		start := make(chan struct{})
+		responses := make(chan xres, 2)
+		var wg sync.WaitGroup
+		for _, writer := range []*actor{bob, dan} {
+			wg.Add(1)
+			go func(a *actor) {
+				defer wg.Done()
+				<-start
+				responses <- doWrite(a, sp, writeOpts{})
+			}(writer)
+		}
+		close(start)
+		wg.Wait()
+		close(responses)
+		for res := range responses {
+			mustOK(t, res)
+		}
+		r.net.waitSpaceJobs()
+		updates := syncSpaceUpdates(syncer)
+		if len(updates) != 3 {
+			t.Fatalf("got %d forwarded updates, want three: %+v", len(updates), updates)
+		}
+		sort.Slice(updates, func(i, j int) bool { return updates[i]["spaceRev"].(string) < updates[j]["spaceRev"].(string) })
+		for i, update := range updates {
+			if update["$type"] != "com.atproto.space.defs#repoWrite" {
+				t.Fatalf("unexpected update type: %v", update)
+			}
+			if i == 0 {
+				if _, ok := update["prevSpaceRev"]; ok {
+					t.Fatalf("first update has prevSpaceRev: %v", update)
+				}
+			} else if update["prevSpaceRev"] != updates[i-1]["spaceRev"] {
+				t.Fatalf("space revision chain broken at %d: %+v", i, updates)
+			}
+		}
+		listed := syncListWriters(t, cred, r.pds1, sp, nil)
+		repos := listed.list("repos")
+		if len(repos) != 3 || repos[len(repos)-1]["spaceRev"] != updates[2]["spaceRev"] {
+			t.Fatalf("listed sequence differs from notifications: %s / %+v", listed.raw, updates)
+		}
+		seen := map[string]bool{}
+		for _, entry := range repos {
+			seen[entry["spaceRev"].(string)] = true
+		}
+		if len(seen) != 3 {
+			t.Fatalf("writer entries reused space revisions: %s", listed.raw)
+		}
+	})
+
+	t.Run("forwards a removal from the writer set in the space sequence", func(t *testing.T) {
+		// Reference: space catch-up / forwards a removal from the writer set, in the space sequence.
+		syncer := syncMockSyncer(r, false)
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{dan, carol}})
+		cred, _ := credentialWithNotify(t, carol, r.pds1, sp, &notifyReg{endpoint: syncer.url, token: "removal-chain"})
+		mustOK(t, doWrite(dan, sp, writeOpts{}))
+		mustOK(t, removeWriter(alice, sp, dan))
+		r.net.waitSpaceJobs()
+		var write, removal map[string]any
+		for _, update := range syncSpaceUpdates(syncer) {
+			switch update["$type"] {
+			case "com.atproto.space.defs#repoWrite":
+				write = update
+			case "com.atproto.space.defs#repoRemoved":
+				removal = update
+			}
+		}
+		listed := syncListWriters(t, cred, r.pds1, sp, nil)
+		if write == nil || removal == nil || removal["repo"] != dan.did || removal["spaceRev"] != listed.str("cursor") || removal["prevSpaceRev"] != write["spaceRev"] {
+			t.Fatalf("removal does not continue the notification chain: write=%v removal=%v listed=%s", write, removal, listed.raw)
+		}
+	})
+
+	t.Run("resolves a space host through the authority atproto pds entry", func(t *testing.T) {
+		// Reference: space catch-up / resolves a space host through the authority's #atproto_pds entry.
+		host := syncMockSyncer(r, false)
+		resolve := func(service string) (string, bool) {
+			return bob.pds.s.resolveServiceEndpoint(context.Background(), service)
+		}
+		if got, ok := resolve(host.serviceRef()); !ok || got != host.url {
+			t.Fatalf("service endpoint %q ok=%v, want %s", got, ok, host.url)
+		}
+		if got, ok := resolve(space.SpaceHostAud(alice.did)); !ok || got != alice.pds.url {
+			t.Fatalf("space host %q ok=%v, want %s", got, ok, alice.pds.url)
+		}
+		// A legacy dedicated #atproto_space_host service is not preferred.
+		doc := r.net.dir.get(alice.did)
+		withHost := *doc
+		withHost.Service = append(append([]identity.DidDocService{}, doc.Service...), identity.DidDocService{Id: "#atproto_space_host", Type: "AtprotoSpaceHost", ServiceEndpoint: "https://elsewhere.example"})
+		r.net.dir.put(&withHost)
+		defer r.net.dir.put(doc)
+		if got, ok := resolve(space.SpaceHostAud(alice.did)); !ok || got != alice.pds.url {
+			t.Fatalf("legacy service displaced #atproto_pds: %q ok=%v", got, ok)
+		}
+	})
+
+	t.Run("retries the latest state after delivery failure and worker restart", func(t *testing.T) {
+		// Reference: space catch-up / retries the latest state after delivery
+		// failure and worker restart. Cocoon's worker is stopped and its due
+		// retry pass is driven synchronously instead of restarting a TS class.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		func() {
+			r.net.dir.down.Store(true)
+			defer r.net.dir.down.Store(false)
+			mustOK(t, doWrite(bob, sp, writeOpts{}))
+			mustOK(t, doWrite(bob, sp, writeOpts{}))
+		}()
+		if got := syncWriterDids(t, r, sp); len(got) != 0 {
+			t.Fatalf("writer reached authority while its directory was down: %v", got)
+		}
+		state := repoState(t, bob, sp)
+		oldLogger := bob.pds.s.logger
+		bob.pds.s.logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+		defer func() { bob.pds.s.logger = oldLogger }()
+		bob.pds.s.stopSpaceWorkers()
+		var retries []models.SpaceNotificationRetry
+		if err := bob.pds.s.db.Raw(context.Background(), "SELECT * FROM space_notification_retries WHERE space = ?", nil, sp).Scan(&retries).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(retries) != 1 || retries[0].Repo != bob.did || retries[0].RepoRev != *state.Rev {
+			t.Fatalf("retry does not hold the newest state at %s: %+v", *state.Rev, retries)
+		}
+		if err := bob.pds.s.db.Exec(context.Background(), "UPDATE space_notification_retries SET retry_at = 0 WHERE space = ?", nil, sp).Error; err != nil {
+			t.Fatal(err)
+		}
+		bob.pds.s.retrySpaceNotifications(context.Background())
+		var left []models.SpaceNotificationRetry
+		if err := bob.pds.s.db.Raw(context.Background(), "SELECT * FROM space_notification_retries WHERE space = ?", nil, sp).Scan(&left).Error; err != nil {
+			t.Fatal(err)
+		}
+		if len(left) != 0 {
+			t.Fatalf("delivered retry remained queued: %+v", left)
+		}
+		cred := credentialFor(t, bob, r.pds1, sp)
+		listed := syncListWriters(t, cred, r.pds1, sp, nil)
+		entry := syncWriterEntry(t, listed, bob.did, "com.atproto.space.defs#repoWrite")
+		if len(listed.list("repos")) != 1 || entry["repoRev"] != *state.Rev {
+			t.Fatalf("retry published the wrong state: %s", listed.raw)
+		}
+		got, err := syncLexBytes(entry["data"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, syncLtHashDigest(t, state.SetHash)) {
+			t.Fatal("retry published the wrong commit data")
+		}
+		bob.pds.s.retrySpaceNotifications(context.Background())
+		again := syncListWriters(t, cred, r.pds1, sp, nil)
+		if !reflect.DeepEqual(listed.body, again.body) {
+			t.Fatalf("redundant retry changed writer state: before %s after %s", listed.raw, again.raw)
+		}
+	})
+}
+
+func TestSpaceSyncNotifyRepoUpdate(t *testing.T) {
+	r := newSyncNet(t)
+	alice, bob, carol := r.alice, r.bob, r.carol
+
+	t.Run("ignores duplicate and older revisions without forwarding them", func(t *testing.T) {
+		// Reference: notifyRepoUpdate / ignores duplicate and older revisions without forwarding them.
+		syncer := syncMockSyncer(r, false)
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		cred, _ := credentialWithNotify(t, alice, r.pds1, sp, &notifyReg{endpoint: syncer.url, token: "duplicates"})
+		mustOK(t, doWrite(bob, sp, writeOpts{}))
+		older := *repoState(t, bob, sp).Rev
+		mustOK(t, doWrite(bob, sp, writeOpts{}))
+		current := *repoState(t, bob, sp).Rev
+		r.net.waitSpaceJobs()
+		before := syncListWriters(t, cred, r.pds1, sp, nil)
+		calls := len(syncSpaceUpdates(syncer))
+		for _, rev := range []string{older, current} {
+			mustOK(t, syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, rev, nil), syncNotifyOpts{}))
+		}
+		r.net.waitSpaceJobs()
+		after := syncListWriters(t, cred, r.pds1, sp, nil)
+		if !reflect.DeepEqual(before.body, after.body) {
+			t.Fatalf("duplicate/old notification moved writer state: before %s after %s", before.raw, after.raw)
+		}
+		if got := len(syncSpaceUpdates(syncer)); got != calls {
+			t.Fatalf("forwarded updates grew from %d to %d", calls, got)
+		}
+	})
+
+	t.Run("keeps the newest repo revision when notifications race", func(t *testing.T) {
+		// Reference: notifyRepoUpdate / keeps the newest repo revision when notifications race.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		older := syntax.NewTIDNow(0)
+		newer := syntax.NewTIDFromInteger(older.Integer() + 1)
+		hash := syncEmptyHash()
+		start := make(chan struct{})
+		responses := make(chan xres, 2)
+		for _, update := range []struct {
+			rev  string
+			data []byte
+		}{{newer.String(), hash}, {older.String(), nil}} {
+			go func(rev string, data []byte) {
+				<-start
+				responses <- syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, rev, data), syncNotifyOpts{})
+			}(update.rev, update.data)
+		}
+		close(start)
+		for i := 0; i < 2; i++ {
+			mustOK(t, <-responses)
+		}
+		cred := credentialFor(t, bob, r.pds1, sp)
+		listed := syncListWriters(t, cred, r.pds1, sp, nil)
+		entry := syncWriterEntry(t, listed, bob.did, "com.atproto.space.defs#repoWrite")
+		if len(listed.list("repos")) != 1 || entry["repoRev"] != newer.String() {
+			t.Fatalf("racing notification regressed the writer revision: %s", listed.raw)
+		}
+		got, err := syncLexBytes(entry["data"])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, hash) {
+			t.Fatal("racing notification also regressed commit data")
+		}
+	})
+
+	t.Run("rejects future revisions while allowing a small clock skew", func(t *testing.T) {
+		// Reference: notifyRepoUpdate / rejects future revisions while allowing a small clock skew.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		future := syntax.NewTIDFromTime(time.Now().Add(10*time.Minute), 0).String()
+		expectErr(t, syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, future, syncEmptyHash()), syncNotifyOpts{}), 400, "FutureRev")
+		if got := syncWriterDids(t, r, sp); len(got) != 0 {
+			t.Fatalf("future revision created writers: %v", got)
+		}
+		skew := syntax.NewTIDFromTime(time.Now().Add(time.Minute), 0).String()
+		mustOK(t, syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, skew, syncEmptyHash()), syncNotifyOpts{}))
+		if got := syncWriterDids(t, r, sp); !reflect.DeepEqual(got, []string{bob.did}) {
+			t.Fatalf("small clock skew was not accepted: %v", got)
+		}
+	})
+
+	t.Run("rejects one that spoofs the writer", func(t *testing.T) {
+		// Reference: notifyRepoUpdate / rejects one that spoofs the writer.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob, carol}})
+		res := syncNotify(t, r, bob, syncNotifyBody(sp, carol.did, syntax.NewTIDNow(0).String(), syncEmptyHash()), syncNotifyOpts{})
+		if res.status != 403 || !strings.Contains(res.message(), "iss does not match the repo") {
+			t.Fatalf("want 403 iss mismatch, got %d %s", res.status, res.raw)
+		}
+	})
+
+	t.Run("rejects one addressed to another authority", func(t *testing.T) {
+		// Reference: notifyRepoUpdate / rejects one addressed to another authority.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		mustOK(t, doWrite(bob, sp, writeOpts{text: "misaddressed"}))
+		state := repoState(t, bob, sp)
+		res := syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, *state.Rev, syncLtHashDigest(t, state.SetHash)), syncNotifyOpts{aud: carol.did})
+		if res.status != 403 || !strings.Contains(res.message(), "aud does not match the space authority") {
+			t.Fatalf("want 403 audience mismatch, got %d %s", res.status, res.raw)
+		}
+	})
+
+	t.Run("rejects service auth for another lexicon method", func(t *testing.T) {
+		// Service-auth counterpart to the iss/aud cases: a token for another
+		// method must not authorize notifyRepoUpdate.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		res := syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, syntax.NewTIDNow(0).String(), syncEmptyHash()), syncNotifyOpts{lxm: "com.atproto.space.notifyCredentialsRevoked"})
+		expectErr(t, res, 401, "BadJwtLexiconMethod")
+		if got := syncWriterDids(t, r, sp); len(got) != 0 {
+			t.Fatalf("wrong-lxm token changed the writer set: %v", got)
+		}
+	})
+
+	t.Run("rejects one from a non member", func(t *testing.T) {
+		// Reference: notifyRepoUpdate / rejects one from a non-member.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		res := syncNotify(t, r, carol, syncNotifyBody(sp, carol.did, syntax.NewTIDNow(0).String(), syncEmptyHash()), syncNotifyOpts{})
+		if res.status != 403 || !strings.Contains(res.message(), "not authorized") {
+			t.Fatalf("want 403 unauthorized non-member, got %d %s", res.status, res.raw)
+		}
+	})
+
+	t.Run("rejects a member without write access", func(t *testing.T) {
+		// Reference: notifyRepoUpdate / rejects a member without write access.
+		sp := createSpace(t, alice, spaceOpts{})
+		putMember(t, alice, sp, bob, true, false)
+		res := syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, syntax.NewTIDNow(0).String(), syncEmptyHash()), syncNotifyOpts{})
+		if res.status != 403 || !strings.Contains(res.message(), "not authorized") {
+			t.Fatalf("want 403 read-only member, got %d %s", res.status, res.raw)
+		}
+	})
+
+	t.Run("rejects a member without write access even when writes are public", func(t *testing.T) {
+		// Reference: notifyRepoUpdate / rejects a member without write access even when writes are public.
+		sp := createSpace(t, alice, spaceOpts{policy: memberPolicy(map[string]any{"publicWrite": true})})
+		putMember(t, alice, sp, bob, true, false)
+		res := syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, syntax.NewTIDNow(0).String(), syncEmptyHash()), syncNotifyOpts{})
+		if res.status != 403 || !strings.Contains(res.message(), "not authorized") {
+			t.Fatalf("publicWrite bypassed an explicit read-only member: %d %s", res.status, res.raw)
+		}
+		mustOK(t, syncNotify(t, r, carol, syncNotifyBody(sp, carol.did, syntax.NewTIDNow(0).String(), syncEmptyHash()), syncNotifyOpts{}))
+		if got := syncWriterDids(t, r, sp); !reflect.DeepEqual(got, []string{carol.did}) {
+			t.Fatalf("public non-member writer was not admitted: %v", got)
+		}
+	})
+
+	t.Run("rejects a rev that is not a TID before any auth check", func(t *testing.T) {
+		// Reference: notifyRepoUpdate / rejects a rev that is not a TID before any auth check.
+		sp := createSpace(t, alice, spaceOpts{members: []*actor{bob}})
+		res := syncNotify(t, r, bob, syncNotifyBody(sp, bob.did, "not-a-tid", syncEmptyHash()), syncNotifyOpts{})
+		if res.status != 400 || !strings.Contains(strings.ToLower(res.message()), "tid") {
+			t.Fatalf("want 400 invalid TID, got %d %s", res.status, res.raw)
+		}
+	})
 }

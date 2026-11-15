@@ -11,11 +11,15 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// Space repo MACs (the reference's getSpaceMacSecret, commitMacHeaders and
+// Space repo MACs (the reference's getSpaceMacRequest, commitMacHeaders and
 // recordMacHeaders in api/com/atproto/space/util.ts at bluesky-social/atproto
-// ac0c9f15). getLatestCommit, getRepo, listRepoOps and getRecord authenticate
-// what they return with a MAC keyed by a per-request shared secret, which the
-// syncer establishes against the author's #atproto_kem key.
+// d4def6e9). getLatestCommit, getRepo, listRepoOps and getRecord authenticate
+// what they return with a MAC: an HTTP message signature (hmac-sha256) over a
+// header describing the commit or record, keyed by a per-request shared secret
+// that the syncer establishes against the author's #atproto_kem key.
+
+// starContentType is the content type of STAR archives.
+const starContentType = "application/vnd.dasl.star"
 
 // accountKemKey is the account's #atproto_kem private key, nil for an account
 // that has none yet.
@@ -26,19 +30,30 @@ func accountKemKey(repo models.Repo) (*atcrypto.PrivateKeyP256, error) {
 	return atcrypto.ParsePrivateBytesP256(repo.KemKey)
 }
 
-// spaceMacSecret returns the shared secret to MAC a read's response with.
-// A request presenting a space credential must ask for a MAC; an account
-// reading its own data gets one only if it asks, and nil otherwise.
-func (s *Server) spaceMacSecret(e echo.Context, p *spaceReadParams, typ string) ([]byte, error) {
+// spaceMacRequest reads the MAC a syncer requested with Accept-Signature, and
+// derives the shared secret to answer it with. A request presenting a space
+// credential must ask for a MAC; an account reading its own data gets one only
+// if it asks, and nil otherwise.
+func (s *Server) spaceMacRequest(e echo.Context, p *spaceReadParams, profile string) (*space.CreateMacParams, error) {
 	h := e.Response().Header()
-	h.Add("Vary", space.HeaderWantMac)
+	h.Add("Vary", space.HeaderAcceptSignature)
 
-	values := e.Request().Header.Values(space.HeaderWantMac)
-	if len(values) == 0 && p.auth.credential == nil {
+	req, err := space.ParseMacRequest(e.Request().Header.Values(space.HeaderAcceptSignature), profile)
+	if err != nil {
+		return nil, macRequestError(err)
+	}
+	if req == nil {
+		if p.auth.credential != nil {
+			return nil, errInvalid("InvalidSpaceMac", "A MAC must be requested with tag %q", profile)
+		}
 		return nil, nil
 	}
 	// So that a browser app can read the MAC from a cross-origin response.
-	h.Add("Access-Control-Expose-Headers", space.HeaderMac)
+	covered := space.HeaderCommit
+	if profile == space.RecordMacProfile {
+		covered = space.HeaderRecord
+	}
+	h.Add("Access-Control-Expose-Headers", covered+", Signature-Input, Signature")
 
 	repo, err := s.getRepoActorByDid(e.Request().Context(), p.repo)
 	if err != nil {
@@ -51,39 +66,48 @@ func (s *Server) spaceMacSecret(e echo.Context, p *spaceReadParams, typ string) 
 	if kem == nil {
 		return nil, fmt.Errorf("account has no KEM key: %s", p.repo)
 	}
-	secret, err := func() ([]byte, error) {
-		keyShare, err := space.ParseWantMacHeader(values, typ)
-		if err != nil {
-			return nil, err
-		}
-		return space.Decapsulate(kem, keyShare)
-	}()
+	secret, err := space.Decapsulate(kem, req.KeyShare)
 	if err != nil {
-		var me *space.MacError
-		if errors.As(err, &me) {
-			return nil, errInvalid("BadSpaceMac", "%s", me.Message)
-		}
-		return nil, err
+		return nil, macRequestError(err)
 	}
-	return secret, nil
+	return &space.CreateMacParams{MacRequest: *req, SharedSecret: secret}, nil
 }
 
-// setCommitMac sets the Atproto-Space-Mac response header for a commit, when
-// a MAC was requested.
-func setCommitMac(e echo.Context, secret []byte, c space.Commit) {
-	if secret == nil {
-		return
+// macRequestError reports a bad MAC request or key share as InvalidSpaceMac.
+func macRequestError(err error) error {
+	var me *space.MacError
+	if errors.As(err, &me) {
+		return errInvalid("InvalidSpaceMac", "%s", me.Message)
 	}
-	e.Response().Header().Set(space.HeaderMac, space.FormatMacHeader(space.CommitMacType, space.ComputeCommitMac(secret, c)))
+	var ke *space.KemError
+	if errors.As(err, &ke) {
+		return errInvalid("InvalidSpaceMac", "%s", ke.Message)
+	}
+	return err
 }
 
-// setRecordMac sets the Atproto-Space-Mac response header for a record, when
-// a MAC was requested.
-func setRecordMac(e echo.Context, secret []byte, uri string, c cid.Cid) {
-	if secret == nil {
+// setCommitMac sets the MAC response headers for a commit, when a MAC was
+// requested.
+func setCommitMac(e echo.Context, mac *space.CreateMacParams, c space.Commit) {
+	if mac == nil {
 		return
 	}
-	e.Response().Header().Set(space.HeaderMac, space.FormatMacHeader(space.RecordMacType, space.ComputeRecordMac(secret, uri, c)))
+	setHeaders(e, space.CreateCommitMacHeaders(c, *mac))
+}
+
+// setRecordMac sets the MAC response headers for a record, when a MAC was
+// requested.
+func setRecordMac(e echo.Context, mac *space.CreateMacParams, uri string, c cid.Cid) {
+	if mac == nil {
+		return
+	}
+	setHeaders(e, space.CreateRecordMacHeaders(uri, c, *mac))
+}
+
+func setHeaders(e echo.Context, headers map[string]string) {
+	for k, v := range headers {
+		e.Response().Header().Set(k, v)
+	}
 }
 
 // newKemKey generates an account's dedicated #atproto_kem keypair.

@@ -15,21 +15,17 @@ type Space struct {
 	DeletedAt *string
 }
 
-// SimplespaceConfig is the governance config of a space this account is the
-// authority for.
-type SimplespaceConfig struct {
-	Did              string `gorm:"primaryKey"`
-	Uri              string `gorm:"primaryKey"`
-	ReadPolicy       string `gorm:"not null"`
-	ReadManagingApp  *string
-	WritePolicy      string `gorm:"not null"`
-	WriteManagingApp *string
-	AppAccessType    string `gorm:"not null"`
-	AppAllowed       string `gorm:"not null"` // JSON array of client IDs
+// SpacePolicy is the policy of a space this account is the authority for: a
+// personalspace, memberspace or managedspace policy object, as JSON. What is
+// stored is what is enforced, with defaults filled in.
+type SpacePolicy struct {
+	Did        string `gorm:"primaryKey"`
+	Uri        string `gorm:"primaryKey"`
+	PolicyJson string `gorm:"not null"`
 }
 
-// SimplespaceMember is a member of a governed space.
-type SimplespaceMember struct {
+// MemberspaceMember is a member of a space governed by the memberspace policy.
+type MemberspaceMember struct {
 	Did       string `gorm:"primaryKey"`
 	Space     string `gorm:"primaryKey"`
 	MemberDid string `gorm:"primaryKey"`
@@ -82,7 +78,9 @@ type SpaceRecordOplog struct {
 }
 
 // SpaceWriter is, on the authority, the latest known state of a writer's repo
-// in a governed space, sequenced by SpaceRev.
+// in a governed space, sequenced by SpaceRev. A repo removed from the writer
+// set keeps its row, with RemovedAt set, so listWriters can report the removal
+// until the repo writes again.
 type SpaceWriter struct {
 	Did       string `gorm:"primaryKey"`
 	Space     string `gorm:"primaryKey;index:idx_space_writer_space_rev,priority:1"`
@@ -91,20 +89,27 @@ type SpaceWriter struct {
 	SpaceRev  string `gorm:"not null;index:idx_space_writer_space_rev,priority:2"`
 	// Data is the commit data (the set hash digest) last reported. The column
 	// keeps its name from before the protocol renamed the field from hash.
-	Data []byte `gorm:"column:hash;not null"`
+	Data      []byte `gorm:"column:hash;not null"`
+	RemovedAt *string
 }
 
-// SpaceCredentialRecipient is a service registered (registerNotify) to receive
-// a governed space's write notifications.
-type SpaceCredentialRecipient struct {
-	Did             string `gorm:"primaryKey"`
-	Space           string `gorm:"primaryKey"`
-	ServiceDid      string `gorm:"primaryKey"`
-	ServiceEndpoint string `gorm:"not null"`
-	ExpiresAt       string `gorm:"not null"`
+// SpaceNotifyRegistration is an endpoint registered through authorizeSpaceSync
+// to receive a governed space's updates. A registration is identified by its
+// endpoint and token together. It stays active until ExpiresAt, the expiry of
+// the credential from its latest authorization.
+type SpaceNotifyRegistration struct {
+	Did       string `gorm:"primaryKey"`
+	Space     string `gorm:"primaryKey"`
+	Endpoint  string `gorm:"primaryKey"`
+	Token     string `gorm:"primaryKey"`
+	ExpiresAt string `gorm:"not null"`
+	// ExpiryNotified is whether the lapsed registration has been sent its
+	// expiry notice. After that it is sent nothing but a deletion notice,
+	// until it is renewed.
+	ExpiryNotified bool `gorm:"not null;default:false"`
 }
 
-// SpaceNotificationRetry is a writer's notifyWrite that failed and waits to be
+// SpaceNotificationRetry is a writer's notifyRepoUpdate that failed and waits to be
 // resent to the authority, one per repo and space.
 type SpaceNotificationRetry struct {
 	Repo    string `gorm:"primaryKey"`
@@ -118,15 +123,17 @@ type SpaceNotificationRetry struct {
 	ExpiresAt int64  `gorm:"not null"`
 }
 
-// SpaceDeletedNotificationRetry is a notifySpaceDeleted to a registered
-// service that failed and waits to be resent, until it succeeds or the
-// service's registration expires.
-type SpaceDeletedNotificationRetry struct {
-	Space     string `gorm:"primaryKey"`
-	Service   string `gorm:"primaryKey"`
-	Attempts  int    `gorm:"not null"`
-	RetryAt   int64  `gorm:"not null;index"`
-	ExpiresAt int64  `gorm:"not null"`
+// SpaceSyncerNotificationRetry is a notice to a registered syncer (the space's
+// deletion, or a registration's expiry) that failed and waits to be resent,
+// one per registration. NoticeJson is the notifySpaceUpdate update.
+type SpaceSyncerNotificationRetry struct {
+	Space      string `gorm:"primaryKey"`
+	Endpoint   string `gorm:"primaryKey"`
+	Token      string `gorm:"primaryKey"`
+	NoticeJson string `gorm:"not null"`
+	Attempts   int    `gorm:"not null"`
+	RetryAt    int64  `gorm:"not null;index"`
+	ExpiresAt  int64  `gorm:"not null"`
 }
 
 // RevokedSpaceCredential is a space credential revoked by its authority, kept
@@ -148,10 +155,10 @@ type SpaceUsedJti struct {
 // SpaceModels lists the space tables for migration.
 func SpaceModels() []any {
 	return []any{
-		&Space{}, &SimplespaceConfig{}, &SimplespaceMember{}, &SpaceRecord{},
+		&Space{}, &SpacePolicy{}, &MemberspaceMember{}, &SpaceRecord{},
 		&SpaceRecordBlob{}, &SpaceRepo{}, &SpaceRecordOplog{}, &SpaceWriter{},
-		&SpaceCredentialRecipient{}, &SpaceNotificationRetry{},
-		&SpaceDeletedNotificationRetry{},
+		&SpaceNotifyRegistration{}, &SpaceNotificationRetry{},
+		&SpaceSyncerNotificationRetry{},
 		&RevokedSpaceCredential{}, &SpaceUsedJti{},
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,48 +22,70 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Write notifications, following the reference PDS's space-notifications.ts,
-// notifyWrite.ts, registerNotify.ts, unregisterNotify.ts and listRepos.ts at
-// bluesky-social/atproto ac0c9f15.
+// Repo update notifications and syncer notices, following the reference PDS's
+// space-notifications.ts and api/com/atproto/space/{notifyRepoUpdate,
+// listWriters,util}.ts at bluesky-social/atproto d4def6e9.
 //
-// A writer's PDS sends notifyWrite to the space authority right after each
-// commit. Retryable failures are coalesced per repo and space in
+// A writer's PDS sends notifyRepoUpdate to the space authority right after
+// each commit. Retryable failures are coalesced per repo and space in
 // space_notification_retries, and a worker resends the newest state with
 // backoff for up to a day. The authority records the writer (sequencing it
-// with a spaceRev) and fans the notification out to registered services.
+// with a spaceRev) and forwards the sequenced update, with removals, to the
+// endpoints registered through authorizeSpaceSync (notifySpaceUpdate).
+//
+// Notices to syncers, of a space's deletion or a registration's expiry, are
+// retried the same way, but on a slower schedule and for at least 72 hours.
 
 const (
-	lxmNotifyWrite         = "com.atproto.space.notifyWrite"
-	registrationTTL        = 24 * time.Hour
+	lxmNotifyRepoUpdate    = "com.atproto.space.notifyRepoUpdate"
+	lxmNotifySpaceUpdate   = "com.atproto.space.notifySpaceUpdate"
+	lxmConfirmRegistration = "com.atproto.space.confirmRegistration"
+
 	notifyRetryWindow      = 24 * time.Hour
 	notifyRetryPollEvery   = 10 * time.Second
 	notifyFutureRevAllowed = 5 * time.Minute
+
+	// syncerNotifyConcurrency is how many syncer endpoints a fan-out notifies
+	// at once.
+	syncerNotifyConcurrency = 50
+	syncerNoticeRetryWindow = 72 * time.Hour
+
+	typeRepoWrite           = "com.atproto.space.defs#repoWrite"
+	typeRepoRemoved         = "com.atproto.space.defs#repoRemoved"
+	typeSpaceDeleted        = "com.atproto.space.notifySpaceUpdate#spaceDeleted"
+	typeRegistrationExpired = "com.atproto.space.notifySpaceUpdate#registrationExpired"
 )
+
+// syncerNoticeRetryDelays is the pause after each failed delivery of a syncer
+// notice in turn, repeating the last. Tests shorten it.
+var syncerNoticeRetryDelays = []time.Duration{time.Minute, 10 * time.Minute, time.Hour, 6 * time.Hour, 12 * time.Hour}
 
 // notifyRetryBase is the first retry pause; tests shorten it.
 var notifyRetryBase = time.Minute
 
 var retryableStatus = map[int]bool{408: true, 425: true, 429: true, 500: true, 502: true, 503: true, 504: true, 522: true, 524: true}
 
-type notifyWriteBody struct {
-	Space        string         `json:"space"`
-	Repo         string         `json:"repo"`
-	RepoRev      string         `json:"repoRev"`
-	Data         space.LexBytes `json:"data"`
-	SpaceRev     string         `json:"spaceRev,omitempty"`
-	PrevSpaceRev string         `json:"prevSpaceRev,omitempty"`
+type notifyRepoUpdateBody struct {
+	Space   string         `json:"space"`
+	Repo    string         `json:"repo"`
+	RepoRev string         `json:"repoRev"`
+	Data    space.LexBytes `json:"data"`
 }
 
-// notifySpaceWrite sends a write notification for a new commit, queueing a
-// retry if it fails retryably.
-// It returns an error only when a retryable failure could not be queued.
-func (s *Server) notifySpaceWrite(ref space.Ref, did string, commit *spaceCommit) error {
+// fireNotifyRepoUpdate sends a repo update notification for a new commit
+// right after it, queueing a retry if it fails retryably. It returns an error
+// only when a retryable failure could not be queued. A nil commit, when there
+// was nothing to write, sends nothing.
+func (s *Server) fireNotifyRepoUpdate(ref space.Ref, did string, commit *spaceCommit) error {
+	if commit == nil {
+		return nil
+	}
 	h, err := space.LtHashFromState(commit.SetHash)
 	if err != nil {
 		return err
 	}
 	d := h.Digest()
-	body := notifyWriteBody{Space: ref.String(), Repo: did, RepoRev: commit.Rev, Data: d[:]}
+	body := notifyRepoUpdateBody{Space: ref.String(), Repo: did, RepoRev: commit.Rev, Data: d[:]}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	return s.notifyAndQueue(ctx, body)
@@ -70,7 +93,7 @@ func (s *Server) notifySpaceWrite(ref space.Ref, did string, commit *spaceCommit
 
 // notifyAndQueue sends a notification, queueing it for retry if it fails
 // retryably. It returns an error only when the retry could not be queued.
-func (s *Server) notifyAndQueue(ctx context.Context, body notifyWriteBody) error {
+func (s *Server) notifyAndQueue(ctx context.Context, body notifyRepoUpdateBody) error {
 	err := s.deliverNotify(ctx, body)
 	if err == nil {
 		s.clearNotifyRetry(ctx, body.Repo, body.Space, body.RepoRev)
@@ -132,28 +155,28 @@ func (s *Server) clearNotifyRetry(ctx context.Context, repo, spaceURI, rev strin
 
 // deliverNotify processes the notification here when this host is the
 // authority, else sends it to the authority's space host.
-func (s *Server) deliverNotify(ctx context.Context, body notifyWriteBody) error {
+func (s *Server) deliverNotify(ctx context.Context, body notifyRepoUpdateBody) error {
 	ref, err := space.ParseRef(body.Space)
 	if err != nil {
 		return err
 	}
 	if _, err := s.getRepoActorByDid(ctx, ref.Authority); err == nil {
-		return s.processNotifyWrite(ctx, body)
+		return s.processNotifyRepoUpdate(ctx, body)
 	}
-	target, err := s.resolveNotifyTarget(ctx, body.Repo, ref.HostAud(), lxmNotifyWrite)
+	target, err := s.resolveNotifyTarget(ctx, body.Repo, ref.HostAud(), lxmNotifyRepoUpdate)
 	if err != nil {
 		return err
 	}
 	if target == nil {
 		return errors.New("could not resolve space host")
 	}
-	_, err = s.postXRPC(ctx, target, lxmNotifyWrite, body)
+	_, err = s.postXRPC(ctx, target, lxmNotifyRepoUpdate, body)
 	return err
 }
 
-// processNotifyWrite handles a write notification when this host is the
-// space authority.
-func (s *Server) processNotifyWrite(ctx context.Context, body notifyWriteBody) error {
+// processNotifyRepoUpdate handles a repo update notification when this host is
+// the space authority.
+func (s *Server) processNotifyRepoUpdate(ctx context.Context, body notifyRepoUpdateBody) error {
 	ref, err := space.ParseRef(body.Space)
 	if err != nil {
 		return errInvalid("InvalidSpaceUri", "Not a space uri: %s", body.Space)
@@ -169,29 +192,19 @@ func (s *Server) processNotifyWrite(ctx context.Context, body notifyWriteBody) e
 		return errInvalid("FutureRev", "Repo revision is in the future")
 	}
 	st := s.spaceStore(nil, ref.Authority)
-	sp, err := st.getSpace(ref.String())
+	policy, err := st.getActiveSpacePolicy(ref.String())
 	if err != nil {
 		return err
 	}
-	cfg, err := st.getSpaceConfig(ref.String())
-	if err != nil {
-		return err
-	}
-	if cfg == nil || sp == nil || sp.DeletedAt != nil {
-		return errSpaceNotFound()
-	}
-	recipients, err := st.activeRecipients(ref.String())
-	if err != nil {
-		return err
-	}
-	// The same user perimeter as minting a credential; notifyWrite comes from
-	// a PDS rather than an app, so there is no attestation to check.
-	ok, err := s.authorizeSpaceUser(ctx, cfg, body.Repo, "write", "")
+	// The same account perimeter used when minting credentials. The
+	// notification comes from a PDS rather than an app, so there is no app
+	// attestation to check.
+	ok, err := s.authorizeRepo(ctx, ref, policy, body.Repo, "write", "")
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return errForbidden("notifyWrite writer is not authorized")
+		return errForbidden("Repo is not authorized to write to the space")
 	}
 	var seq *writerSequence
 	err = s.db.Client().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -202,76 +215,204 @@ func (s *Server) processNotifyWrite(ctx context.Context, body notifyWriteBody) e
 	if err != nil || seq == nil {
 		return err
 	}
-	fan := body
-	fan.SpaceRev, fan.PrevSpaceRev = seq.spaceRev, seq.prevSpaceRev
-	s.goSpace(func(ctx context.Context) {
-		for _, r := range recipients {
-			if err := s.sendNotify(ctx, ref.Authority, r.ServiceDid, lxmNotifyWrite, fan); err != nil {
-				s.logger.Warn("notify failed", "space", ref.String(), "service", r.ServiceDid, "lxm", lxmNotifyWrite, "err", err)
-			}
-		}
-	})
+	update := map[string]any{
+		"$type": typeRepoWrite, "repo": body.Repo, "repoRev": body.RepoRev,
+		"data": body.Data, "spaceRev": seq.spaceRev,
+	}
+	if seq.prevSpaceRev != "" {
+		update["prevSpaceRev"] = seq.prevSpaceRev
+	}
+	s.forwardSpaceUpdate(ref, update, seq.spaceRev)
 	return nil
 }
 
-type writerSequence struct {
-	spaceRev     string
-	prevSpaceRev string
+// forwardWriterRemoved tells the syncers registered for a space that a repo
+// left its writer set.
+func (s *Server) forwardWriterRemoved(ref space.Ref, removed removedWriter) {
+	update := map[string]any{"$type": typeRepoRemoved, "repo": removed.Repo, "spaceRev": removed.SpaceRev}
+	if removed.PrevSpaceRev != "" {
+		update["prevSpaceRev"] = removed.PrevSpaceRev
+	}
+	s.forwardSpaceUpdate(ref, update, removed.SpaceRev)
 }
 
-// recordWriter records a newer repo state for a writer and advances the
-// space's sequence. Nil when the state is not newer than the last.
-func (st *spaceStore) recordWriter(uri, writer, repoRev string, data []byte) (*writerSequence, error) {
-	// Lock before reading to serialize the space sequence and avoid SQLite read-to-write upgrades.
-	if err := st.db.Model(&models.Space{}).Where("did = ? AND uri = ?", st.did, uri).UpdateColumn("uri", uri).Error; err != nil {
-		return nil, err
-	}
-	sp, err := st.getSpace(uri)
+// forwardSpaceUpdate forwards a sequenced change to the writer set to the
+// syncers registered for the space. Fan-out stays in the background so
+// neither a local write nor a remote PDS waits on downstream syncing services.
+func (s *Server) forwardSpaceUpdate(ref space.Ref, update map[string]any, spaceRev string) {
+	s.goSpace(func(ctx context.Context) {
+		s.deliverSpaceUpdate(ctx, ref, update, spaceRev)
+	})
+}
+
+// deliverSpaceUpdate delivers an update to each active registration, on a
+// best-effort basis. A registration that has lapsed since the last update is
+// sent an expiry notice in place of the update, which is delivered reliably.
+func (s *Server) deliverSpaceUpdate(ctx context.Context, ref space.Ref, update map[string]any, spaceRev string) {
+	uri := ref.String()
+	st := s.spaceStore(nil, ref.Authority)
+	regs, err := st.getNotifyRegistrations(uri)
 	if err != nil {
-		return nil, err
+		s.logger.Error("could not read space notify registrations", "space", uri, "err", err)
+		return
 	}
-	if sp == nil || sp.DeletedAt != nil {
-		return nil, errSpaceNotFound()
+	now := nowISO()
+	var active []models.SpaceNotifyRegistration
+	for _, r := range regs {
+		if r.ExpiresAt > now {
+			active = append(active, r)
+		}
 	}
-	var cur models.SpaceWriter
-	err = st.db.Where("did = ? AND space = ? AND writer_did = ?", st.did, uri, writer).Take(&cur).Error
-	if err == nil && cur.RepoRev >= repoRev {
-		return nil, nil
+	// In parallel, so a slow endpoint doesn't hold up delivery to the others.
+	s.forEachSyncer(active, func(r models.SpaceNotifyRegistration) {
+		if err := s.sendSyncerUpdate(ctx, r.Endpoint, uri, r.Token, update); err != nil {
+			s.logger.Warn("notify failed", "space", uri, "endpoint", r.Endpoint, "err", err)
+		}
+	})
+
+	var lapsed []models.SpaceNotifyRegistration
+	err = s.db.Client().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var err error
+		lapsed, err = s.spaceStore(tx, ref.Authority).claimLapsedNotifyRegistrations(uri, now)
+		return err
+	})
+	if err != nil {
+		s.logger.Error("could not claim lapsed space registrations", "space", uri, "err", err)
+		return
 	}
-	if err != nil && !notFound(err) {
-		return nil, err
+	if len(lapsed) > 0 {
+		s.notifySyncers(ctx, ref, lapsed, syncerNotice{expiredAt: spaceRev})
 	}
-	var latest []models.SpaceWriter
-	if err := st.db.Where("did = ? AND space = ?", st.did, uri).Order("space_rev desc").Limit(1).Find(&latest).Error; err != nil {
-		return nil, err
-	}
-	prev := ""
-	if len(latest) > 0 {
-		prev = latest[0].SpaceRev
-	}
-	rev := nextTID(prev)
-	row := models.SpaceWriter{Did: st.did, Space: uri, WriterDid: writer, RepoRev: repoRev, SpaceRev: rev, Data: data}
-	if err := st.db.Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error; err != nil {
-		return nil, err
-	}
-	return &writerSequence{spaceRev: rev, prevSpaceRev: prev}, nil
 }
 
-func (st *spaceStore) listWriters(uri string, limit int, cursor string) ([]models.SpaceWriter, error) {
-	q := st.db.Where("did = ? AND space = ?", st.did, uri).Order("space_rev asc")
-	if limit > 0 {
-		q = q.Limit(limit)
+// forEachSyncer runs fn for each registration, syncerNotifyConcurrency at a
+// time.
+func (s *Server) forEachSyncer(regs []models.SpaceNotifyRegistration, fn func(models.SpaceNotifyRegistration)) {
+	sem := make(chan struct{}, syncerNotifyConcurrency)
+	var wg sync.WaitGroup
+	for _, r := range regs {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			fn(r)
+		}()
 	}
-	if cursor != "" {
-		q = q.Where("space_rev > ?", cursor)
-	}
-	var rows []models.SpaceWriter
-	return rows, q.Find(&rows).Error
+	wg.Wait()
 }
 
-func (s *Server) handleSpaceNotifyWrite(e echo.Context) error {
+// sendSyncerUpdate posts a notifySpaceUpdate to an endpoint the syncer chose,
+// which is fetched as untrusted. It carries no service auth: the token in the
+// body authenticates it.
+func (s *Server) sendSyncerUpdate(ctx context.Context, endpoint, spaceURI, token string, update map[string]any) error {
+	_, err := s.postXRPC(ctx, &notifyTarget{endpoint: strings.TrimRight(endpoint, "/")}, lxmNotifySpaceUpdate,
+		map[string]any{"space": spaceURI, "token": token, "update": update})
+	return err
+}
+
+// syncerNotice is an update the space host must reliably deliver to a
+// registered syncer: the space's deletion, or a registration's expiry.
+type syncerNotice struct {
+	deleted   bool
+	expiredAt string // the spaceRev of a registrationExpired notice
+}
+
+func (n syncerNotice) update() map[string]any {
+	if n.deleted {
+		return map[string]any{"$type": typeSpaceDeleted}
+	}
+	return map[string]any{"$type": typeRegistrationExpired, "spaceRev": n.expiredAt}
+}
+
+func parseSyncerNotice(raw string) (syncerNotice, error) {
+	var u struct {
+		Type     string `json:"$type"`
+		SpaceRev string `json:"spaceRev"`
+	}
+	if err := json.Unmarshal([]byte(raw), &u); err != nil {
+		return syncerNotice{}, err
+	}
+	switch u.Type {
+	case typeSpaceDeleted:
+		return syncerNotice{deleted: true}, nil
+	case typeRegistrationExpired:
+		return syncerNotice{expiredAt: u.SpaceRev}, nil
+	}
+	return syncerNotice{}, fmt.Errorf("unknown syncer notice %q", u.Type)
+}
+
+// notifySyncers sends a notice to each of the given syncers, persisting
+// retryable failures. If a syncer rejects its expiry notice, or can't be
+// reached within the retry window, its registration is dropped.
+func (s *Server) notifySyncers(ctx context.Context, ref space.Ref, regs []models.SpaceNotifyRegistration, notice syncerNotice) {
+	uri := ref.String()
+	s.forEachSyncer(regs, func(r models.SpaceNotifyRegistration) {
+		err := s.sendSyncerUpdate(ctx, r.Endpoint, uri, r.Token, notice.update())
+		if err == nil {
+			return
+		}
+		if !isRetryableNotify(err) {
+			s.abandonSyncerNotice(ctx, uri, r.Endpoint, r.Token, notice)
+			s.logger.Warn("syncer notification will not be retried", "space", uri, "endpoint", r.Endpoint, "err", err)
+			return
+		}
+		s.queueSyncerNotice(ctx, uri, r.Endpoint, r.Token, notice)
+		s.logger.Warn("syncer notification queued for retry", "space", uri, "endpoint", r.Endpoint, "err", err)
+	})
+}
+
+func (s *Server) queueSyncerNotice(ctx context.Context, uri, endpoint, token string, notice syncerNotice) {
+	// Persisting a retry must not fail because the fan-out's own deadline
+	// passed while it waited on slow endpoints, but it gets a deadline of its
+	// own so a stalled database can't hold the job (and shutdown) forever.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	b, _ := json.Marshal(notice.update())
+	row := models.SpaceSyncerNotificationRetry{
+		Space: uri, Endpoint: endpoint, Token: token, NoticeJson: string(b), Attempts: 1,
+		RetryAt: nextSyncerRetryAt(1).UnixMilli(), ExpiresAt: time.Now().Add(syncerNoticeRetryWindow).UnixMilli(),
+	}
+	oc := clause.OnConflict{Columns: []clause.Column{{Name: "space"}, {Name: "endpoint"}, {Name: "token"}}}
+	if notice.deleted {
+		// A deletion notice replaces whatever is pending.
+		oc.DoUpdates = clause.AssignmentColumns([]string{"notice_json", "attempts", "retry_at", "expires_at"})
+	} else {
+		// An expiry notice never replaces a pending notice, so a deletion
+		// notice is never lost.
+		oc.DoNothing = true
+	}
+	if err := s.db.Client().WithContext(ctx).Clauses(oc).Create(&row).Error; err != nil {
+		s.logger.Error("could not queue syncer notification", "space", uri, "endpoint", endpoint, "err", err)
+	}
+}
+
+// abandonSyncerNotice gives up on delivering a notice. A syncer that rejects
+// its expiry notice, or can't be reached, is unregistered, unless it has
+// renewed since. A deleted space's registrations were already dropped with it.
+func (s *Server) abandonSyncerNotice(ctx context.Context, uri, endpoint, token string, notice syncerNotice) {
+	if notice.deleted {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	ref, err := space.ParseRef(uri)
+	if err != nil {
+		return
+	}
+	if err := s.spaceStore(s.db.Client().WithContext(ctx), ref.Authority).removeLapsedNotifyRegistration(uri, endpoint, token, time.Now()); err != nil {
+		s.logger.Error("could not drop a syncer registration", "space", uri, "endpoint", endpoint, "err", err)
+	}
+}
+
+func nextSyncerRetryAt(attempts int) time.Time {
+	delays := syncerNoticeRetryDelays
+	delay := delays[min(attempts, len(delays))-1]
+	return time.Now().Add(time.Duration(float64(delay) * (0.5 + rand.Float64()/2)))
+}
+
+func (s *Server) handleSpaceNotifyRepoUpdate(e echo.Context) error {
 	body, err := func() (any, error) {
-		var in notifyWriteBody
+		var in notifyRepoUpdateBody
 		raw, err := readBody(e)
 		if err != nil {
 			return nil, err
@@ -293,20 +434,21 @@ func (s *Server) handleSpaceNotifyWrite(e echo.Context) error {
 		if in.Data == nil {
 			return nil, errInvalid("", "Input must have the property \"data\"")
 		}
-		claims, err := s.verifyServiceAuth(e, lxmNotifyWrite)
+		claims, err := s.verifyServiceAuth(e, lxmNotifyRepoUpdate)
 		if err != nil {
 			return nil, err
 		}
-		// The signer must be the writer, so a PDS can't notify on another
-		// account's behalf.
+		// iss is the signer, so requiring it to match keeps a PDS from
+		// notifying on another account's behalf.
 		if claims.Iss != in.Repo {
-			return nil, errForbidden("notifyWrite iss does not match claimed writer")
+			return nil, errForbidden("Notification iss does not match the repo")
 		}
+		// A PDS answers for many authorities, so the audience is only
+		// knowable from the space the body names.
 		if claims.Aud != ref.Authority && claims.Aud != ref.HostAud() {
-			return nil, errForbidden("notifyWrite aud does not match the space authority")
+			return nil, errForbidden("Notification aud does not match the space authority")
 		}
-		in.SpaceRev, in.PrevSpaceRev = "", ""
-		return nil, s.processNotifyWrite(e.Request().Context(), in)
+		return nil, s.processNotifyRepoUpdate(e.Request().Context(), in)
 	}()
 	return writeSpaceResult(e, body, err)
 }
@@ -338,81 +480,7 @@ func (s *Server) credentialAuth(e echo.Context, ref space.Ref) (*spaceCredential
 	return c, nil
 }
 
-func (s *Server) handleSpaceRegisterNotify(e echo.Context) error {
-	body, err := func() (any, error) {
-		var in struct {
-			Space   string `json:"space"`
-			Service string `json:"service"`
-		}
-		if err := bindSpaceJSON(e, &in); err != nil {
-			return nil, err
-		}
-		ref, err := parseSpaceParam("space", in.Space)
-		if err != nil {
-			return nil, err
-		}
-		if in.Service == "" {
-			return nil, errInvalid("", "Input must have the property \"service\"")
-		}
-		if _, err := s.credentialAuth(e, ref); err != nil {
-			return nil, err
-		}
-		ctx := e.Request().Context()
-		if _, err := s.assertSpaceHost(ctx, ref); err != nil {
-			return nil, err
-		}
-		ep, ok := s.resolveServiceEndpoint(ctx, in.Service)
-		if !ok {
-			return nil, errInvalid("ServiceNotResolvable", "Could not resolve a service endpoint for %s", in.Service)
-		}
-		st := s.spaceStore(nil, ref.Authority)
-		if _, err := st.getActiveSpaceConfig(ref.String()); err != nil {
-			return nil, err
-		}
-		expiresAt := time.Now().Add(registrationTTL).UTC().Format("2006-01-02T15:04:05.000Z")
-		row := models.SpaceCredentialRecipient{Did: ref.Authority, Space: ref.String(), ServiceDid: in.Service, ServiceEndpoint: ep, ExpiresAt: expiresAt}
-		if err := s.db.Client().WithContext(ctx).Clauses(clause.OnConflict{UpdateAll: true}).Create(&row).Error; err != nil {
-			return nil, err
-		}
-		return map[string]any{"expiresAt": expiresAt}, nil
-	}()
-	return writeSpaceResult(e, body, err)
-}
-
-func (s *Server) handleSpaceUnregisterNotify(e echo.Context) error {
-	body, err := func() (any, error) {
-		var in struct {
-			Space   string `json:"space"`
-			Service string `json:"service"`
-		}
-		if err := bindSpaceJSON(e, &in); err != nil {
-			return nil, err
-		}
-		ref, err := parseSpaceParam("space", in.Space)
-		if err != nil {
-			return nil, err
-		}
-		if in.Service == "" {
-			return nil, errInvalid("", "Input must have the property \"service\"")
-		}
-		if _, err := s.credentialAuth(e, ref); err != nil {
-			return nil, err
-		}
-		ctx := e.Request().Context()
-		if _, err := s.assertSpaceHost(ctx, ref); err != nil {
-			return nil, err
-		}
-		if _, err := s.spaceStore(nil, ref.Authority).getActiveSpaceConfig(ref.String()); err != nil {
-			return nil, err
-		}
-		// Not resolved: a service whose DID document changed must still be
-		// able to withdraw. Succeeds when nothing was registered.
-		return nil, s.db.Client().WithContext(ctx).Where("did = ? AND space = ? AND service_did = ?", ref.Authority, ref.String(), in.Service).Delete(&models.SpaceCredentialRecipient{}).Error
-	}()
-	return writeSpaceResult(e, body, err)
-}
-
-func (s *Server) handleSpaceListRepos(e echo.Context) error {
+func (s *Server) handleSpaceListWriters(e echo.Context) error {
 	body, err := func() (any, error) {
 		q := e.QueryParams()
 		ref, err := parseSpaceParam("space", q.Get("space"))
@@ -423,23 +491,28 @@ func (s *Server) handleSpaceListRepos(e echo.Context) error {
 		if err != nil {
 			return nil, err
 		}
+		cursor := q.Get("cursor")
 		if _, err := s.credentialAuth(e, ref); err != nil {
 			return nil, err
 		}
-		if _, err := s.assertSpaceHost(e.Request().Context(), ref); err != nil {
+		if err := s.assertActiveSpaceHost(e.Request().Context(), ref); err != nil {
 			return nil, err
 		}
 		st := s.spaceStore(nil, ref.Authority)
-		if _, err := st.getActiveSpaceConfig(ref.String()); err != nil {
+		if _, err := st.getActiveSpacePolicy(ref.String()); err != nil {
 			return nil, err
 		}
-		rows, err := st.listWriters(ref.String(), limit, q.Get("cursor"))
+		rows, err := st.listWriters(ref.String(), limit, cursor)
 		if err != nil {
 			return nil, err
 		}
 		repos := make([]map[string]any, 0, len(rows))
 		for _, w := range rows {
-			repos = append(repos, map[string]any{"did": w.WriterDid, "repoRev": w.RepoRev, "data": space.LexBytes(w.Data), "spaceRev": w.SpaceRev})
+			if w.RemovedAt != nil {
+				repos = append(repos, map[string]any{"$type": typeRepoRemoved, "repo": w.WriterDid, "spaceRev": w.SpaceRev})
+				continue
+			}
+			repos = append(repos, map[string]any{"$type": typeRepoWrite, "repo": w.WriterDid, "repoRev": w.RepoRev, "data": space.LexBytes(w.Data), "spaceRev": w.SpaceRev})
 		}
 		res := map[string]any{"repos": repos}
 		if len(rows) > 0 {
@@ -455,7 +528,7 @@ func (s *Server) handleSpaceGetRepo(e echo.Context) error {
 	if err != nil {
 		return writeSpaceResult(e, nil, err)
 	}
-	secret, err := s.spaceMacSecret(e, p, space.CommitMacType)
+	mac, err := s.spaceMacRequest(e, p, space.CommitMacProfile)
 	if err != nil {
 		return writeSpaceResult(e, nil, err)
 	}
@@ -492,8 +565,8 @@ func (s *Server) handleSpaceGetRepo(e echo.Context) error {
 	if err := space.SerializeRepo(&buf, *commit, recs); err != nil {
 		return writeSpaceResult(e, nil, err)
 	}
-	setCommitMac(e, secret, *commit)
-	return e.Blob(http.StatusOK, "application/octet-stream", buf.Bytes())
+	setCommitMac(e, mac, *commit)
+	return e.Blob(http.StatusOK, starContentType, buf.Bytes())
 }
 
 // The retry worker -------------------------------------------------------
@@ -543,7 +616,7 @@ func (s *Server) stopSpaceWorkers() {
 func (s *Server) retrySpaceNotifications(ctx context.Context) {
 	s.spaceWorker.mu.Lock()
 	defer s.spaceWorker.mu.Unlock()
-	s.retrySpaceDeletedNotifications(ctx)
+	s.retrySyncerNotices(ctx)
 	for {
 		var due []models.SpaceNotificationRetry
 		if err := s.db.Client().WithContext(ctx).Where("retry_at <= ?", time.Now().UnixMilli()).Order("retry_at").Limit(5).Find(&due).Error; err != nil || len(due) == 0 {
@@ -571,7 +644,7 @@ func (s *Server) retryNotifyOne(ctx context.Context, r models.SpaceNotificationR
 		s.rescheduleNotify(ctx, r)
 		return
 	}
-	body := notifyWriteBody{Space: r.Space, Repo: r.Repo, RepoRev: r.RepoRev, Data: r.Data}
+	body := notifyRepoUpdateBody{Space: r.Space, Repo: r.Repo, RepoRev: r.RepoRev, Data: r.Data}
 	if err := s.deliverNotify(ctx, body); err != nil {
 		if !isRetryableNotify(err) {
 			s.clearNotifyRetry(ctx, r.Repo, r.Space, r.RepoRev)
@@ -592,4 +665,109 @@ func (s *Server) rescheduleNotify(ctx context.Context, r models.SpaceNotificatio
 	s.db.Client().WithContext(ctx).Model(&models.SpaceNotificationRetry{}).
 		Where("repo = ? AND space = ? AND repo_rev = ? AND attempts = ? AND expires_at = ?", r.Repo, r.Space, r.RepoRev, r.Attempts, r.ExpiresAt).
 		Updates(map[string]any{"attempts": r.Attempts + 1, "retry_at": at})
+}
+
+// retrySyncerNotices resends due syncer notices.
+func (s *Server) retrySyncerNotices(ctx context.Context) {
+	// Bounded: a row whose reschedule fails would otherwise be reselected
+	// forever, holding up the write-notification retries on this worker.
+	for pass := 0; pass < 100; pass++ {
+		var due []models.SpaceSyncerNotificationRetry
+		if err := s.db.Client().WithContext(ctx).Where("retry_at <= ?", time.Now().UnixMilli()).Order("retry_at").Limit(5).Find(&due).Error; err != nil || len(due) == 0 {
+			return
+		}
+		for _, r := range due {
+			s.retrySyncerNotice(ctx, r)
+		}
+	}
+}
+
+func (s *Server) retrySyncerNotice(ctx context.Context, r models.SpaceSyncerNotificationRetry) {
+	notice, err := parseSyncerNotice(r.NoticeJson)
+	ref, err2 := space.ParseRef(r.Space)
+	if err != nil || err2 != nil {
+		s.clearSyncerRetry(ctx, r)
+		return
+	}
+	authority, err := s.getRepoActorByDid(ctx, ref.Authority)
+	if err != nil {
+		if notFound(err) {
+			// Deleting the authority's account deleted its spaces with it,
+			// which syncers learn from the account event.
+			s.clearSyncerRetry(ctx, r)
+		} else {
+			s.rescheduleSyncerRetry(ctx, r, notice)
+		}
+		return
+	}
+	if authority.Repo.Deactivated || authority.Repo.TakedownRef != nil {
+		s.rescheduleSyncerRetry(ctx, r, notice)
+		return
+	}
+	owed, err := s.isSyncerNoticeOwed(ctx, ref, r, notice)
+	if err != nil {
+		s.rescheduleSyncerRetry(ctx, r, notice)
+		return
+	}
+	if !owed {
+		s.clearSyncerRetry(ctx, r)
+		return
+	}
+	if err := s.sendSyncerUpdate(ctx, r.Endpoint, r.Space, r.Token, notice.update()); err != nil {
+		if !isRetryableNotify(err) {
+			s.clearSyncerRetry(ctx, r)
+			s.abandonSyncerNotice(ctx, r.Space, r.Endpoint, r.Token, notice)
+			s.logger.Warn("syncer notification will not be retried", "space", r.Space, "endpoint", r.Endpoint, "err", err)
+			return
+		}
+		s.rescheduleSyncerRetry(ctx, r, notice)
+		s.logger.Warn("syncer notification retry failed", "space", r.Space, "endpoint", r.Endpoint, "err", err)
+		return
+	}
+	s.clearSyncerRetry(ctx, r)
+}
+
+// isSyncerNoticeOwed reports whether a notice still applies. One that no
+// longer does is dropped rather than sent.
+func (s *Server) isSyncerNoticeOwed(ctx context.Context, ref space.Ref, r models.SpaceSyncerNotificationRetry, notice syncerNotice) (bool, error) {
+	st := s.spaceStore(s.db.Client().WithContext(ctx), ref.Authority)
+	if !notice.deleted {
+		// Not owed if the syncer has renewed since.
+		reg, err := st.getNotifyRegistration(r.Space, r.Endpoint, r.Token)
+		if err != nil {
+			return false, err
+		}
+		return reg != nil && reg.ExpiresAt <= nowISO(), nil
+	}
+	// Not owed if the space has been recreated since.
+	sp, err := st.getSpace(r.Space)
+	if err != nil {
+		return false, err
+	}
+	return sp != nil && sp.DeletedAt != nil, nil
+}
+
+// rescheduleSyncerRetry: retries aren't scheduled to stop at the end of the
+// window, so the last one lands after it. Once that one has failed too, the
+// notice is abandoned.
+func (s *Server) rescheduleSyncerRetry(ctx context.Context, r models.SpaceSyncerNotificationRetry, notice syncerNotice) {
+	if r.ExpiresAt <= time.Now().UnixMilli() {
+		s.clearSyncerRetry(ctx, r)
+		s.abandonSyncerNotice(ctx, r.Space, r.Endpoint, r.Token, notice)
+		s.logger.Warn("syncer notification expired after 72 hours", "space", r.Space, "endpoint", r.Endpoint)
+		return
+	}
+	attempts := r.Attempts + 1
+	// Matching retry_at leaves alone a row re-queued since.
+	if err := s.db.Client().WithContext(ctx).Model(&models.SpaceSyncerNotificationRetry{}).
+		Where("space = ? AND endpoint = ? AND token = ? AND retry_at = ?", r.Space, r.Endpoint, r.Token, r.RetryAt).
+		Updates(map[string]any{"attempts": attempts, "retry_at": nextSyncerRetryAt(attempts).UnixMilli()}).Error; err != nil {
+		s.logger.Error("could not reschedule syncer notification", "space", r.Space, "endpoint", r.Endpoint, "err", err)
+	}
+}
+
+func (s *Server) clearSyncerRetry(ctx context.Context, r models.SpaceSyncerNotificationRetry) {
+	if err := s.db.Client().WithContext(ctx).Where("space = ? AND endpoint = ? AND token = ? AND retry_at = ?", r.Space, r.Endpoint, r.Token, r.RetryAt).Delete(&models.SpaceSyncerNotificationRetry{}).Error; err != nil {
+		s.logger.Error("could not clear syncer notification retry", "err", err)
+	}
 }

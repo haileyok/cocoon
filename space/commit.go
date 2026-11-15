@@ -21,9 +21,9 @@ type CommitCtx struct {
 }
 
 // Commit is a space repo commit (com.atproto.space.defs#commit). It carries
-// no signature: the repo host authenticates it to each syncer with a MAC in
-// the Atproto-Space-Mac response header, so a leaked commit proves nothing to
-// a third party about what the author wrote.
+// no signature: the repo host authenticates it to each syncer with a MAC
+// (HTTP message signature) over the Atproto-Space-Commit response header, so a
+// leaked commit proves nothing to a third party about what the author wrote.
 type Commit struct {
 	Ver   int64
 	Repo  string
@@ -126,20 +126,22 @@ func (r *RepoCommit) ToCommit(ctx CommitCtx) Commit {
 }
 
 // VerifyCommitParams names the space and repo that were requested, with the
-// request's shared secret and the MAC from its response header.
+// request's encapsulation and the response's headers.
 type VerifyCommitParams struct {
-	Space        string
-	Repo         string
-	SharedSecret []byte
-	Mac          []byte
+	Space string
+	Repo  string
+	VerifyMacParams
 }
 
-// VerifyCommit checks a commit against the MAC its response carried. Once it
-// passes, Data is trusted as the author's claim about their repo, which is
-// what makes Matches meaningful.
-func VerifyCommit(c Commit, p VerifyCommitParams) bool {
-	if c.Ver != CommitVersion || c.Repo != p.Repo || c.Space != p.Space {
-		return false
+// VerifyCommit checks a commit against the MAC its response carried, and that
+// it is the repo and space requested. Once it passes, Data is trusted as the
+// author's claim about their repo, which is what makes Matches meaningful.
+func VerifyCommit(c Commit, p VerifyCommitParams) error {
+	if c.Ver != CommitVersion {
+		return verr("unsupported commit version: %d", c.Ver)
 	}
-	return VerifyCommitMac(p.SharedSecret, c, p.Mac)
+	if c.Repo != p.Repo || c.Space != p.Space {
+		return verr("commit is not for the repo and space requested")
+	}
+	return VerifyCommitMac(c, p.VerifyMacParams)
 }

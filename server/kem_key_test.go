@@ -10,6 +10,7 @@ import (
 	"github.com/haileyok/cocoon/identity"
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/plc"
+	"github.com/haileyok/cocoon/space"
 )
 
 // #atproto_kem keys (the reference's createAccount.ts,
@@ -206,5 +207,57 @@ func TestKemKeyBackfill(t *testing.T) {
 	s.db.Client().Model(&models.Repo{}).Where("kem_key IS NULL").Count(&n)
 	if n != 1 {
 		t.Fatalf("%d accounts without keys", n)
+	}
+}
+
+// The November protocol derives a space commit's MAC secret from the account's
+// #atproto_kem key: the caller encapsulates to the key and the PDS decapsulates
+// with it, so an account without one can have none of its space commits MACed.
+// This case is not from kem-key-backfill.test.ts, which predates the accepting
+// host's MACs; it pins the key's place in the new API.
+func TestKemKeyForSpaceMacs(t *testing.T) {
+	n := newSpaceNet(t)
+	pds := n.newPDS()
+	alice := pds.createActor("alice")
+	spaceURI := createSpace(t, alice, spaceOpts{})
+	mustOK(t, doWrite(alice, spaceURI, writeOpts{rkey: "mac"}))
+
+	enc, err := space.Encapsulate(kemDidKeyOf(t, pds.s, alice.did))
+	if err != nil {
+		t.Fatal(err)
+	}
+	macHeaders := func() map[string]string {
+		h := alice.auth()
+		h[space.HeaderAcceptSignature] = space.FormatMacRequest(space.CommitMacProfile, enc.KeyShare)
+		return h
+	}
+	res := mustOK(t, pds.get("com.atproto.space.getLatestCommit", map[string]string{"space": spaceURI, "repo": alice.did}, macHeaders()))
+	if res.header.Get(space.HeaderCommit) == "" {
+		t.Fatalf("no commit MAC in the response: %v", res.header)
+	}
+	var out struct {
+		Commit space.Commit `json:"commit"`
+	}
+	if err := json.Unmarshal(res.raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if err := space.VerifyCommit(out.Commit, space.VerifyCommitParams{
+		Space: spaceURI, Repo: alice.did,
+		VerifyMacParams: space.VerifyMacParams{Encapsulation: *enc, Headers: res.header},
+	}); err != nil {
+		t.Fatalf("the commit MAC does not verify against the account's KEM key: %v", err)
+	}
+
+	// The same request without a KEM key answers no MAC: there is nothing to
+	// decapsulate to.
+	if err := pds.s.db.Exec(context.Background(), "UPDATE repos SET kem_key = NULL WHERE did = ?", nil, alice.did).Error; err != nil {
+		t.Fatal(err)
+	}
+	res = pds.get("com.atproto.space.getLatestCommit", map[string]string{"space": spaceURI, "repo": alice.did}, macHeaders())
+	if res.status != http.StatusInternalServerError {
+		t.Fatalf("want 500 without a KEM key, got %d: %s", res.status, res.raw)
+	}
+	if res.header.Get(space.HeaderCommit) != "" {
+		t.Fatal("a MAC was answered for an account without a KEM key")
 	}
 }

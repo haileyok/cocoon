@@ -40,31 +40,34 @@ func TestKem(t *testing.T) {
 		}
 	})
 	t.Run("rejects a key that is not P-256", func(t *testing.T) {
-		var me *MacError
-		if _, err := Encapsulate(didKeyOf(t, newK256(t))); !errors.As(err, &me) {
+		var ke *KemError
+		if _, err := Encapsulate(didKeyOf(t, newK256(t))); !errors.As(err, &ke) {
 			t.Fatal(err)
 		}
-		if _, err := Decapsulate(author, didKeyOf(t, newK256(t))); !errors.As(err, &me) {
+		if _, err := Decapsulate(author, didKeyOf(t, newK256(t))); !errors.As(err, &ke) {
 			t.Fatal(err)
 		}
-		if _, err := Decapsulate(author, "did:key:nope"); !errors.As(err, &me) {
+		if _, err := Decapsulate(author, "did:key:nope"); !errors.As(err, &ke) {
 			t.Fatal(err)
 		}
 	})
-	// RFC 9180 §A.3.1, DHKEM(P-256, HKDF-SHA256): the syncer's key share is
-	// pkEm and the author's KEM keypair is skRm.
-	t.Run("matches the RFC 9180 test vector", func(t *testing.T) {
-		pkEm := unhex(t, "04a92719c6195d5085104f469a8b9814d5838ff72b60501e2c4466e5e67b325ac98536d7b61a1af4b78e5b7f951c0900be863c403ce65c9bfcb9382657222d18c4")
-		skRm, err := atcrypto.ParsePrivateBytesP256(unhex(t, "f3ce7fdae57e1a310d87f1ebbde6f328be0a99cdbcadf4d6589cf29de4b8ffd2"))
+	// The keys are from the export-only DHKEM(P-256, HKDF-SHA256) entry of the
+	// HPKE test vectors (github.com/cfrg/draft-irtf-cfrg-hpke), where the
+	// syncer's key share is enc and the author's KEM keypair is skRm. Those
+	// vectors use a different info, so the expected secret was computed with
+	// Go's crypto/hpke, using info "atproto-mac" and an empty exporter context.
+	t.Run("matches HPKE secret export", func(t *testing.T) {
+		enc := unhex(t, "04d804370b7e24b94749eb1dc8df6d4d4a5d75f9effad01739ebcad5c54a40d57aaa8b4190fc124dbde2e4f1e1d1b012a3bc4038157dc29b55533a932306d8d38d")
+		skRm, err := atcrypto.ParsePrivateBytesP256(unhex(t, "62c3868357a464f8461d03aa0182c7cebcde841036aea7230ddc7339f1088346"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		pub, err := atcrypto.ParsePublicUncompressedBytesP256(pkEm)
+		pub, err := atcrypto.ParsePublicUncompressedBytesP256(enc)
 		if err != nil {
 			t.Fatal(err)
 		}
 		got, err := Decapsulate(skRm, pub.DIDKey())
-		if err != nil || hex.EncodeToString(got) != "c0d26aeab536609a572b07695d933b589dcf363ff9d93c93adea537aeabb8cb8" {
+		if err != nil || hex.EncodeToString(got) != "2060e0558d1b34c10086bc137f849bb79ba59fcdc30544418e35c9cd301f0d0d" {
 			t.Fatalf("%v %x", err, got)
 		}
 	})
@@ -83,11 +86,11 @@ func TestKemVectors(t *testing.T) {
 		if err != nil || hex.EncodeToString(got) != v.SharedSecret {
 			t.Errorf("vector %d: %v %x", i, err, got)
 		}
-		if FormatWantMacHeader(CommitMacType, v.KeyShare) != v.WantMacHeader || FormatWantMacHeader(RecordMacType, v.KeyShare) != v.WantRecordMacHeader {
-			t.Errorf("vector %d want-mac header", i)
+		if FormatMacRequest(CommitMacProfile, v.KeyShare) != v.AcceptCommitSignature || FormatMacRequest(RecordMacProfile, v.KeyShare) != v.AcceptRecordSignature {
+			t.Errorf("vector %d accept-signature header", i)
 		}
-		ks, err := ParseWantMacHeader([]string{v.WantMacHeader}, CommitMacType)
-		if err != nil || ks != v.KeyShare {
+		req, err := ParseMacRequest([]string{v.AcceptCommitSignature}, CommitMacProfile)
+		if err != nil || req == nil || req.KeyShare != v.KeyShare {
 			t.Errorf("vector %d parse: %v", i, err)
 		}
 	}

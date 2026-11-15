@@ -21,6 +21,10 @@ import (
 // RepoStarType is the $type of a space repo archive's metadata.
 const RepoStarType = "atproto-space-repo"
 
+// RepoStarLimits are the lengths a repo archive reader accepts: 64 KiB of
+// metadata, 4 KiB keys and records up to MaxRecordSize.
+var RepoStarLimits = StarLimits{MaxMetaLen: 64 * 1024, MaxKeyLen: 4 * 1024, MaxValueLen: MaxRecordSize}
+
 // RepoVerificationError is a space repo or record that does not verify.
 type RepoVerificationError struct{ Message string }
 
@@ -31,6 +35,9 @@ func verr(format string, args ...any) error {
 }
 
 var cborPrefix = cid.NewPrefixV1(cid.DagCBOR, multihash.SHA2_256)
+
+// CidForCBOR is the CID of DRISL-encoded bytes.
+func CidForCBOR(b []byte) cid.Cid { return cidForCBOR(b) }
 
 func cidForCBOR(b []byte) cid.Cid {
 	c, err := cborPrefix.Sum(b)
@@ -93,7 +100,10 @@ func ParseRepoStarMeta(m map[string]any) (Commit, error) {
 		return c, errors.New("space: expected a space reference")
 	}
 	if c.Rev, ok = m["rev"].(string); !ok {
-		return c, errors.New("rev: expected a string")
+		return c, errors.New("rev: expected a TID")
+	}
+	if _, err := syntax.ParseTID(c.Rev); err != nil {
+		return c, errors.New("rev: expected a TID")
 	}
 	data, ok := m["data"].(atdata.Bytes)
 	if !ok {
@@ -121,7 +131,7 @@ func SerializeRepo(w io.Writer, commit Commit, records []SerializedRecord) error
 			return err
 		}
 	}
-	return nil
+	return sw.Close()
 }
 
 // VerifyRepoParams is VerifyCommitParams for a repo archive.
@@ -147,10 +157,12 @@ type RepoStarReader struct {
 	done bool
 }
 
-// VerifyRepoStar verifies an archive's commit and returns a reader for its
-// records.
-func VerifyRepoStar(r io.Reader, params VerifyRepoParams) (*RepoStarReader, error) {
-	sr, err := ReadStar(r, MaxRecordSize)
+// ReadRepoStar reads an archive without authenticating its commit. The
+// records are checked against the commit's data as Next drains the reader, but
+// nothing vouches for the commit itself. This suits a repo host importing an
+// account's own repo, which comes with no MAC to check.
+func ReadRepoStar(r io.Reader) (*RepoStarReader, error) {
+	sr, err := ReadStar(r, RepoStarLimits)
 	if err != nil {
 		return nil, err
 	}
@@ -158,10 +170,23 @@ func VerifyRepoStar(r io.Reader, params VerifyRepoParams) (*RepoStarReader, erro
 	if err != nil {
 		return nil, verr("invalid repo metadata: %v", err)
 	}
-	if !VerifyCommit(commit, params) {
-		return nil, verr("commit failed verification")
+	if commit.Ver != CommitVersion {
+		return nil, verr("unsupported commit version: %d", commit.Ver)
 	}
 	return &RepoStarReader{Commit: commit, sr: sr, repo: NewRepoCommit()}, nil
+}
+
+// VerifyRepoStar verifies an archive's commit against the response's MAC and
+// returns a reader for its records.
+func VerifyRepoStar(r io.Reader, params VerifyRepoParams) (*RepoStarReader, error) {
+	rr, err := ReadRepoStar(r)
+	if err != nil {
+		return nil, err
+	}
+	if err := VerifyCommit(rr.Commit, params); err != nil {
+		return nil, err
+	}
+	return rr, nil
 }
 
 // Next returns the next record, or io.EOF once the archive has ended and its
@@ -240,30 +265,32 @@ func ParseRecordPath(p string) (string, string, error) {
 }
 
 // VerifyRecordParams names the record that was requested, with the request's
-// shared secret and the MAC from its response header.
+// encapsulation and the response's headers.
 type VerifyRecordParams struct {
-	URI          string
-	SharedSecret []byte
-	Mac          []byte
+	URI string
+	VerifyMacParams
 }
 
 // VerifyRecord checks a getRecord response against the MAC it carried: it
 // must be the record requested, the MAC must cover its uri and cid, and its
 // value must encode to that cid.
-func VerifyRecord(uri, cidStr string, value map[string]any, p VerifyRecordParams) bool {
+func VerifyRecord(uri, cidStr string, value map[string]any, p VerifyRecordParams) error {
 	if uri != p.URI {
-		return false
+		return verr("record is not the one requested: %s", uri)
 	}
 	c, err := cid.Decode(cidStr)
 	if err != nil {
-		return false
+		return verr("invalid record cid: %s", cidStr)
 	}
-	if !VerifyRecordMac(p.SharedSecret, uri, c, p.Mac) {
-		return false
+	if err := VerifyRecordMac(uri, c, p.VerifyMacParams); err != nil {
+		return err
 	}
 	b, err := atdata.MarshalCBOR(value)
 	if err != nil {
-		return false
+		return verr("record value does not match its cid")
 	}
-	return cidForCBOR(b).Equals(c)
+	if !cidForCBOR(b).Equals(c) {
+		return verr("record value does not match its cid")
+	}
+	return nil
 }

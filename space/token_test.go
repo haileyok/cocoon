@@ -325,13 +325,17 @@ func TestTokenVectors(t *testing.T) {
 			Iss, Sub, Aud, KeyID string
 			Kid                  string
 		}
-		var raw map[string]any
-		_ = json.Unmarshal(tv.Opts, &raw)
-		opts.Iss, _ = raw["iss"].(string)
-		opts.Sub, _ = raw["sub"].(string)
-		opts.Aud, _ = raw["aud"].(string)
-		opts.KeyID, _ = raw["keyId"].(string)
-		opts.Kid, _ = raw["kid"].(string)
+		var raw struct {
+			Iss, Sub, Aud string
+			Cnf           struct{ Kid string }
+		}
+		var hdr struct{ Kid string }
+		_ = json.Unmarshal(tv.Payload, &raw)
+		_ = json.Unmarshal(tv.Header, &hdr)
+		opts.Iss, opts.Sub, opts.Aud, opts.KeyID = raw.Iss, raw.Sub, raw.Aud, raw.Cnf.Kid
+		if typ := TokenType(tv.Type); typ == TokenClientAttestation {
+			opts.Kid = hdr.Kid
+		}
 		typ := TokenType(tv.Type)
 		tok, err := VerifySpaceToken(typ, tv.JWT, VerifyTokenOpts{GetSigningKey: keyFn(tv.SigningKey), Aud: opts.Aud, Sub: opts.Sub, Now: now})
 		if err != nil {

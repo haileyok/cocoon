@@ -14,6 +14,7 @@ import (
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/oauth/dpop"
 	"github.com/haileyok/cocoon/oauth/provider"
+	"github.com/haileyok/cocoon/space"
 	"github.com/labstack/echo/v4"
 	"gitlab.com/yawning/secp256k1-voi"
 	secp256k1secec "gitlab.com/yawning/secp256k1-voi/secec"
@@ -58,6 +59,12 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 		// move on to oauth session middleware if this is a dpop token
 		if pts[0] == "DPoP" {
 			return next(e)
+		}
+
+		// A space credential is not an account session. Parsing it as one would
+		// look up its space URI as an account.
+		if strings.EqualFold(pts[0], space.CredentialScheme) {
+			return helpers.InvalidTokenError(e)
 		}
 
 		tokenstr := pts[1]

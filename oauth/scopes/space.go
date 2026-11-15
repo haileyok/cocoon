@@ -22,7 +22,7 @@ var SpaceDefaultActions = []string{"read", "create", "update", "delete"}
 var SpaceManageOps = []string{"create", "update", "delete"}
 
 // SpacePermission is a parsed `space:` scope, following SpacePermission in
-// @atproto/oauth-scopes (bluesky-social/atproto 5b95b2f2):
+// @atproto/oauth-scopes (bluesky-social/atproto d4def6e9):
 //
 //	space:<type>?authority=<did|self|*>&skey=<rkey|*>&collection=<nsid|*>&action=..&manage=..
 //
@@ -124,7 +124,7 @@ func ParseSpacePermission(scope string) *SpacePermission {
 	}
 	for k := range params {
 		switch k {
-		case "type", "authority", "skey", "collection", "action", "manage":
+		case "spaceType", "authority", "skey", "collection", "action", "manage":
 		default:
 			return nil
 		}
@@ -156,7 +156,7 @@ func ParseSpacePermission(scope string) *SpacePermission {
 	}
 
 	p := &SpacePermission{}
-	if v, ok := params["type"]; ok {
+	if v, ok := params["spaceType"]; ok {
 		if positional != nil || len(v) != 1 || !validSpaceType(v[0]) {
 			return nil
 		}

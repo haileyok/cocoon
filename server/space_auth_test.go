@@ -1,7 +1,7 @@
 package server
 
 // Ported from packages/pds/tests/space/auth.test.ts in the reference PDS
-// (bluesky-social/atproto @ 5b95b2f2): who may read what, and on whose
+// (bluesky-social/atproto @ d4def6e9): who may read what, and on whose
 // authority.
 //
 // Two credential kinds reach a space. An account's own token (OAuth or legacy)
@@ -9,6 +9,28 @@ package server
 // consult. A space credential, which only the authority mints and only after
 // deciding the holder may read the space, reads any repo in it. The exchange
 // between them is the delegation token.
+//
+// Reference cases that do not apply to Cocoon, and why:
+//   - 'refuses to mint a delegation token on an app password (privileged:
+//     false/true)': Cocoon has no app passwords, so there is no second
+//     credential kind to refuse.
+//   - 'persists revocations for an hour including clock skew, and prunes
+//     expired entries' and 'keeps the revocation when background cleanup
+//     fails': both mock Date.now and the reference's background queue to move
+//     the clock and force a cleanup failure. Cocoon keeps revocations in
+//     revoked_space_credentials with an absolute expiry and prunes them inside
+//     addRevokedSpaceCredentials; neither the clock nor the prune is
+//     injectable, and asserting on direct storage writes would test the
+//     assertion rather than the PDS.
+//   - 'refuses space records as takedown subjects' and 'reports a space record
+//     as not taken down': com.atproto.admin.* takes repo subjects only in
+//     Cocoon (any other subject is UnsupportedSubject), and space records have
+//     no admin takedown state to report.
+//   - 'lets an admin read any space repo, including a taken-down one' and
+//     'lets a taken-down account export its spaces': neither applies — no admin
+//     credential reaches a space read in Cocoon (the reference's admin_token),
+//     and com.atproto.server.createSession has no allowTakendown, so a
+//     taken-down account cannot obtain the session those cases use.
 
 import (
 	"context"
@@ -26,6 +48,10 @@ import (
 	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/space"
 )
+
+// authSpaceTypeCollections are the collections com.example.group declares, the
+// reference's SPACE_TYPE_COLLECTIONS.
+var authSpaceTypeCollections = []string{"com.example.groupNote", "com.example.groupPost"}
 
 // The network the reference suite builds in beforeAll: three PDSes, alice the
 // authority and dan co-located with her on pds1, bob on pds2, carol on pds3.
@@ -93,25 +119,25 @@ func authExpectMsg(t *testing.T, r xres, status int, name, substr string) {
 	}
 }
 
-// authRevoke sends notifyCredentialRevoked to target as signer, with service
+// authRevoke sends notifyCredentialsRevoked to target as signer, with service
 // auth addressed to aud, as the reference's revoke() does (target: bob's PDS).
 func authRevoke(t *testing.T, target *spacePDS, signer *actor, spaceURI string, jtis []string, aud, lxm string) xres {
 	t.Helper()
 	if lxm == "" {
-		lxm = "com.atproto.space.notifyCredentialRevoked"
+		lxm = "com.atproto.space.notifyCredentialsRevoked"
 	}
 	tok, err := mintServiceAuth(signer.key, signer.did, aud, lxm, time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return target.post("com.atproto.space.notifyCredentialRevoked",
+	return target.post("com.atproto.space.notifyCredentialsRevoked",
 		map[string]any{"space": spaceURI, "credentials": jtis},
 		map[string]string{"Authorization": "Bearer " + tok})
 }
 
 // authRawGet issues a raw GET with explicit header values, so a header can be
 // repeated, as the reference's node:http request does.
-func authRawGet(t *testing.T, base, nsid string, params map[string]string, h http.Header) int {
+func authRawGet(t *testing.T, base, nsid string, params map[string]string, h http.Header) xres {
 	t.Helper()
 	v := url.Values{}
 	for k, x := range params {
@@ -127,8 +153,10 @@ func authRawGet(t *testing.T, base, nsid string, params map[string]string, h htt
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.StatusCode
+	raw, _ := io.ReadAll(resp.Body)
+	out := xres{status: resp.StatusCode, raw: raw, header: resp.Header}
+	_ = json.Unmarshal(raw, &out.body)
+	return out
 }
 
 // authOAuth returns a copy of a acting over a fresh OAuth session with scope,
@@ -139,13 +167,22 @@ func authOAuth(a *actor, scope string) *actor {
 	return &c
 }
 
+// authDeactivate deactivates an account, as com.atproto.server.deactivateAccount
+// and the reference's deactivateAccount do.
+func authDeactivate(t *testing.T, a *actor, on bool) {
+	t.Helper()
+	if err := a.pds.s.db.Exec(context.Background(), "UPDATE repos SET deactivated = ? WHERE did = ?", nil, on, a.did).Error; err != nil {
+		t.Fatal(err)
+	}
+}
+
 // authSpaceTypes publishes com.example.group's declaration, as the reference
 // network's lexicon authority does.
 type authSpaceTypes struct{}
 
 func (authSpaceTypes) ResolveSpaceCollections(ctx context.Context, nsid string) ([]string, error) {
 	if nsid == testSpaceType {
-		return []string{"com.example.groupNote", "com.example.groupPost"}, nil
+		return authSpaceTypeCollections, nil
 	}
 	return nil, fmt.Errorf("no space type declaration for %s", nsid)
 }
@@ -159,7 +196,7 @@ func TestSpaceAuthRepoBoundary(t *testing.T) {
 
 	t.Run("refuses a co-located non-member reading a member repo", func(t *testing.T) {
 		// Alice and dan share pds1. Dan is not a member; the membership gate
-		// lives in getSpaceCredential, so the read methods have to refuse him
+		// lives in authorizeSpaceSync, so the read methods have to refuse him
 		// on their own rather than assuming an unauthorized caller never got
 		// this far.
 		sp := createSpace(t, r.alice, spaceOpts{})
@@ -253,19 +290,22 @@ func TestSpaceAuthCredentials(t *testing.T) {
 		mustOK(t, r.pds1.get("com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.alice.did}, headers))
 	})
 
-	t.Run("refuses the Atproto-Space scheme of the October 1 alpha", func(t *testing.T) {
+	// RFC 9421 labels carry no meaning, so the request signature is identified
+	// by its tag: the same signature under another label is still accepted.
+	t.Run("finds the signature by its tag under any label", func(t *testing.T) {
 		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.carol}})
 		mustOK(t, doWrite(r.alice, sp, writeOpts{}))
 		cred := credentialFor(t, r.carol, r.pds1, sp)
 		headers := cred.headers(t, r.alice.did)
-		headers["authorization"] = "Atproto-Space " + cred.credential
-		authExpectMsg(t, r.pds1.get("com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.alice.did}, headers), 400, "InvalidToken", "Unsupported authorization type")
-		authExpectMsg(t, r.pds1.get("com.atproto.space.listRepos", map[string]string{"space": sp}, headers), 400, "InvalidToken", "Unsupported authorization type")
+		headers["signature-input"] = strings.Replace(headers["signature-input"], "sig=", "relabeled=", 1)
+		headers["signature"] = strings.Replace(headers["signature"], "sig=", "relabeled=", 1)
+		mustOK(t, r.pds1.get("com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.alice.did}, headers))
 	})
 
-	t.Run("responds 401 to repeated authorization fields", func(t *testing.T) {
-		authRepeatedHeaderCase(t, r, "authorization", "", 401)
-	})
+	// The reference's it.each rows. Repeated atproto-space-audience and
+	// authorization fields are refused (the verifier requires exactly one of
+	// each); repeated Signature-Input and Signature fields combine, since a
+	// message may carry several signatures.
 	t.Run("responds 401 to repeated atproto-space-audience fields", func(t *testing.T) {
 		authRepeatedHeaderCase(t, r, "atproto-space-audience", "", 401)
 	})
@@ -274,6 +314,11 @@ func TestSpaceAuthCredentials(t *testing.T) {
 	})
 	t.Run("responds 200 to repeated signature fields", func(t *testing.T) {
 		authRepeatedHeaderCase(t, r, "signature", "other=:YWJj:", 200)
+	})
+	// Also from the reference's table in the October 22 alpha, which the
+	// November 12 suite dropped; the verifier still requires one field.
+	t.Run("responds 401 to repeated authorization fields", func(t *testing.T) {
+		authRepeatedHeaderCase(t, r, "authorization", "", 401)
 	})
 
 	t.Run("refuses a credential presented with a key of the holder own", func(t *testing.T) {
@@ -286,10 +331,10 @@ func TestSpaceAuthCredentials(t *testing.T) {
 		authExpectMsg(t, res, 401, "BadSpaceSignature", "invalid HTTP message signature")
 	})
 
-	t.Run("refuses a signature addressed to another repo owner (remote)", func(t *testing.T) {
+	t.Run("refuses a signature addressed to another account (remote)", func(t *testing.T) {
 		authWrongAudienceCase(t, r, r.bob)
 	})
-	t.Run("refuses a signature addressed to another repo owner (co-located)", func(t *testing.T) {
+	t.Run("refuses a signature addressed to another account (co-located)", func(t *testing.T) {
 		authWrongAudienceCase(t, r, r.dan)
 	})
 
@@ -297,8 +342,7 @@ func TestSpaceAuthCredentials(t *testing.T) {
 		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.bob}})
 		cred := credentialFor(t, r.bob, r.pds1, sp)
 		headers := cred.headers(t, r.bob.did)
-		expectErr(t, r.pds1.get("com.atproto.space.listRepos", map[string]string{"space": sp}, headers), 401, "BadSpaceAudience")
-		expectErr(t, r.pds1.get("com.atproto.simplespace.getSpace", map[string]string{"space": sp}, headers), 401, "BadSpaceAudience")
+		expectErr(t, r.pds1.get("com.atproto.space.listWriters", map[string]string{"space": sp}, headers), 401, "BadSpaceAudience")
 	})
 
 	t.Run("reuses a signature for the same audience across requests", func(t *testing.T) {
@@ -310,7 +354,7 @@ func TestSpaceAuthCredentials(t *testing.T) {
 			mustOK(t, r.pds1.get("com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.alice.did}, headers))
 		}
 		mustOK(t, r.pds1.get("com.atproto.space.listBlobs", map[string]string{"space": sp, "repo": r.alice.did}, headers))
-		mustOK(t, r.pds1.post("com.atproto.space.registerNotify", map[string]any{"space": sp, "service": r.alice.did}, headers))
+		mustOK(t, r.pds1.get("com.atproto.space.listWriters", map[string]string{"space": sp}, headers))
 	})
 
 	t.Run("reuses one credential across many hosts, each with its own audience signature", func(t *testing.T) {
@@ -343,6 +387,21 @@ func TestSpaceAuthCredentials(t *testing.T) {
 		expectErr(t, cred.get(t, r.pds1, "com.atproto.space.listRepoOps", map[string]string{"space": other, "repo": r.alice.did}), 400, "InvalidCredential")
 	})
 
+	t.Run("refuses a space credential where only the account's own session is accepted", func(t *testing.T) {
+		// getSpace answers the authority's own state (the policy), so it is one
+		// of the methods a space credential does not reach: it is registered
+		// with the session middlewares rather than the space-read one.
+		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.carol}})
+		cred := credentialFor(t, r.carol, r.pds1, sp)
+
+		res := r.pds1.get("com.atproto.space.getSpace", map[string]string{"space": sp}, cred.headers(t, r.alice.did))
+		// As the reference does, answered as an unexpected authorization type.
+		if res.status != 400 || res.errName() != "InvalidToken" {
+			t.Fatalf("want 400 InvalidToken for a space credential on getSpace, got %d: %s", res.status, res.raw)
+		}
+		mustOK(t, r.alice.get("com.atproto.space.getSpace", map[string]string{"space": sp}))
+	})
+
 	t.Run("refuses one the space authority did not issue", func(t *testing.T) {
 		// Carol self-signs a credential for one of alice's spaces. It verifies
 		// against her own signing key, so nothing but the iss/authority check
@@ -369,8 +428,8 @@ func TestSpaceAuthCredentials(t *testing.T) {
 		res := asForged.get(t, r.pds1, "com.atproto.space.getLatestCommit", map[string]string{"space": sp, "repo": r.alice.did})
 		authExpectMsg(t, res, 401, "BadJwtIss", "issuer is not the space authority")
 
-		// listRepos authorizes off the credential too, on a separate path.
-		res = asForged.get(t, r.pds1, "com.atproto.space.listRepos", map[string]string{"space": sp})
+		// listWriters authorizes off the credential too, on a separate path.
+		res = asForged.get(t, r.pds1, "com.atproto.space.listWriters", map[string]string{"space": sp})
 		authExpectMsg(t, res, 401, "BadJwtIss", "issuer is not the space authority")
 	})
 
@@ -379,9 +438,11 @@ func TestSpaceAuthCredentials(t *testing.T) {
 		// Carol mints a delegation token while she is still a member.
 		token := delegationTokenFor(t, r.carol, sp)
 		// Alice removes her before she can redeem it.
-		mustOK(t, r.alice.post("com.atproto.simplespace.removeMember", map[string]any{"space": sp, "did": r.carol.did}))
+		removeMember(t, r.alice, sp, r.carol)
 
-		expectErr(t, exchange(t, r.pds1, sp, token, newP256Key(t), ""), 400, "UserNotAuthorized")
+		// The refusal is answered as an absent space, so it discloses nothing
+		// about the space to an account that no longer has access to it.
+		expectErr(t, exchange(t, r.pds1, sp, token, newP256Key(t), ""), 400, "SpaceNotFound")
 	})
 }
 
@@ -405,9 +466,13 @@ func authRepeatedHeaderCase(t *testing.T, r *authNet, name, extra string, expect
 	}
 	h.Add(name, dup)
 
-	status := authRawGet(t, r.pds1.url, "com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.alice.did}, h)
-	if status != expectedStatus {
-		t.Fatalf("repeated %s: want %d, got %d", name, expectedStatus, status)
+	res := authRawGet(t, r.pds1.url, "com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.alice.did}, h)
+	if res.status != expectedStatus {
+		t.Fatalf("repeated %s: want %d, got %d: %s", name, expectedStatus, res.status, res.raw)
+	}
+	// A refusal is the verifier's, not an unrelated failure of the request.
+	if expectedStatus == 401 && res.errName() != "BadSpaceSignature" {
+		t.Fatalf("repeated %s: want BadSpaceSignature, got %s", name, res.raw)
 	}
 }
 
@@ -426,8 +491,8 @@ func TestSpaceAuthCredentialRevocation(t *testing.T) {
 
 	// N/A in Cocoon: the reference's "persists revocations for an hour
 	// including clock skew, and prunes expired entries" and "keeps the
-	// revocation when background cleanup fails" cases — they mock Date.now
-	// and the background queue, which Cocoon's storage layer does not expose.
+	// revocation when background cleanup fails" cases — they mock Date.now and
+	// the background queue, which Cocoon's storage layer does not expose.
 
 	t.Run("revokes a batch idempotently on a remote repo host", func(t *testing.T) {
 		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.bob, r.carol}})
@@ -447,6 +512,7 @@ func TestSpaceAuthCredentialRevocation(t *testing.T) {
 			expectErr(t, cred.get(t, r.pds2, "com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.bob.did}), 401, "CredentialRevoked")
 		}
 		mustOK(t, untouched.get(t, r.pds2, "com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.bob.did}))
+		// A revocation is the repo host's; the authority heard nothing of it.
 		mustOK(t, first.get(t, r.pds1, "com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.alice.did}))
 		mustOK(t, r.bob.get("com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.bob.did}))
 
@@ -467,10 +533,10 @@ func TestSpaceAuthCredentialRevocation(t *testing.T) {
 		authExpectMsg(t, authRevoke(t, r.pds2, r.bob, sp, credentials, r.bob.did, ""), 403, "Forbidden", "not the space authority")
 		authExpectMsg(t, authRevoke(t, r.pds2, r.alice, sp, credentials, r.alice.did, ""), 403, "Forbidden", "audience does not match")
 		authExpectMsg(t, authRevoke(t, r.pds2, r.alice, sp, credentials, r.pds2.s.config.Did, ""), 403, "Forbidden", "audience does not match")
-		if res := authRevoke(t, r.pds2, r.alice, sp, credentials, r.bob.did, "com.atproto.space.notifyWrite"); res.status < 400 {
-			t.Fatalf("accepted a notifyWrite lxm: %s", res.raw)
+		if res := authRevoke(t, r.pds2, r.alice, sp, credentials, r.bob.did, "com.atproto.space.notifyRepoUpdate"); res.status < 400 {
+			t.Fatalf("accepted a notifyRepoUpdate lxm: %s", res.raw)
 		}
-		if res := r.pds2.post("com.atproto.space.notifyCredentialRevoked", map[string]any{"space": sp, "credentials": credentials}, r.alice.auth()); res.status < 400 {
+		if res := r.pds2.post("com.atproto.space.notifyCredentialsRevoked", map[string]any{"space": sp, "credentials": credentials}, r.alice.auth()); res.status < 400 {
 			t.Fatalf("accepted a session in place of service auth: %s", res.raw)
 		}
 		revoked, err := r.pds2.s.isSpaceCredentialRevoked(context.Background(), sp, credentials[0])
@@ -528,24 +594,8 @@ func TestSpaceAuthDelegationTokens(t *testing.T) {
 			t.Fatal(err)
 		}
 		pub, _ := k256.PublicKey()
-		res := r.pds1.post("com.atproto.space.getSpaceCredential", map[string]any{"space": sp, "credentialKid": pub.DIDKey(), "delegationToken": token}, nil)
+		res := r.pds1.post("com.atproto.space.authorizeSpaceSync", map[string]any{"space": sp, "credentialKey": pub.DIDKey(), "delegationToken": token}, nil)
 		authExpectMsg(t, res, 400, "InvalidRequest", "P-256")
-	})
-
-	t.Run("no longer reads a delegation token from the authorization header", func(t *testing.T) {
-		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.carol}})
-		token := delegationTokenFor(t, r.carol, sp)
-		res := r.pds1.post("com.atproto.space.getSpaceCredential", map[string]any{"space": sp, "credentialKid": authKeyDid(t, newP256Key(t))}, map[string]string{"Authorization": "Bearer " + token})
-		expectErr(t, res, 400, "SpaceNotFound")
-	})
-
-	t.Run("refuses an invalid delegation token as an invalid request", func(t *testing.T) {
-		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.carol}})
-		token := delegationTokenFor(t, r.carol, sp)
-		parts := strings.Split(token, ".")
-		parts[2] = parts[2][:len(parts[2])-4] + "AAAA"
-		authExpectMsg(t, exchange(t, r.pds1, sp, strings.Join(parts, "."), newP256Key(t), ""), 400, "InvalidDelegationToken", "signature")
-		expectErr(t, exchange(t, r.pds1, sp, "not-a-jwt", newP256Key(t), ""), 400, "InvalidDelegationToken")
 	})
 
 	t.Run("are refused when the audience names another authority", func(t *testing.T) {
@@ -580,6 +630,19 @@ func TestSpaceAuthDelegationTokens(t *testing.T) {
 		token := delegationTokenFor(t, r.carol, sp)
 
 		expectErr(t, exchange(t, r.pds1, other, token, newP256Key(t), ""), 400, "InvalidDelegationToken")
+	})
+
+	// Ported from packages/pds/tests/space/policy.test.ts ("answers SpaceDeleted
+	// regardless of the request authorization"), kept here because it pins the
+	// order authorizeSpaceSync answers in: a deleted space is reported before
+	// the delegation token or attestation is looked at, so a syncer that missed
+	// the deletion notice learns the space is gone whatever it holds.
+	t.Run("answers SpaceDeleted regardless of the request authorization", func(t *testing.T) {
+		sp := createSpace(t, r.alice, spaceOpts{members: []*actor{r.carol}})
+		mustOK(t, r.alice.post("com.atproto.space.deleteSpace", map[string]any{"space": sp}))
+		r.net.waitSpaceJobs()
+
+		expectErr(t, exchange(t, r.pds1, sp, "not-a-delegation-token", newP256Key(t), ""), 400, "SpaceDeleted")
 	})
 }
 
@@ -622,14 +685,105 @@ func TestSpaceAuthTakedowns(t *testing.T) {
 
 		mustOK(t, write())
 	})
+
+	t.Run("stops minting credentials and listing writers for a taken-down authority", func(t *testing.T) {
+		erin := r.pds1.createActor("erin")
+		sp := createSpace(t, erin, spaceOpts{members: []*actor{r.dan}})
+		cred := credentialFor(t, r.dan, r.pds1, sp)
+		listWriters := func() xres {
+			return cred.get(t, r.pds1, "com.atproto.space.listWriters", map[string]string{"space": sp})
+		}
+		mustOK(t, listWriters())
+
+		takedown(t, erin, true)
+		// A credential already issued stays valid: it is verified against the
+		// authority's key, which a takedown does not withdraw. What stops is
+		// minting a new one and reading the writer set the authority hosts.
+		mustOK(t, cred.get(t, r.pds1, "com.atproto.space.listRecords", map[string]string{"space": sp, "repo": r.dan.did}))
+		expectErr(t, exchange(t, r.pds1, sp, delegationTokenFor(t, r.dan, sp), newP256Key(t), ""), 400, "RepoTakendown")
+		expectErr(t, listWriters(), 400, "RepoTakendown")
+		takedown(t, erin, false)
+
+		cred = credentialFor(t, r.dan, r.pds1, sp)
+		if cred.credential == "" {
+			t.Fatal("no credential minted after the takedown lifted")
+		}
+	})
+
+	t.Run("stops minting public credentials for a taken-down authority", func(t *testing.T) {
+		frank := r.pds1.createActor("frank")
+		sp := createSpace(t, frank, spaceOpts{policy: memberPolicy(map[string]any{"publicRead": true})})
+		// A public space mints a credential with no delegation token at all.
+		publicCredential(t, r.pds1, sp, "")
+
+		takedown(t, frank, true)
+		expectErr(t, exchange(t, r.pds1, sp, "", newP256Key(t), ""), 400, "RepoTakendown")
+		takedown(t, frank, false)
+	})
+
+	t.Run("stops minting credentials for a deactivated authority", func(t *testing.T) {
+		gina := r.pds1.createActor("gina")
+		sp := createSpace(t, gina, spaceOpts{members: []*actor{r.dan}})
+
+		authDeactivate(t, gina, true)
+		expectErr(t, exchange(t, r.pds1, sp, delegationTokenFor(t, r.dan, sp), newP256Key(t), ""), 400, "RepoDeactivated")
+		authDeactivate(t, gina, false)
+
+		if cred := credentialFor(t, r.dan, r.pds1, sp); cred.credential == "" {
+			t.Fatal("no credential minted after reactivation")
+		}
+	})
+
+	t.Run("stops a taken-down authority managing its spaces", func(t *testing.T) {
+		hank := r.pds1.createActor("hank")
+		sp := createSpace(t, hank, spaceOpts{members: []*actor{r.dan}})
+		calls := []func() xres{
+			func() xres {
+				return hank.post("com.atproto.space.createSpace", map[string]any{"spaceType": testSpaceType, "skey": "second", "policy": memberPolicy(nil)})
+			},
+			func() xres {
+				return hank.post("com.atproto.space.updateSpace", map[string]any{"space": sp, "policy": memberPolicy(nil)})
+			},
+			func() xres {
+				return hank.post("com.atproto.space.deleteSpace", map[string]any{"space": sp})
+			},
+			func() xres { return removeWriter(hank, sp, r.dan) },
+			func() xres { return putMemberRes(hank, sp, r.bob, true, true) },
+			func() xres {
+				return hank.post("com.atproto.memberspace.removeMembers", map[string]any{"space": sp, "dids": []string{r.dan.did}})
+			},
+		}
+
+		takedown(t, hank, true)
+		for i, call := range calls {
+			if res := call(); res.status != 401 || res.errName() != "AccountTakedown" {
+				t.Errorf("call %d: want 401 AccountTakedown, got %d: %s", i, res.status, res.raw)
+			}
+		}
+		takedown(t, hank, false)
+
+		// The same calls are accepted once the takedown is lifted.
+		mustOK(t, hank.post("com.atproto.space.updateSpace", map[string]any{"space": sp, "policy": memberPolicy(nil)}))
+	})
+
+	t.Run("stops a deactivated authority creating spaces", func(t *testing.T) {
+		ian := r.pds1.createActor("ian")
+
+		authDeactivate(t, ian, true)
+		res := ian.post("com.atproto.space.createSpace", map[string]any{"spaceType": testSpaceType, "skey": "deactivated", "policy": memberPolicy(nil)})
+		expectErr(t, res, 401, "AccountDeactivated")
+		authDeactivate(t, ian, false)
+
+		mustOK(t, ian.post("com.atproto.space.createSpace", map[string]any{"spaceType": testSpaceType, "skey": "reactivated", "policy": memberPolicy(nil)}))
+	})
 }
 
 func TestSpaceAuthOAuthScopes(t *testing.T) {
 	// OAuth scope enforcement, end to end. The reference stubs the OAuth
 	// verifier; here the sessions are real DPoP-bound token rows whose scope
 	// is checked by the real handlers. The reference's network runs with a
-	// lexicon authority so a bare space:<type> grant can be expanded; here
-	// the last case installs a declaration resolver instead.
+	// lexicon authority so a bare space:<type> grant can be expanded; here the
+	// last case installs a declaration resolver instead.
 
 	n := newSpaceNet(t)
 	pds1 := n.newPDS()
@@ -646,7 +800,7 @@ func TestSpaceAuthOAuthScopes(t *testing.T) {
 
 	t.Run("enforces the collection a grant names on a write", func(t *testing.T) {
 		sp := createSpace(t, alice, spaceOpts{})
-		allowed, forbidden := "com.example.groupNote", "com.example.groupPost"
+		allowed, forbidden := authSpaceTypeCollections[0], authSpaceTypeCollections[1]
 
 		oa := authOAuth(alice, grant("collection="+allowed+"&action=create"))
 		mustOK(t, doWrite(oa, sp, writeOpts{collection: allowed, rkey: "ok"}))
@@ -657,7 +811,7 @@ func TestSpaceAuthOAuthScopes(t *testing.T) {
 
 	t.Run("enforces the action a grant names", func(t *testing.T) {
 		sp := createSpace(t, alice, spaceOpts{})
-		collection := "com.example.groupNote"
+		collection := authSpaceTypeCollections[0]
 		// Seed a record to delete, outside the restricted grant.
 		mustOK(t, doWrite(alice, sp, writeOpts{collection: collection, rkey: "seeded"}))
 
@@ -665,12 +819,30 @@ func TestSpaceAuthOAuthScopes(t *testing.T) {
 		expectErr(t, doDel(oa, sp, collection, "seeded"), 403, "InsufficientScope")
 	})
 
+	t.Run("requires delete on every collection a clear removes", func(t *testing.T) {
+		sp := createSpace(t, alice, spaceOpts{})
+		first, second := authSpaceTypeCollections[0], authSpaceTypeCollections[1]
+		mustOK(t, doWrite(alice, sp, writeOpts{collection: first, rkey: "first"}))
+		mustOK(t, doWrite(alice, sp, writeOpts{collection: second, rkey: "second"}))
+
+		// A grant that covers one of the two collections is not enough: a
+		// clear removes records from every collection, so it needs delete on
+		// all of them.
+		expectErr(t, clearRecords(authOAuth(alice, grant("collection="+first+"&action=delete")), sp), 403, "InsufficientScope")
+		kept := mustOK(t, alice.get("com.atproto.space.listRecords", map[string]string{"space": sp, "repo": alice.did}))
+		if len(kept.list("records")) != 2 {
+			t.Fatalf("%s", kept.raw)
+		}
+
+		mustOK(t, clearRecords(authOAuth(alice, grant("collection="+first+"&collection="+second+"&action=delete")), sp))
+	})
+
 	t.Run("resolves putRecord to update rather than demanding create too", func(t *testing.T) {
 		// putRecord is create-or-update, so it asks for whichever this write
 		// is: an app granted only update must be able to overwrite, without
 		// also needing create.
 		sp := createSpace(t, alice, spaceOpts{})
-		collection := "com.example.groupNote"
+		collection := authSpaceTypeCollections[0]
 		mustOK(t, doWrite(alice, sp, writeOpts{collection: collection, rkey: "self", text: "first"}))
 
 		oa := authOAuth(alice, grant("collection="+collection+"&action=update"))
@@ -728,38 +900,38 @@ func TestSpaceAuthOAuthScopes(t *testing.T) {
 		expectErr(t, oa.get("com.atproto.space.listSpaces", nil), 403, "InsufficientScope")
 
 		// Narrowed to what the grant covers, it is allowed.
-		listed := mustOK(t, oa.get("com.atproto.space.listSpaces", map[string]string{"spaceType": testSpaceType, "did": alice.did}))
+		listed := mustOK(t, oa.get("com.atproto.space.listSpaces", map[string]string{"spaceType": testSpaceType, "spaceDid": alice.did}))
 		found := false
 		for _, s := range listed.list("spaces") {
-			found = found || s["uri"] == sp
+			found = found || s["space"] == sp
 		}
 		if !found {
 			t.Fatalf("listing misses %s: %s", sp, listed.raw)
 		}
 
-		expectErr(t, oa.get("com.atproto.space.listSpaces", map[string]string{"spaceType": "com.example.otherGroup", "did": alice.did}), 403, "InsufficientScope")
+		expectErr(t, oa.get("com.atproto.space.listSpaces", map[string]string{"spaceType": "com.example.otherGroup", "spaceDid": alice.did}), 403, "InsufficientScope")
 	})
 
 	t.Run("materializes the space type declared collections into a bare grant", func(t *testing.T) {
 		// The seam this suite exists for. A bare space:<type> names no
 		// collections, so on its own it confers no write targets at all; the
-		// provider expands it from the space type's lexicon at issuance. This
-		// asserts the expansion the provider performs is one the PDS then
-		// accepts. Cocoon resolves self at enforcement rather than at
-		// issuance, so the expanded grant carries no authority=<did> — but
-		// the write below only succeeds if the session's grant covers alice's
-		// own authority.
+		// provider expands it from the space type's declaration at issuance,
+		// resolving self to the user. This asserts the expansion is one the
+		// PDS then accepts.
 		pds1.s.spaceTypes = authSpaceTypes{}
-		expanded := pds1.s.expandScopes(context.Background(), "atproto space:"+testSpaceType, "")
-		for _, collection := range []string{"com.example.groupNote", "com.example.groupPost"} {
+		expanded := pds1.s.expandScopes(context.Background(), "atproto space:"+testSpaceType, alice.did)
+		for _, collection := range authSpaceTypeCollections {
 			if !strings.Contains(expanded, "collection="+collection) {
 				t.Fatalf("expanded scope misses %s: %s", collection, expanded)
 			}
 		}
+		if !strings.Contains(expanded, "authority="+alice.did) {
+			t.Fatalf("expanded scope misses the resolved authority: %s", expanded)
+		}
 
 		sp := createSpace(t, alice, spaceOpts{})
 		oa := authOAuth(alice, "atproto space:"+testSpaceType)
-		for _, collection := range []string{"com.example.groupNote", "com.example.groupPost"} {
+		for _, collection := range authSpaceTypeCollections {
 			mustOK(t, doWrite(oa, sp, writeOpts{collection: collection, rkey: "decl-" + lastSegment(collection)}))
 		}
 		// A collection the space type never declared stays out of reach.

@@ -1,13 +1,18 @@
 {
-  "generatedBy": "gen-vectors.mjs: @atproto/space serializeRepo at 0.0.0-spaces-alpha-20261022141228",
+  "generatedBy": "gen-vectors.mjs: @atproto/space writeRepoStar at 0.0.0-spaces-alpha-20261112204144",
   "did": "did:plc:vlpdsspacesrefexport2345",
   "space": "at://did:plc:vlpdsspacesrefexport2345/space/com.example.group/refexport",
   "rev": "3mvzvh4fs222b",
   "data": "aa6651ce0b290b81f8a02dc934f7144157d20e95e09c99ca43258a97d02bf62c",
   "kemPrivateKey": "2b7e151628aed2a6abf7158809cf4f3c762e7160f38b4da56a784d9045190cfe",
-  "keyShare": "did:key:zDnaeojvaid3ay8FYu1pN939AiXYv9UrvAxPVfBWFtkudAfMj",
-  "sharedSecret": "e065b7f837ca53aa8e184708ab0d90fb3fb6983297cad30fbc27b82d6c784e3a",
-  "macHeader": "type=\"atproto-space-repo\", ver=1, mac=:XJja3Aya0jdqj8qLuFaiVDDiFZOI4a1JPZhB4j5VkFY=:",
+  "keyShare": "did:key:zDnaeuL3Ujo4L2uuxMtKh1JKhYap6nnkUt9uJvNV9dQ6Fz8FJ",
+  "sharedSecret": "b1a7a32f6855c6521b90b3d7794ae491cd31282e58445ee81906900dfbd6ab04",
+  "acceptSignature": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaeuL3Ujo4L2uuxMtKh1JKhYap6nnkUt9uJvNV9dQ6Fz8FJ\";tag=\"atproto-space-commit\"",
+  "headers": {
+    "atproto-space-commit": "ver=1, repo=\"did:plc:vlpdsspacesrefexport2345\", space=\"at://did:plc:vlpdsspacesrefexport2345/space/com.example.group/refexport\", rev=\"3mvzvh4fs222b\", data=:qmZRzgspC4H4oC3JNPcUQVfSDpXgnJnKQyWKl9Ar9iw=:",
+    "signature-input": "mac=(\"atproto-space-commit\";sf);keyid=\"did:key:zDnaeuL3Ujo4L2uuxMtKh1JKhYap6nnkUt9uJvNV9dQ6Fz8FJ\";tag=\"atproto-space-commit\"",
+    "signature": "mac=:ir/C+AmZopnJ2L5FEQn47ssf8byjDdS0510h2SnQka8=:"
+  },
   "records": [
     {
       "collection": "com.example.spaceNote",
