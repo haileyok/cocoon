@@ -14,6 +14,69 @@ import (
 	"github.com/ipfs/go-cid"
 )
 
+func TestGetBlobMissingMetadata(t *testing.T) {
+	for _, storage := range []string{"sqlite", "s3", "cdn"} {
+		t.Run(storage, func(t *testing.T) {
+			s := newTestServer(t)
+			account := s.createTestAccount(t, "blobs.pds.test")
+			other := s.createTestAccount(t, "other.pds.test")
+			const payload = "stored blob bytes"
+			c, _ := blobRecord(t, payload)
+			blob := models.Blob{Did: account.Did, Cid: c.Bytes(), Storage: "sqlite", RefCount: 1}
+			key := "blobs/" + account.Did + "/" + c.String()
+			if storage != "sqlite" {
+				blob.Storage = "s3"
+				endpoint := fakeS3(t, "bucket", map[string]string{key: payload})
+				s.s3Config = &S3Config{BlobstoreEnabled: true, Endpoint: endpoint.URL,
+					Bucket: "bucket", Region: "test", AccessKey: "test", SecretKey: "test"}
+				if storage == "cdn" {
+					s.s3Config.CDNUrl = endpoint.URL + "/bucket"
+				}
+			}
+			if err := s.db.Client().Create(&blob).Error; err != nil {
+				t.Fatal(err)
+			}
+			if storage == "sqlite" {
+				if err := s.db.Client().Create(&models.BlobPart{BlobID: blob.ID, Data: []byte(payload)}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, state := range []string{"present", "other account", "removed"} {
+				t.Run(state, func(t *testing.T) {
+					did := account.Did
+					if state == "other account" {
+						did = other.Did
+					} else if state == "removed" {
+						// Leave payload storage intact: metadata is the lookup authority.
+						if err := s.db.Client().Delete(&blob).Error; err != nil {
+							t.Fatal(err)
+						}
+					}
+					e, w := newRequestContext("GET", "/xrpc/com.atproto.sync.getBlob?did="+did+"&cid="+c.String(), "", nil)
+					if err := s.handleSyncGetBlob(e); err != nil {
+						t.Fatal(err)
+					}
+					if state != "present" {
+						var body map[string]string
+						if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+							t.Fatal(err)
+						}
+						if w.Code != 400 || body["error"] != "BlobNotFound" || w.Header().Get("Location") != "" {
+							t.Fatalf("missing blob: %d %s, location=%q", w.Code, w.Body.String(), w.Header().Get("Location"))
+						}
+					} else if storage == "cdn" {
+						if w.Code != 302 || w.Header().Get("Location") != s.s3Config.CDNUrl+"/"+key {
+							t.Fatalf("CDN redirect: %d %q", w.Code, w.Header().Get("Location"))
+						}
+					} else if w.Code != 200 || w.Body.String() != payload {
+						t.Fatalf("blob bytes: %d %s", w.Code, w.Body.String())
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestInactiveRepoReads(t *testing.T) {
 	s, account := endpointTestServer(t)
 	s.repoman = NewRepoMan(s)

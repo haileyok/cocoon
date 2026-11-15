@@ -54,6 +54,9 @@ func (s *Server) handleSyncGetBlob(e echo.Context) error {
 		logger.Error("error looking up blob", "error", err)
 		return helpers.ServerError(e, nil)
 	}
+	if blob.ID == 0 {
+		return e.JSON(400, map[string]string{"error": "BlobNotFound", "message": "Blob not found"})
+	}
 
 	buf := new(bytes.Buffer)
 
