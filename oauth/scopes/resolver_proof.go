@@ -100,6 +100,18 @@ func verifyLexiconProof(ctx context.Context, proof []byte, ident *identity.Ident
 	if err != nil {
 		return nil, fmt.Errorf("record not included in proof: %w", err)
 	}
+	return parseLexiconRecord(record, nsid)
+}
+
+// Local actor-store reads skip network proof verification, not the size,
+// nesting, data-model, or document checks applied to remote lexicons.
+func parseLexiconRecord(record []byte, nsid syntax.NSID) (json.RawMessage, error) {
+	if len(record) > atdata.MAX_CBOR_RECORD_SIZE {
+		return nil, fmt.Errorf("lexicon record exceeds size limit")
+	}
+	if err := checkProofCBOR(record); err != nil {
+		return nil, fmt.Errorf("lexicon CBOR preflight: %w", err)
+	}
 	doc, err := atdata.UnmarshalCBOR(record)
 	if err != nil {
 		return nil, err
