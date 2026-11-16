@@ -66,6 +66,28 @@ func TestParseValid(t *testing.T) {
 			"identity:*",
 			&Scope{Raw: "identity:*", Resource: ResourceIdentity, Attr: "*"},
 		},
+		// The attr parameter may be given as a query parameter instead of
+		// positionally (e.g. this is the form @atcute/oauth-types emits)
+		{
+			"account?attr=email",
+			&Scope{Raw: "account?attr=email", Resource: ResourceAccount, Attr: "email", Action: "read"},
+		},
+		{
+			"account?attr=email&action=read",
+			&Scope{Raw: "account?attr=email&action=read", Resource: ResourceAccount, Attr: "email", Action: "read"},
+		},
+		{
+			"account?attr=repo&action=manage",
+			&Scope{Raw: "account?attr=repo&action=manage", Resource: ResourceAccount, Attr: "repo", Action: "manage"},
+		},
+		{
+			"identity?attr=handle",
+			&Scope{Raw: "identity?attr=handle", Resource: ResourceIdentity, Attr: "handle"},
+		},
+		{
+			"identity?attr=*",
+			&Scope{Raw: "identity?attr=*", Resource: ResourceIdentity, Attr: "*"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -98,6 +120,13 @@ func TestParseInvalid(t *testing.T) {
 		"include:",
 		"account:bogus",
 		"identity:bogus",
+		"account",
+		"account?action=read",
+		"account?attr=bogus",
+		"account:email?attr=repo",
+		"identity",
+		"identity?attr=bogus",
+		"identity:handle?attr=*",
 		"blob:image/p*",
 		"blob:im*age/*",
 		"blob:*/png",
