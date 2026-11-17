@@ -252,12 +252,30 @@ func normalizeMIMEPattern(pattern string) (string, error) {
 	return strings.ToLower(mediaType), nil
 }
 
-func parseAccount(raw, positional string, hasPositional bool, params url.Values) (*Scope, error) {
-	if !hasPositional || positional == "" {
-		return nil, fmt.Errorf("account scope %q requires an attribute", raw)
+func resolveAttr(resource, raw, positional string, hasPositional bool, params url.Values) (string, error) {
+	named := params["attr"]
+	if hasPositional && positional != "" {
+		if len(named) > 0 {
+			return "", fmt.Errorf("%s scope %q must not specify attr both positionally and as a parameter", resource, raw)
+		}
+		return positional, nil
 	}
-	if positional != "email" && positional != "repo" {
-		return nil, fmt.Errorf("account scope %q has invalid attribute %q", raw, positional)
+	if len(named) > 1 {
+		return "", fmt.Errorf("%s scope %q must specify a single attr", resource, raw)
+	}
+	if len(named) == 0 || named[0] == "" {
+		return "", fmt.Errorf("%s scope %q requires an attribute", resource, raw)
+	}
+	return named[0], nil
+}
+
+func parseAccount(raw, positional string, hasPositional bool, params url.Values) (*Scope, error) {
+	attr, err := resolveAttr(ResourceAccount, raw, positional, hasPositional, params)
+	if err != nil {
+		return nil, err
+	}
+	if attr != "email" && attr != "repo" {
+		return nil, fmt.Errorf("account scope %q has invalid attribute %q", raw, attr)
 	}
 	action := params.Get("action")
 	switch action {
@@ -267,17 +285,18 @@ func parseAccount(raw, positional string, hasPositional bool, params url.Values)
 	default:
 		return nil, fmt.Errorf("account scope %q has invalid action %q", raw, action)
 	}
-	return &Scope{Raw: raw, Resource: ResourceAccount, Attr: positional, Action: action}, nil
+	return &Scope{Raw: raw, Resource: ResourceAccount, Attr: attr, Action: action}, nil
 }
 
 func parseIdentity(raw, positional string, hasPositional bool, params url.Values) (*Scope, error) {
-	if !hasPositional || positional == "" {
-		return nil, fmt.Errorf("identity scope %q requires an attribute", raw)
+	attr, err := resolveAttr(ResourceIdentity, raw, positional, hasPositional, params)
+	if err != nil {
+		return nil, err
 	}
-	if positional != "handle" && positional != "*" {
-		return nil, fmt.Errorf("identity scope %q has invalid attribute %q", raw, positional)
+	if attr != "handle" && attr != "*" {
+		return nil, fmt.Errorf("identity scope %q has invalid attribute %q", raw, attr)
 	}
-	return &Scope{Raw: raw, Resource: ResourceIdentity, Attr: positional}, nil
+	return &Scope{Raw: raw, Resource: ResourceIdentity, Attr: attr}, nil
 }
 
 func parseInclude(raw, positional string, hasPositional bool, params url.Values) (*Scope, error) {
