@@ -9,8 +9,48 @@ import (
 	"gorm.io/gorm"
 )
 
-// AccountRevokeInput names either one session (ID) or every session held by
-// one app (ClientID).
+// handleAccountAuthKeyRevoke revokes one of the account's sign-in keys from
+// the account dashboard. Revocation stops the key signing in and revokes the
+// OAuth sessions issued through it.
+func (s *Server) handleAccountAuthKeyRevoke(e echo.Context) error {
+	ctx := e.Request().Context()
+	logger := s.logger.With("name", "handleAccountAuthKeyRevoke")
+
+	if !isSameOriginRequest(e) {
+		return e.JSON(http.StatusForbidden, map[string]string{"error": "Forbidden"})
+	}
+
+	var req struct {
+		DidKey string `form:"did_key"`
+	}
+	if err := e.Bind(&req); err != nil {
+		logger.Error("could not bind auth key revoke request", "error", err)
+		return helpers.InputError(e, nil)
+	}
+	if req.DidKey == "" {
+		return helpers.InputError(e, nil)
+	}
+
+	repo, sess, err := s.getSessionRepoOrErr(e)
+	if err != nil {
+		if !errors.Is(err, ErrSessionUnauthenticated) {
+			return helpers.ServerError(e, nil)
+		}
+		return e.Redirect(303, "/account/signin")
+	}
+
+	revoked, err := s.RevokeAuthKey(ctx, repo.Repo.Did, req.DidKey)
+	if err != nil {
+		sess.AddFlash("Unable to revoke that key. See server logs for more details.", "error")
+	} else if !revoked {
+		sess.AddFlash("That key was already revoked.", "success")
+	} else {
+		sess.AddFlash("Key revoked. Sessions signed in with it were signed out.", "success")
+	}
+	sess.Save(e.Request(), e.Response())
+	return e.Redirect(303, "/account")
+}
+
 type AccountRevokeInput struct {
 	ID       uint   `form:"id"`
 	ClientID string `form:"client_id"`

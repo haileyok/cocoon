@@ -88,7 +88,7 @@ func (s *Server) handleCreateSession(e echo.Context) error {
 		return helpers.ServerError(e, nil)
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(repo.Password), []byte(req.Password)); err != nil {
+	if err := comparePassword(repo.Password, req.Password); err != nil {
 		if err != bcrypt.ErrMismatchedHashAndPassword {
 			logger.Error("erorr comparing hash and password", "error", err)
 		}

@@ -52,6 +52,28 @@ type Repo struct {
 	TwoFactorLockedUntil    *time.Time
 }
 
+// AuthKey is a did:key an account signs in with: the jwt-bearer OAuth grant
+// verifies an assertion signed by one of the account's active keys. Revoking
+// a key (revoked_at set) stops it signing in and revokes the OAuth sessions
+// issued through it.
+type AuthKey struct {
+	ID        uint `gorm:"primaryKey"`
+	Did       string
+	DidKey    string `gorm:"uniqueIndex"`
+	CreatedAt time.Time
+	RevokedAt *time.Time
+}
+
+func (k *AuthKey) Active() bool {
+	return k.RevokedAt == nil
+}
+
+type AuthKeyAssertion struct {
+	Jti       string `gorm:"primaryKey"`
+	CreatedAt time.Time
+	ExpiresAt time.Time `gorm:"index"`
+}
+
 type TwoFactorCredentialType string
 
 var (

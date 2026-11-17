@@ -617,6 +617,7 @@ func (s *Server) addRoutes() {
 	// account
 	s.echo.GET("/account", s.handleAccount)
 	s.echo.POST("/account/revoke", s.handleAccountRevoke)
+	s.echo.POST("/account/auth-keys/revoke", s.handleAccountAuthKeyRevoke)
 	s.echo.POST("/account/switch", s.handleAccountSwitchPost)
 	s.echo.GET("/account/signin", s.handleAccountSigninGet)
 	s.echo.POST("/account/signin", s.handleAccountSigninPost)
@@ -709,6 +710,8 @@ func (s *Server) Migrate() error {
 		&models.ReservedKey{},
 		&models.TwoFactorCredential{},
 		&models.TwoFactorBackupCode{},
+		&models.AuthKey{},
+		&models.AuthKeyAssertion{},
 		&provider.OauthToken{},
 		&provider.OauthAuthorizationRequest{},
 	); err != nil {
