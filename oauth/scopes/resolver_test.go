@@ -291,6 +291,12 @@ func TestLexiconResolutionPublicFetch(t *testing.T) {
 			defer plc.Close()
 			r := NewIndigoResolverWithPLCURL(plc.URL)
 			r.dns.Resolver = net.Resolver{PreferGo: true, Dial: dns.Dial}
+			r.SetLocalLexiconReader(func(_ context.Context, authority syntax.DID, nsid syntax.NSID) ([]byte, bool, error) {
+				if authority.String() != did || nsid != "com.example.lexicon" {
+					t.Fatalf("wrong local lookup before remote fallback: %s/%s", authority, nsid)
+				}
+				return nil, false, nil
+			})
 			roots := x509.NewCertPool()
 			roots.AddCert(pds.Certificate())
 			opts := []gttp.Option{

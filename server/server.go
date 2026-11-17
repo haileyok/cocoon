@@ -548,6 +548,7 @@ func New(args *Args) (*Server, error) {
 	s.loadTemplates()
 
 	s.repoman = NewRepoMan(s) // TODO: this is way too lazy, stop it
+	s.scopeResolver.(*scopes.IndigoResolver).SetLocalLexiconReader(s.readLocalLexicon)
 
 	// TODO: should validate these args
 	if args.SmtpUser == "" || args.SmtpPass == "" || args.SmtpHost == "" || args.SmtpPort == "" || args.SmtpEmail == "" || args.SmtpName == "" {

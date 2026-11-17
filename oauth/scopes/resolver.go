@@ -26,6 +26,11 @@ type PermissionSetResolver interface {
 	ResolvePermissionSet(ctx context.Context, nsid string) (*lexicon.SchemaPermissionSet, error)
 }
 
+// LocalLexiconReader reads committed CBOR from a trusted local actor store.
+// hosted=false, err=nil is the only result that permits remote resolution.
+// Missing/unavailable local records and database failures must return errors.
+type LocalLexiconReader func(context.Context, syntax.DID, syntax.NSID) (record []byte, hosted bool, err error)
+
 // directory is the subset of indigo's identity.Directory used here.
 type directory = identity.Directory
 
@@ -40,9 +45,10 @@ type cacheEntry struct {
 // record), with a small in-memory TTL cache for both positive and negative
 // results.
 type IndigoResolver struct {
-	dir        directory
-	dns        identity.BaseDirectory
-	httpClient *http.Client
+	dir         directory
+	dns         identity.BaseDirectory
+	httpClient  *http.Client
+	localReader LocalLexiconReader
 
 	posTTL time.Duration
 	negTTL time.Duration
@@ -50,6 +56,12 @@ type IndigoResolver struct {
 	mu         sync.Mutex
 	cache      map[string]cacheEntry
 	spaceCache map[string]spaceCacheEntry
+}
+
+// SetLocalLexiconReader installs the local actor-store hook during startup,
+// before the resolver is first used. DNS still determines the NSID authority.
+func (r *IndigoResolver) SetLocalLexiconReader(reader LocalLexiconReader) {
+	r.localReader = reader
 }
 
 // NewIndigoResolver builds a resolver with guarded identity and record fetching.
@@ -168,6 +180,18 @@ func (r *IndigoResolver) fetchLexicon(ctx context.Context, nsid syntax.NSID) (js
 	did, err := r.dns.ResolveNSID(ctx, nsid)
 	if err != nil {
 		return nil, err
+	}
+	if r.localReader != nil {
+		record, hosted, err := r.localReader(ctx, did, nsid)
+		if err != nil {
+			return nil, fmt.Errorf("local lexicon: %w", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if hosted {
+			return parseLexiconRecord(record, nsid)
+		}
 	}
 	ident, err := r.dir.LookupDID(ctx, did)
 	if err != nil {
