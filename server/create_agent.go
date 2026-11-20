@@ -18,8 +18,15 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// agentEmailDomain is the placeholder domain for agent account emails.
+// agentEmailDomain is the placeholder domain for agent account emails. An
+// account whose email is under it is an agent account (isAgentRepo).
 const agentEmailDomain = "agents.invalid"
+
+// isAgentRepo reports whether an account was created as an agent's: it may
+// not change its own identity, or create agents itself.
+func isAgentRepo(r *models.Repo) bool {
+	return r != nil && strings.HasSuffix(strings.ToLower(r.Email), "@"+agentEmailDomain)
+}
 
 // CreateAgentArgs describes an agent account to create.
 type CreateAgentArgs struct {
@@ -38,6 +45,10 @@ type CreateAgentArgs struct {
 type CreateAgentResult struct {
 	Did    string
 	Handle string
+	// Password is the account's random password. The create-agent command
+	// never prints it; the createAgent endpoint hands it to the principal
+	// who asked, once.
+	Password string
 }
 
 // CreateAgent creates an account for an automated agent on this PDS,
@@ -142,5 +153,5 @@ func (s *Server) CreateAgent(ctx context.Context, args CreateAgentArgs) (*Create
 		}
 	}
 
-	return &CreateAgentResult{Did: did, Handle: handle}, nil
+	return &CreateAgentResult{Did: did, Handle: handle, Password: password}, nil
 }

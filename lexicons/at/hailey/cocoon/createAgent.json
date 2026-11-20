@@ -1,0 +1,35 @@
+{
+  "lexicon": 1,
+  "id": "at.hailey.cocoon.createAgent",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Create an account for an automated agent acting for the caller (its principal, https://ident.link), in one step: the account, whose genesis PLC operation lists https://ident.link/agent-of/<caller DID> in alsoKnownAs, and the caller's link.ident.endorsement of it, in the caller's repo. Only accounts the PDS allows (COCOON_AGENT_PRINCIPALS) may call it, and agent accounts may not. OAuth callers need rpc:at.hailey.cocoon.createAgent?aud=<the PDS's DID> and repo:link.ident.endorsement. Agent accounts can't change their own identity.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "handle": { "type": "string", "format": "handle", "description": "Under the PDS's domain; omitted, one is picked." },
+            "recoveryKey": { "type": "string", "description": "A did:key the principal holds offline, first in the agent's rotation keys." }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["did", "handle", "password", "endorsed"],
+          "properties": {
+            "did": { "type": "string", "format": "did" },
+            "handle": { "type": "string", "format": "handle" },
+            "password": { "type": "string", "description": "Signs in as the agent. Returned once." },
+            "endorsement": { "type": "string", "format": "at-uri" },
+            "endorsed": { "type": "boolean", "description": "False when the endorsement couldn't be written after the account was made: write it with com.atproto.repo.putRecord." }
+          }
+        }
+      },
+      "errors": [{ "name": "Forbidden" }, { "name": "InvalidHandle" }, { "name": "HandleNotAvailable" }, { "name": "RateLimitExceeded" }]
+    }
+  }
+}

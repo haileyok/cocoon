@@ -91,6 +91,17 @@ func main() {
 				EnvVars: []string{"COCOON_REQUIRE_INVITE"},
 				Value:   true,
 			},
+			&cli.StringSliceFlag{
+				Name:    "agent-principals",
+				Usage:   "DIDs of accounts here that may create agent accounts (at.hailey.cocoon.createAgent)",
+				EnvVars: []string{"COCOON_AGENT_PRINCIPALS"},
+			},
+			&cli.IntFlag{
+				Name:    "agents-per-hour",
+				Usage:   "how many agent accounts one principal may create an hour",
+				EnvVars: []string{"COCOON_AGENTS_PER_HOUR"},
+				Value:   120,
+			},
 			&cli.StringFlag{
 				Name:    "smtp-user",
 				EnvVars: []string{"COCOON_SMTP_USER"},
@@ -250,6 +261,8 @@ var runServe = &cli.Command{
 			Relays:          cmd.StringSlice("relays"),
 			AdminPassword:   cmd.String("admin-password"),
 			RequireInvite:   cmd.Bool("require-invite"),
+			AgentPrincipals: cmd.StringSlice("agent-principals"),
+			AgentsPerHour:   cmd.Int("agents-per-hour"),
 			SmtpUser:        cmd.String("smtp-user"),
 			SmtpPass:        cmd.String("smtp-pass"),
 			SmtpHost:        cmd.String("smtp-host"),
