@@ -13,6 +13,7 @@ import (
 	"github.com/bluesky-social/indigo/util"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/plc"
 	"github.com/ipfs/go-cid"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -28,6 +29,9 @@ type CreateAgentArgs struct {
 	// FIRST in the genesis PLC operation's rotationKeys, before the PDS's own
 	// key, so the agent can't move or keep its identity without the operator.
 	RecoveryKey string
+	// AlsoKnownAs are extra https URIs for the genesis operation, after the
+	// handle, such as https://ident.link/agent-of/<principal DID>.
+	AlsoKnownAs []string
 }
 
 // CreateAgentResult reports the created agent account.
@@ -57,6 +61,11 @@ func (s *Server) CreateAgent(ctx context.Context, args CreateAgentArgs) (*Create
 		}
 	}
 
+	extraAka, err := plc.ValidateExtraAlsoKnownAs(args.AlsoKnownAs)
+	if err != nil {
+		return nil, err
+	}
+
 	// The handle must be free here, like createAccount.
 	if actor, err := s.getActorByHandle(ctx, handle); err == nil && actor.Did != "" {
 		return nil, fmt.Errorf("handle not available: %s", handle)
@@ -83,7 +92,7 @@ func (s *Server) CreateAgent(ctx context.Context, args CreateAgentArgs) (*Create
 		return nil, err
 	}
 
-	did, op, err := s.plcClient.CreateDID(k, kemDidKey, recovery, handle)
+	did, op, err := s.plcClient.CreateDID(k, kemDidKey, recovery, handle, extraAka...)
 	if err != nil {
 		logger.Error("error creating plc operation", "error", err)
 		return nil, err
