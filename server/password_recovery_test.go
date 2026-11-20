@@ -445,6 +445,7 @@ func TestPasswordRecoveryOAuthExchange(t *testing.T) {
 					consent := url.Values{"request_uri": {oauth.EncodeRequestUri(auth.RequestId)}, "accept_or_reject": {"accept"}}
 					r := httptest.NewRequest("POST", "/oauth/authorize", strings.NewReader(consent.Encode()))
 					r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+					r.Header.Set("Origin", "http://"+r.Host)
 					r.AddCookie(cookie)
 					w := httptest.NewRecorder()
 					s.echo.ServeHTTP(w, r)

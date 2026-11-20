@@ -373,7 +373,14 @@ func New(args *Args) (*Server, error) {
 
 	e.Pre(middleware.RemoveTrailingSlash())
 	e.Pre(slogecho.New(args.Logger.With("component", "slogecho")))
-	e.Use(echo_session.Middleware(sessions.NewCookieStore([]byte(args.SessionSecret))))
+	store := sessions.NewCookieStore([]byte(args.SessionSecret))
+	// Every decoded session inherits these defaults, including flash-only saves.
+	store.MaxAge(int(AccountSessionMaxAge.Seconds()))
+	store.Options.HttpOnly = true
+	store.Options.SameSite = http.SameSiteLaxMode
+	store.Options.Secure = args.Version != "dev"
+	e.Use(browserSecurityHeaders)
+	e.Use(echo_session.Middleware(store))
 	e.Use(echoprometheus.NewMiddleware("cocoon"))
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins:     []string{"*"},

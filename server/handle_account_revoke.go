@@ -20,7 +20,7 @@ func (s *Server) handleAccountRevoke(e echo.Context) error {
 	ctx := e.Request().Context()
 	logger := s.logger.With("name", "handleAccountRevoke")
 
-	if !isSameOriginRequest(e) {
+	if !s.isSameOriginRequest(e) {
 		return e.JSON(http.StatusForbidden, map[string]string{"error": "Forbidden"})
 	}
 
