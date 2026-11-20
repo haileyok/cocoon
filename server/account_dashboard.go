@@ -230,7 +230,8 @@ func (s *Server) loadAccountApps(ctx context.Context, repo *models.RepoActor, no
 
 // pruneOauthTokens deletes OAuth tokens that can never be used again:
 // past every lifetime, or issued before the account's current session
-// version (a password reset or "sign out everywhere").
+// version (a password reset or "sign out everywhere"). It also deletes refresh
+// replay history whose session no longer exists.
 func (s *Server) pruneOauthTokens(ctx context.Context, now time.Time) (int64, error) {
 	res := s.db.Exec(ctx,
 		"DELETE FROM oauth_tokens WHERE created_at < ? OR updated_at < ?",
@@ -248,7 +249,15 @@ func (s *Server) pruneOauthTokens(ctx context.Context, now time.Time) (int64, er
 	if res.Error != nil {
 		return n, res.Error
 	}
-	return n + res.RowsAffected, nil
+	n += res.RowsAffected
+
+	// Several paths revoke sessions by deleting them directly. Replay history
+	// is only needed while its session exists, so remove it afterward.
+	res = s.db.Exec(ctx,
+		"DELETE FROM oauth_used_refresh_tokens WHERE NOT EXISTS (SELECT 1 FROM oauth_tokens t WHERE t.id = oauth_used_refresh_tokens.oauth_token_id)",
+		nil,
+	)
+	return n, res.Error
 }
 
 func (s *Server) oauthTokenCleanupRoutine(ctx context.Context) {

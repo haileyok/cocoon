@@ -70,6 +70,14 @@ type OauthToken struct {
 	Ip             string
 }
 
+// OauthUsedRefreshToken records a rotated refresh token, so a later replay
+// can find and revoke its session. Only a SHA-256 digest is stored. Rows
+// whose session no longer exists are pruned with expired OAuth tokens.
+type OauthUsedRefreshToken struct {
+	TokenHash    string `gorm:"primaryKey"`
+	OauthTokenID uint   `gorm:"not null"`
+}
+
 type OauthAuthorizationRequest struct {
 	gorm.Model
 	RequestId      string     `gorm:"primaryKey"`

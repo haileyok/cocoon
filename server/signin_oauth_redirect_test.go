@@ -455,9 +455,15 @@ func TestPruneOauthTokens(t *testing.T) {
 	now := time.Now()
 	day := 24 * time.Hour
 	keep := insertOauthToken(t, s, provider.OauthToken{Sub: acct.Did, ClientId: "c", Model: gorm.Model{CreatedAt: now.Add(-day), UpdatedAt: now}})
-	insertOauthToken(t, s, provider.OauthToken{Sub: acct.Did, ClientId: "c", Model: gorm.Model{CreatedAt: now.Add(-800 * day), UpdatedAt: now}})
+	expired := insertOauthToken(t, s, provider.OauthToken{Sub: acct.Did, ClientId: "c", Model: gorm.Model{CreatedAt: now.Add(-800 * day), UpdatedAt: now}})
 	insertOauthToken(t, s, provider.OauthToken{Sub: acct.Did, ClientId: "c", Model: gorm.Model{CreatedAt: now.Add(-100 * day), UpdatedAt: now.Add(-95 * day)}})
 	insertOauthToken(t, s, provider.OauthToken{Sub: acct.Did, ClientId: "c", SessionVersion: -1, Model: gorm.Model{CreatedAt: now.Add(-day), UpdatedAt: now}})
+	// Replay history goes with its session: pruned now, or already revoked.
+	for hash, id := range map[string]uint{"kept": keep.ID, "pruned": expired.ID, "revoked": keep.ID + 100} {
+		if err := s.db.Create(context.Background(), &provider.OauthUsedRefreshToken{TokenHash: hash, OauthTokenID: id}, nil).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	n, err := s.pruneOauthTokens(context.Background(), now)
 	if err != nil {
@@ -472,6 +478,13 @@ func TestPruneOauthTokens(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != keep.ID {
 		t.Fatalf("remaining tokens = %v, want [%d]", ids, keep.ID)
+	}
+	var hashes []string
+	if err := s.db.Raw(context.Background(), "SELECT token_hash FROM oauth_used_refresh_tokens", nil).Scan(&hashes).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(hashes) != 1 || hashes[0] != "kept" {
+		t.Fatalf("remaining history = %v, want [kept]", hashes)
 	}
 }
 
