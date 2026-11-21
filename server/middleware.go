@@ -245,11 +245,9 @@ func (s *Server) handleLegacySessionMiddleware(next echo.HandlerFunc) echo.Handl
 		}
 		e.Set("credentialKind", kind)
 
-		if err := next(e); err != nil {
-			return helpers.InvalidTokenError(e)
-		}
-
-		return nil
+		// The credential is valid by now, so an error from here on is the
+		// handler's own. Return it as is so echo logs and reports it.
+		return next(e)
 	}
 }
 
