@@ -136,7 +136,7 @@ type Args struct {
 	Logger *slog.Logger
 
 	LogLevel        slog.Level
-	Addr            string
+	Addr            string // TCP address (":8080") or "unix:/path/to/socket"
 	DbName          string
 	DbType          string
 	DatabaseURL     string
@@ -331,6 +331,10 @@ func New(args *Args) (*Server, error) {
 
 	if args.Addr == "" {
 		return nil, fmt.Errorf("addr must be set")
+	}
+
+	if _, _, err := parseListenAddr(args.Addr); err != nil {
+		return nil, fmt.Errorf("invalid addr: %w", err)
 	}
 
 	if args.DbName == "" {
@@ -735,21 +739,67 @@ func (s *Server) Migrate() error {
 	return errors.Join(errs...)
 }
 
-// serveListener binds addr for the HTTP server with Multipath TCP explicitly
-// disabled. Go 1.24 enabled MPTCP on listeners by default on Linux, and a
-// GODEBUG value in the environment overrides the go.mod default, so the socket
-// is opted out here where nothing in the environment can turn it back on.
-// Cocoon only ever speaks plain TCP.
+// parseListenAddr resolves addr into the network and address for net.Listen.
+// A "unix:" prefix selects a Unix domain socket; everything else is TCP.
+func parseListenAddr(addr string) (network, address string, err error) {
+	if path, ok := strings.CutPrefix(addr, "unix:"); ok {
+		if path == "" {
+			return "", "", fmt.Errorf("unix socket path must not be empty")
+		}
+		return "unix", path, nil
+	}
+
+	return "tcp", addr, nil
+}
+
+// serveListener binds addr for the HTTP server. TCP listeners explicitly
+// disable Multipath TCP: Go 1.24 enabled it by default on Linux, and a GODEBUG
+// value in the environment overrides the go.mod default, so the socket is
+// opted out here where nothing in the environment can turn it back on.
 func serveListener(ctx context.Context, addr string) (net.Listener, error) {
 	// ListenAndServe defaulted to :http for an empty address; keep that.
 	if addr == "" {
 		addr = ":http"
 	}
 
+	network, address, err := parseListenAddr(addr)
+	if err != nil {
+		return nil, err
+	}
+	if network == "unix" {
+		return serveUnixListener(ctx, address)
+	}
+
 	var lc net.ListenConfig
 	lc.SetMultipathTCP(false)
 
-	return lc.Listen(ctx, "tcp", addr)
+	return lc.Listen(ctx, network, address)
+}
+
+// serveUnixListener binds a Unix domain socket at path. A socket left behind by
+// an unclean shutdown cannot be bound again, so stale sockets are removed. An
+// existing file that is not a socket is left alone, and a socket another
+// process is still listening on is never hijacked.
+func serveUnixListener(ctx context.Context, path string) (net.Listener, error) {
+	fi, err := os.Lstat(path)
+	switch {
+	case err == nil && fi.Mode()&os.ModeSocket == 0:
+		return nil, fmt.Errorf("unix socket path %q exists and is not a socket", path)
+	case err == nil:
+		conn, dialErr := net.DialTimeout("unix", path, 100*time.Millisecond)
+		if dialErr == nil {
+			conn.Close() //nolint:errcheck // probe connection only
+			return nil, fmt.Errorf("unix socket path %q is already in use", path)
+		}
+		if err := os.Remove(path); err != nil {
+			return nil, fmt.Errorf("remove stale unix socket %q: %w", path, err)
+		}
+	case !errors.Is(err, os.ErrNotExist):
+		return nil, fmt.Errorf("check unix socket path %q: %w", path, err)
+	}
+
+	var lc net.ListenConfig
+	return lc.Listen(ctx, "unix", path)
 }
 
 func (s *Server) Serve(ctx context.Context) error {
@@ -765,14 +815,18 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	logger.Info("starting cocoon")
 
-	go func() {
-		ln, err := serveListener(ctx, s.httpd.Addr)
-		if err != nil {
-			panic(err)
-		}
+	ln, err := serveListener(ctx, s.httpd.Addr)
+	if err != nil {
+		return fmt.Errorf("listen on %q: %w", s.httpd.Addr, err)
+	}
+	logger.Info("listening for HTTP", "network", ln.Addr().Network(), "addr", ln.Addr())
 
-		if err := s.httpd.Serve(ln); err != nil {
-			panic(err)
+	var serveWG sync.WaitGroup
+	serveWG.Add(1)
+	go func() {
+		defer serveWG.Done()
+		if err := s.httpd.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("http server failed", "network", ln.Addr().Network(), "addr", ln.Addr(), "err", err)
 		}
 	}()
 
@@ -788,6 +842,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 
 	<-ctx.Done()
+
+	// Closing the server also closes its listeners, which unlinks the unix
+	// socket. Without this the socket would be left behind on a clean shutdown.
+	if err := s.httpd.Close(); err != nil {
+		logger.Error("error closing http server", "err", err)
+	}
+	serveWG.Wait()
 
 	fmt.Println("shut down")
 

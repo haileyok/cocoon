@@ -123,6 +123,16 @@ COCOON_DB_NAME="/data/cocoon/cocoon.db"
 
 > **Note**: When using PostgreSQL, database backups to S3 are not handled by Cocoon. Use `pg_dump` or your database provider's backup solution instead.
 
+#### Listener Configuration
+
+`COCOON_ADDR` (or `--addr`) selects the HTTP listener. By default it is the TCP address `:8080`. To serve on a Unix domain socket instead, prefix the path with `unix:` — this replaces the TCP listener rather than adding to it, which is useful when a reverse proxy runs on the same host:
+
+```bash
+COCOON_ADDR="unix:/run/cocoon/cocoon.sock"
+```
+
+The socket's parent directory must exist and be writable, and the reverse proxy must have permission to connect to the socket. A stale socket left behind by an unclean shutdown is replaced on startup. A socket that is still in use and an existing regular file at the path are errors.
+
 #### SMTP Email Settings
 ```bash
 COCOON_SMTP_USER="your-smtp-username"
