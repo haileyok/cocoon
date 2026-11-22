@@ -38,6 +38,7 @@ func main() {
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "addr",
+				Usage:   "TCP listen address, or unix:/path/to/socket for a Unix domain socket",
 				Value:   ":8080",
 				EnvVars: []string{"COCOON_ADDR"},
 			},
