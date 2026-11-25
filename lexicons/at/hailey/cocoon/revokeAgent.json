@@ -1,0 +1,25 @@
+{
+  "lexicon": 1,
+  "id": "at.hailey.cocoon.revokeAgent",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "End an agent's authority to act for the caller, immediately and for good. The PDS deactivates the account; ends every session, refresh token, OAuth grant and app password it holds, so requests with them fail from now on; and deletes the caller's link.ident.endorsement of it, so https://ident.link checks stop confirming the pair. The account, its DID and its repo stay on this PDS, deactivated, so the DID isn't reused and what the agent published can still be traced to it; there is no un-revoke. Revoking a revoked agent succeeds and changes nothing. Any account may revoke its own agents, including one no longer allowed to create agents; agent accounts may not call it. OAuth callers need rpc:at.hailey.cocoon.revokeAgent?aud=<the PDS's DID> and repo:link.ident.endorsement?action=delete.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["agent"],
+          "properties": {
+            "agent": { "type": "string", "format": "did" }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": { "type": "ref", "ref": "at.hailey.cocoon.defs#agentView" }
+      },
+      "errors": [{ "name": "Forbidden" }, { "name": "AgentNotFound" }]
+    }
+  }
+}

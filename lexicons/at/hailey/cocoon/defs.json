@@ -1,0 +1,24 @@
+{
+  "lexicon": 1,
+  "id": "at.hailey.cocoon.defs",
+  "defs": {
+    "agentView": {
+      "type": "object",
+      "description": "An agent account this PDS created with at.hailey.cocoon.createAgent, as its principal sees it.",
+      "required": ["did", "handle", "principal", "status", "createdAt"],
+      "properties": {
+        "did": { "type": "string", "format": "did" },
+        "handle": { "type": "string", "format": "handle" },
+        "principal": { "type": "string", "format": "did", "description": "The account the agent acts for: the one that created it." },
+        "status": {
+          "type": "string",
+          "knownValues": ["active", "deactivated", "revoked", "takendown"],
+          "description": "active: it can sign in and write. deactivated: the account was deactivated without being revoked. revoked: its principal revoked it with at.hailey.cocoon.revokeAgent; this is final. takendown: the PDS's operator took it down. When more than one applies, takendown wins, then revoked."
+        },
+        "createdAt": { "type": "string", "format": "datetime" },
+        "revokedAt": { "type": "string", "format": "datetime", "description": "Present when status is revoked." },
+        "endorsement": { "type": "string", "format": "at-uri", "description": "The principal's link.ident.endorsement of the agent, when it exists in the principal's repo. Absent means the agent-of declaration is unconfirmed (https://ident.link)." }
+      }
+    }
+  }
+}

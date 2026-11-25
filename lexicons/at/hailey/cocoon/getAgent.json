@@ -1,0 +1,22 @@
+{
+  "lexicon": 1,
+  "id": "at.hailey.cocoon.getAgent",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Get one agent account on this PDS that acts for the caller. An agent that isn't on this PDS, or acts for someone else, is AgentNotFound: the two are indistinguishable to the caller. Agent accounts may not call it. OAuth callers need rpc:at.hailey.cocoon.getAgent?aud=<the PDS's DID>.",
+      "parameters": {
+        "type": "params",
+        "required": ["agent"],
+        "properties": {
+          "agent": { "type": "string", "format": "did" }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": { "type": "ref", "ref": "at.hailey.cocoon.defs#agentView" }
+      },
+      "errors": [{ "name": "Forbidden" }, { "name": "AgentNotFound" }]
+    }
+  }
+}

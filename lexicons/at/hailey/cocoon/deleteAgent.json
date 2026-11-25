@@ -1,0 +1,21 @@
+{
+  "lexicon": 1,
+  "id": "at.hailey.cocoon.deleteAgent",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Delete an agent account that acts for the caller: everything revokeAgent does, then the account, its repo and its blobs are deleted from this PDS, as com.atproto.admin.deleteAccount would. The agent may be active or already revoked. The PDS doesn't tombstone the DID; the principal can, with the agent's recovery key. Agent accounts may not call it. OAuth callers need rpc:at.hailey.cocoon.deleteAgent?aud=<the PDS's DID> and repo:link.ident.endorsement?action=delete.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["agent"],
+          "properties": {
+            "agent": { "type": "string", "format": "did" }
+          }
+        }
+      },
+      "errors": [{ "name": "Forbidden" }, { "name": "AgentNotFound" }]
+    }
+  }
+}
