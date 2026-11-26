@@ -76,11 +76,15 @@ func (c *Client) GetData(ctx context.Context, did string) (*identity.DidData, er
 
 // CreateDID formats and signs a genesis operation. kemKey, if set, is the
 // account's #atproto_kem did:key, published alongside its signing key.
-func (c *Client) CreateDID(sigkey *atcrypto.PrivateKeyK256, kemKey string, recovery string, handle string) (string, *Operation, error) {
+// extraAka are alsoKnownAs entries published after the at:// handle (such as
+// an ident.link agent-of declaration); callers validate them with
+// ValidateExtraAlsoKnownAs.
+func (c *Client) CreateDID(sigkey *atcrypto.PrivateKeyK256, kemKey string, recovery string, handle string, extraAka ...string) (string, *Operation, error) {
 	creds, err := c.CreateDidCredentials(sigkey, kemKey, recovery, handle)
 	if err != nil {
 		return "", nil, err
 	}
+	creds.AlsoKnownAs = append(creds.AlsoKnownAs, extraAka...)
 
 	op := Operation{
 		Type:                "plc_operation",

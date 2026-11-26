@@ -13,12 +13,20 @@ import (
 	"github.com/bluesky-social/indigo/util"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/plc"
 	"github.com/ipfs/go-cid"
 	"golang.org/x/crypto/bcrypt"
 )
 
-// agentEmailDomain is the placeholder domain for agent account emails.
+// agentEmailDomain is the placeholder domain for agent account emails. An
+// account whose email is under it is an agent account (isAgentRepo).
 const agentEmailDomain = "agents.invalid"
+
+// isAgentRepo reports whether an account was created as an agent's: it may
+// not change its own identity, or create agents itself.
+func isAgentRepo(r *models.Repo) bool {
+	return r != nil && strings.HasSuffix(strings.ToLower(r.Email), "@"+agentEmailDomain)
+}
 
 // CreateAgentArgs describes an agent account to create.
 type CreateAgentArgs struct {
@@ -28,12 +36,19 @@ type CreateAgentArgs struct {
 	// FIRST in the genesis PLC operation's rotationKeys, before the PDS's own
 	// key, so the agent can't move or keep its identity without the operator.
 	RecoveryKey string
+	// AlsoKnownAs are extra https URIs for the genesis operation, after the
+	// handle, such as https://ident.link/agent-of/<principal DID>.
+	AlsoKnownAs []string
 }
 
 // CreateAgentResult reports the created agent account.
 type CreateAgentResult struct {
 	Did    string
 	Handle string
+	// Password is the account's random password. The create-agent command
+	// never prints it; the createAgent endpoint hands it to the principal
+	// who asked, once.
+	Password string
 }
 
 // CreateAgent creates an account for an automated agent on this PDS,
@@ -55,6 +70,11 @@ func (s *Server) CreateAgent(ctx context.Context, args CreateAgentArgs) (*Create
 		if _, err := atcrypto.ParsePublicDIDKey(recovery); err != nil {
 			return nil, fmt.Errorf("invalid recovery key: %w", err)
 		}
+	}
+
+	extraAka, err := plc.ValidateExtraAlsoKnownAs(args.AlsoKnownAs)
+	if err != nil {
+		return nil, err
 	}
 
 	// The handle must be free here, like createAccount.
@@ -83,7 +103,7 @@ func (s *Server) CreateAgent(ctx context.Context, args CreateAgentArgs) (*Create
 		return nil, err
 	}
 
-	did, op, err := s.plcClient.CreateDID(k, kemDidKey, recovery, handle)
+	did, op, err := s.plcClient.CreateDID(k, kemDidKey, recovery, handle, extraAka...)
 	if err != nil {
 		logger.Error("error creating plc operation", "error", err)
 		return nil, err
@@ -133,5 +153,5 @@ func (s *Server) CreateAgent(ctx context.Context, args CreateAgentArgs) (*Create
 		}
 	}
 
-	return &CreateAgentResult{Did: did, Handle: handle}, nil
+	return &CreateAgentResult{Did: did, Handle: handle, Password: password}, nil
 }

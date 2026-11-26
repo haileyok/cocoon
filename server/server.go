@@ -71,6 +71,9 @@ type S3Config struct {
 }
 
 type Server struct {
+	// agentLimits counts agents each principal created in the last hour.
+	agentLimits agentLimiter
+
 	http          *http.Client
 	httpd         *http.Server
 	mail          *mailyak.MailYak
@@ -172,6 +175,13 @@ type Args struct {
 	// only accept YubiKeys programmed with a secret this server stores.
 	YubicoClientID string
 	YubicoAPIKey   string
+
+	// AgentPrincipals are the DIDs of accounts here that may create agent
+	// accounts with at.hailey.cocoon.createAgent. Empty turns it off.
+	AgentPrincipals []string
+	// AgentsPerHour bounds how many agents one principal creates an hour
+	// (default 120).
+	AgentsPerHour int
 }
 
 type config struct {
@@ -189,6 +199,8 @@ type config struct {
 	SessionCookieKey  string
 	BlockstoreVariant BlockstoreVariant
 	FallbackProxy     string
+	AgentPrincipals   []string
+	AgentsPerHour     int
 }
 
 type CustomValidator struct {
@@ -508,6 +520,8 @@ func New(args *Args) (*Server, error) {
 			Relays:            args.Relays,
 			AdminPassword:     args.AdminPassword,
 			RequireInvite:     args.RequireInvite,
+			AgentPrincipals:   args.AgentPrincipals,
+			AgentsPerHour:     args.AgentsPerHour,
 			SmtpName:          args.SmtpName,
 			SmtpEmail:         args.SmtpEmail,
 			SessionCookieKey:  args.SessionCookieKey,
@@ -668,6 +682,7 @@ func (s *Server) addRoutes() {
 	s.echo.GET("/xrpc/com.atproto.repo.listMissingBlobs", s.handleListMissingBlobs, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.createRecord", s.handleCreateRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.putRecord", s.handlePutRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
+	s.echo.POST("/xrpc/"+createAgentNSID, s.handleCreateAgentXrpc, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.deleteRecord", s.handleDeleteRecord, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.applyWrites", s.handleApplyWrites, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)
 	s.echo.POST("/xrpc/com.atproto.repo.uploadBlob", s.handleRepoUploadBlob, s.handleLegacySessionMiddleware, s.handleOauthSessionMiddleware)

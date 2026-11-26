@@ -42,6 +42,19 @@ const (
 	// connections are dropped by us rather than discovered by accident.
 	proxyIdleConnTimeout = 90 * time.Second
 
+	// proxyHTTP2ReadIdleTimeout and proxyHTTP2PingTimeout are the HTTP/2
+	// health check: when nothing has been read from a connection for
+	// proxyHTTP2ReadIdleTimeout, the transport sends a PING and closes the
+	// connection if no answer arrives within proxyHTTP2PingTimeout. Neither
+	// the response-header timeout nor the idle timeout replaces this. A
+	// header timeout fails the one request but leaves its connection in the
+	// pool, and a client polling more often than proxyIdleConnTimeout keeps a
+	// dead connection from ever going idle. With the check off, that is how
+	// every app.bsky request on cocoon.hailey.at failed for minutes at a time
+	// on 2026-11-21.
+	proxyHTTP2ReadIdleTimeout = 10 * time.Second
+	proxyHTTP2PingTimeout     = 5 * time.Second
+
 	// proxyMaxIdleConnsPerHost is the per-upstream keep-alive pool. The
 	// default of 2 makes a burst of client requests open and close
 	// connections constantly.
@@ -77,7 +90,8 @@ func newProxyHTTPClient(opts ...gttp.Option) *http.Client {
 		gttp.WithNoRetries(),
 		gttp.WithDisableCompression(),
 		gttp.WithIdleTimeout(0),
-		gttp.WithHTTP2ReadIdleTimeout(0),
+		gttp.WithHTTP2ReadIdleTimeout(proxyHTTP2ReadIdleTimeout),
+		gttp.WithHTTP2PingTimeout(proxyHTTP2PingTimeout),
 	}, opts...)...)
 	origin := func(u *url.URL) [3]string {
 		scheme, port := strings.ToLower(u.Scheme), u.Port()
