@@ -246,15 +246,30 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 			return helpers.InputError(e, to.StringPtr(`"refresh_token" is required`))
 		}
 
+		// A superseded refresh token is a replay: revoke the session it was
+		// rotated from. Like rejectRefresh below, a disconnected caller must
+		// not cancel the revocation.
+		refreshHash := fmt.Sprintf("%x", sha256.Sum256([]byte(*req.RefreshToken)))
+		rejectReplay := func() error {
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if err := s.db.Exec(cleanupCtx, `DELETE FROM oauth_tokens WHERE id IN
+				(SELECT oauth_token_id FROM oauth_used_refresh_tokens WHERE token_hash = ?)`, nil, refreshHash).Error; err != nil {
+				logger.Error("error revoking replayed refresh session", "error", err)
+				return helpers.ServerError(e, nil)
+			}
+			return helpers.InvalidGrantError(e, "Invalid refresh token")
+		}
+
 		var oauthToken provider.OauthToken
 		if err := s.db.Raw(ctx, "SELECT * FROM oauth_tokens WHERE refresh_token = ?", nil, req.RefreshToken).Scan(&oauthToken).Error; err != nil {
-			logger.Error("error finding oauth token by refresh token", "error", err, "refresh_token", req.RefreshToken)
+			logger.Error("error finding oauth token by refresh token", "error", err)
 			return helpers.ServerError(e, nil)
 		}
 		// Scan leaves oauthToken zero-valued when no row matches: the refresh
 		// token was never issued, or has already been rotated or revoked.
 		if oauthToken.RefreshToken == "" {
-			return helpers.InvalidGrantError(e, "Invalid refresh token")
+			return rejectReplay()
 		}
 		repo, err := s.getRepoActorByDid(ctx, oauthToken.Sub)
 		if err != nil {
@@ -349,18 +364,32 @@ func (s *Server) handleOauthToken(e echo.Context) error {
 
 		sessionLifetime, refreshLifetime := oauth.GetSessionLifetimes(oauthToken)
 		checkedAt := time.Now()
-		result := s.db.Exec(ctx, `UPDATE oauth_tokens
-			SET token = ?, refresh_token = ?, expires_at = ?, updated_at = ?, parameters = ?, client_auth = ?
-			WHERE refresh_token = ? AND created_at >= ? AND updated_at >= ?
-			AND EXISTS (SELECT 1 FROM repos WHERE did = ? AND session_version = ?)`,
-			nil, accessString, nextRefreshToken, eat, now, oauthToken.Parameters, oauthToken.ClientAuth, *req.RefreshToken,
-			checkedAt.Add(-sessionLifetime), checkedAt.Add(-refreshLifetime), oauthToken.Sub, oauthToken.SessionVersion)
-		if result.Error != nil {
-			logger.Error("error updating token", "error", result.Error)
-			return helpers.ServerError(e, nil)
+		notRotated := errors.New("refresh token was not rotated")
+		err = s.db.Transaction(ctx, func(tx *db.DB) error {
+			result := tx.Exec(ctx, `UPDATE oauth_tokens
+				SET token = ?, refresh_token = ?, expires_at = ?, updated_at = ?, parameters = ?, client_auth = ?
+				WHERE refresh_token = ? AND created_at >= ? AND updated_at >= ?
+				AND EXISTS (SELECT 1 FROM repos WHERE did = ? AND session_version = ?)`,
+				nil, accessString, nextRefreshToken, eat, now, oauthToken.Parameters, oauthToken.ClientAuth, *req.RefreshToken,
+				checkedAt.Add(-sessionLifetime), checkedAt.Add(-refreshLifetime), oauthToken.Sub, oauthToken.SessionVersion)
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected != 1 {
+				return notRotated
+			}
+			// Record the superseded token with the rotation, so new
+			// credentials are never issued without replay detection.
+			return tx.Create(ctx, &provider.OauthUsedRefreshToken{TokenHash: refreshHash, OauthTokenID: oauthToken.ID}, nil).Error
+		})
+		if errors.Is(err, notRotated) {
+			// Another request may have rotated this token since our lookup.
+			// Its history is committed by now, so this revokes that session.
+			return rejectReplay()
 		}
-		if result.RowsAffected != 1 {
-			return helpers.InvalidGrantError(e, "Invalid refresh token")
+		if err != nil {
+			logger.Error("error rotating token", "error", err)
+			return helpers.ServerError(e, nil)
 		}
 
 		// prob not needed

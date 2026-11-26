@@ -67,6 +67,7 @@ func newTestServer(t *testing.T) *Server {
 		&models.TwoFactorCredential{},
 		&models.TwoFactorBackupCode{},
 		&provider.OauthToken{},
+		&provider.OauthUsedRefreshToken{},
 		&provider.OauthAuthorizationRequest{},
 	); err != nil {
 		t.Fatalf("migrate: %v", err)
