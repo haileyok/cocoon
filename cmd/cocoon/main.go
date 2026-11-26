@@ -18,6 +18,7 @@ import (
 	"github.com/haileyok/cocoon/identity"
 	"github.com/haileyok/cocoon/internal/db"
 	"github.com/haileyok/cocoon/internal/helpers"
+	"github.com/haileyok/cocoon/plc"
 	"github.com/haileyok/cocoon/server"
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/lestrrat-go/jwx/v2/jwk"
@@ -89,6 +90,17 @@ func main() {
 				Name:    "require-invite",
 				EnvVars: []string{"COCOON_REQUIRE_INVITE"},
 				Value:   true,
+			},
+			&cli.StringSliceFlag{
+				Name:    "agent-principals",
+				Usage:   "DIDs of accounts here that may create agent accounts (at.hailey.cocoon.createAgent)",
+				EnvVars: []string{"COCOON_AGENT_PRINCIPALS"},
+			},
+			&cli.IntFlag{
+				Name:    "agents-per-hour",
+				Usage:   "how many agent accounts one principal may create an hour",
+				EnvVars: []string{"COCOON_AGENTS_PER_HOUR"},
+				Value:   120,
 			},
 			&cli.StringFlag{
 				Name:    "smtp-user",
@@ -249,6 +261,8 @@ var runServe = &cli.Command{
 			Relays:          cmd.StringSlice("relays"),
 			AdminPassword:   cmd.String("admin-password"),
 			RequireInvite:   cmd.Bool("require-invite"),
+			AgentPrincipals: cmd.StringSlice("agent-principals"),
+			AgentsPerHour:   cmd.Int("agents-per-hour"),
 			SmtpUser:        cmd.String("smtp-user"),
 			SmtpPass:        cmd.String("smtp-pass"),
 			SmtpHost:        cmd.String("smtp-host"),
@@ -626,6 +640,14 @@ var runCreateAgent = &cli.Command{
 			Aliases: []string{"recovery"},
 			Usage:   "did:key held offline by the operator; placed FIRST in the genesis operation's rotationKeys",
 		},
+		&cli.StringSliceFlag{
+			Name:  "agent-of",
+			Usage: "DID of a principal the agent acts for; adds https://ident.link/agent-of/<did> to the genesis operation's alsoKnownAs (repeatable)",
+		},
+		&cli.StringSliceFlag{
+			Name:  "also-known-as",
+			Usage: "an extra https URI for the genesis operation's alsoKnownAs (repeatable)",
+		},
 		&cli.BoolFlag{
 			Name:  "no-recovery-key",
 			Usage: "explicitly create the agent without an operator recovery key (not recommended)",
@@ -654,9 +676,14 @@ var runCreateAgent = &cli.Command{
 			return fmt.Errorf("error migrating database: %w", err)
 		}
 
+		aka := cmd.StringSlice("also-known-as")
+		for _, did := range cmd.StringSlice("agent-of") {
+			aka = append(aka, plc.IdentLinkAgentOfPrefix+did)
+		}
 		res, err := s.CreateAgent(context.Background(), server.CreateAgentArgs{
 			Handle:      cmd.String("handle"),
 			RecoveryKey: recoveryKey,
+			AlsoKnownAs: aka,
 		})
 		if err != nil {
 			return fmt.Errorf("error creating agent: %w", err)

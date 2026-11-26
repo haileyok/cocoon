@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -510,4 +511,138 @@ func TestProxyCancelsUpstreamOnClientDisconnect(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the proxy handler did not return after the client disconnected")
 	}
+}
+
+// blackholeRelay forwards TCP connections to target until blackhole is called.
+// From then on the connections that already exist swallow every byte in both
+// directions without closing, the way a dropped flow behaves: no RST, no FIN,
+// no response. Connections accepted later are forwarded normally.
+type blackholeRelay struct {
+	listener net.Listener
+	target   string
+	mu       sync.Mutex
+	conns    []*atomic.Bool
+	accepted atomic.Int32
+}
+
+func newBlackholeRelay(t *testing.T, target string) *blackholeRelay {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := &blackholeRelay{listener: listener, target: target}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			client, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			r.accepted.Add(1)
+			server, err := net.Dial("tcp", target)
+			if err != nil {
+				client.Close()
+				continue
+			}
+			dead := new(atomic.Bool)
+			r.mu.Lock()
+			r.conns = append(r.conns, dead)
+			r.mu.Unlock()
+			t.Cleanup(func() { client.Close(); server.Close() })
+			pipe := func(dst, src net.Conn) {
+				buf := make([]byte, 32<<10)
+				for {
+					n, err := src.Read(buf)
+					if err != nil {
+						return
+					}
+					if dead.Load() {
+						continue
+					}
+					if _, err := dst.Write(buf[:n]); err != nil {
+						return
+					}
+				}
+			}
+			go pipe(server, client)
+			go pipe(client, server)
+		}
+	}()
+	return r
+}
+
+func (r *blackholeRelay) blackhole() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, dead := range r.conns {
+		dead.Store(true)
+	}
+}
+
+// TestProxyDropsDeadHTTP2Connection reproduces the cocoon.hailey.at outage of
+// 2026-11-21: the HTTP/2 connection to the appview went silent, and because a
+// client kept polling, the connection never sat idle long enough to be closed.
+// Every request rode the dead connection and failed after the 20s header
+// timeout, for minutes. HTTP/2 PING health checks must notice the dead
+// connection and close it, so that requests move to a new connection.
+func TestProxyDropsDeadHTTP2Connection(t *testing.T) {
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	}))
+	upstream.EnableHTTP2 = true
+	upstream.StartTLS()
+	t.Cleanup(upstream.Close)
+	relay := newBlackholeRelay(t, upstream.Listener.Addr().String())
+
+	tlsConfig := upstream.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	tlsConfig.ServerName = "example.com"
+	client := newProxyHTTPClient(
+		gttp.WithTLSConfig(tlsConfig),
+		gttp.WithDialContext(func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, relay.listener.Addr().String())
+		}),
+	)
+	t.Cleanup(client.CloseIdleConnections)
+
+	get := func(timeout time.Duration) (string, error) {
+		ctx, cancel := context.WithTimeout(t.Context(), timeout)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, "GET", "https://203.0.113.10/xrpc/app.bsky.notification.getUnreadCount", nil)
+		if err != nil {
+			return "", err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+		if resp.ProtoMajor != 2 {
+			t.Fatalf("upstream spoke %s, want HTTP/2", resp.Proto)
+		}
+		body, err := io.ReadAll(resp.Body)
+		return string(body), err
+	}
+
+	if body, err := get(5 * time.Second); err != nil || body != "ok" {
+		t.Fatalf("first request: body=%q err=%v", body, err)
+	}
+	relay.blackhole()
+	start := time.Now()
+
+	// Poll like a client checking for notifications. Each poll keeps the
+	// connection from going idle, which is what kept the dead connection in
+	// the pool in production.
+	const budget = 20 * time.Second
+	for time.Since(start) < budget {
+		if body, err := get(budget); err == nil && body == "ok" {
+			if relay.accepted.Load() < 2 {
+				t.Fatal("request succeeded without a new connection")
+			}
+			t.Logf("recovered on a new connection after %s", time.Since(start).Round(time.Millisecond))
+			return
+		}
+		time.Sleep(time.Second)
+	}
+	t.Fatalf("no request succeeded within %s of the connection going dead; the proxy kept using it", budget)
 }

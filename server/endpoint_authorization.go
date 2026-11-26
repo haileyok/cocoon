@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/haileyok/cocoon/internal/helpers"
+	"github.com/haileyok/cocoon/models"
 	"github.com/haileyok/cocoon/oauth/scopes"
 	"github.com/labstack/echo/v4"
 )
@@ -32,6 +33,13 @@ func (s *Server) authorizeEndpoint(e echo.Context, next echo.HandlerFunc) error 
 		}
 	}
 	nsid := strings.TrimPrefix(e.Request().URL.Path, "/xrpc/")
+	// An agent's account can't change its own identity, however it signed
+	// in: its operator holds that (https://ident.link/#protecting-from-alterations).
+	if strings.HasPrefix(nsid, "com.atproto.identity.") {
+		if ra, ok := e.Get("repo").(*models.RepoActor); ok && isAgentRepo(&ra.Repo) {
+			return e.JSON(403, map[string]string{"error": "Forbidden", "message": "agent accounts can't change their identity"})
+		}
+	}
 	required := ""
 	switch nsid {
 	case "com.atproto.server.requestEmailUpdate", "com.atproto.server.updateEmail",

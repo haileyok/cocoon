@@ -17,6 +17,7 @@ import (
 	"github.com/bluesky-social/indigo/util"
 	"github.com/haileyok/cocoon/internal/helpers"
 	"github.com/haileyok/cocoon/models"
+	"github.com/haileyok/cocoon/plc"
 	"github.com/ipfs/go-cid"
 	"github.com/labstack/echo/v4"
 	"golang.org/x/crypto/bcrypt"
@@ -33,6 +34,12 @@ type ComAtprotoServerCreateAccountRequest struct {
 	// PLC operation's rotationKeys, before the PDS's own rotation key, so its
 	// holder outranks the PDS for identity recovery.
 	RecoveryKey string `json:"recoveryKey" validate:"omitempty"`
+	// AlsoKnownAs are extra https URIs published in the genesis PLC
+	// operation after the at:// handle, such as an ident.link declaration
+	// that the account is an agent of a principal
+	// (https://ident.link/agent-of/<did>). Only for a new did:plc: an
+	// account bringing its own DID publishes its own document.
+	AlsoKnownAs []string `json:"alsoKnownAs" validate:"omitempty"`
 }
 
 type ComAtprotoServerCreateAccountResponse struct {
@@ -77,6 +84,16 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 				return helpers.InputError(e, to.StringPtr("InvalidInviteCode"))
 			}
 		}
+	}
+
+	// Check the extra aliases before anything is claimed (an invite use, a
+	// handle), so a bad request costs nothing.
+	extraAka, err := plc.ValidateExtraAlsoKnownAs(request.AlsoKnownAs)
+	if err != nil {
+		return e.JSON(400, map[string]string{"error": "InvalidRequest", "message": err.Error()})
+	}
+	if request.Did != nil && len(extraAka) > 0 {
+		return e.JSON(400, map[string]string{"error": "InvalidRequest", "message": "alsoKnownAs applies only to a new did:plc"})
 	}
 
 	var signupDid string
@@ -189,7 +206,7 @@ func (s *Server) handleCreateAccount(e echo.Context) error {
 			}
 		}
 
-		did, op, err := s.plcClient.CreateDID(k, kemDidKey, request.RecoveryKey, request.Handle)
+		did, op, err := s.plcClient.CreateDID(k, kemDidKey, request.RecoveryKey, request.Handle, extraAka...)
 		if err != nil {
 			logger.Error("error creating operation", "endpoint", "com.atproto.server.createAccount", "error", err)
 			return helpers.ServerError(e, nil)
