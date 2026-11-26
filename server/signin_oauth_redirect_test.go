@@ -528,7 +528,7 @@ func TestAuthorizeRejectRedirectsToAppWithAccessDenied(t *testing.T) {
 	s, _, cookie := manageServer(t)
 	insertAuthRequest(t, s, "req-reject")
 
-	w := browserDo(s, cookie, "POST", "/oauth/authorize", url.Values{
+	w := sameOriginPost(s, cookie, "/oauth/authorize", url.Values{
 		"request_uri":      {oauth.EncodeRequestUri("req-reject")},
 		"accept_or_reject": {"reject"},
 	})
@@ -556,7 +556,7 @@ func TestAuthorizePostWhenSignedOutKeepsRequest(t *testing.T) {
 	insertAuthRequest(t, s, "req-signed-out")
 	reqURI := oauth.EncodeRequestUri("req-signed-out")
 
-	w := browserDo(s, nil, "POST", "/oauth/authorize", url.Values{"request_uri": {reqURI}, "accept_or_reject": {"accept"}})
+	w := sameOriginPost(s, nil, "/oauth/authorize", url.Values{"request_uri": {reqURI}, "accept_or_reject": {"accept"}})
 	want := "/account/signin?" + url.Values{"client_id": {"https://app.example/client-metadata.json"}, "request_uri": {reqURI}}.Encode()
 	if w.Code != 303 || w.Header().Get("Location") != want {
 		t.Fatalf("got %d %q, want %q", w.Code, w.Header().Get("Location"), want)
@@ -568,11 +568,11 @@ func TestAuthorizeAcceptOnlyOnce(t *testing.T) {
 	insertAuthRequest(t, s, "req-once")
 	form := url.Values{"request_uri": {oauth.EncodeRequestUri("req-once")}, "accept_or_reject": {"accept"}}
 
-	w := browserDo(s, cookie, "POST", "/oauth/authorize", form)
+	w := sameOriginPost(s, cookie, "/oauth/authorize", form)
 	if w.Code != 303 || !strings.HasPrefix(w.Header().Get("Location"), "https://app.example/callback?") {
 		t.Fatalf("accept: %d %q", w.Code, w.Header().Get("Location"))
 	}
-	if w := browserDo(s, cookie, "POST", "/oauth/authorize", form); w.Code != 400 {
+	if w := sameOriginPost(s, cookie, "/oauth/authorize", form); w.Code != 400 {
 		t.Fatalf("second accept should fail, got %d %q", w.Code, w.Header().Get("Location"))
 	}
 }
@@ -589,7 +589,7 @@ func TestAuthorizeAcceptRenewsCodeExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := time.Now()
-	w := browserDo(s, cookie, "POST", "/oauth/authorize", url.Values{
+	w := sameOriginPost(s, cookie, "/oauth/authorize", url.Values{
 		"request_uri": {oauth.EncodeRequestUri(auth.RequestId)}, "accept_or_reject": {"accept"},
 	})
 	after := time.Now()
@@ -611,7 +611,7 @@ func TestAuthorizeAcceptRenewsCodeExpiry(t *testing.T) {
 		t.Errorf("code expiry %s was not renewed at acceptance", auth.ExpiresAt)
 	}
 	acceptedExpiry := auth.ExpiresAt
-	w = browserDo(s, cookie, "POST", "/oauth/authorize", url.Values{
+	w = sameOriginPost(s, cookie, "/oauth/authorize", url.Values{
 		"request_uri": {oauth.EncodeRequestUri(auth.RequestId)}, "accept_or_reject": {"accept"},
 	})
 	if w.Code != 400 {
@@ -639,7 +639,7 @@ func TestAuthorizeAcceptDoesNotRenewExpiredRequest(t *testing.T) {
 	if err := s.db.Exec(t.Context(), "UPDATE oauth_authorization_requests SET expires_at = ? WHERE request_id = ?", nil, expiry, "expired-request").Error; err != nil {
 		t.Fatal(err)
 	}
-	w := browserDo(s, cookie, "POST", "/oauth/authorize", url.Values{
+	w := sameOriginPost(s, cookie, "/oauth/authorize", url.Values{
 		"request_uri": {oauth.EncodeRequestUri("expired-request")}, "accept_or_reject": {"accept"},
 	})
 	if w.Code != 400 {

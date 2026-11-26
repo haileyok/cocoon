@@ -61,26 +61,8 @@ func mergeRedirectQuery(redirect string, queryParams string) (string, error) {
 	return parsedRedirect.String(), nil
 }
 
-func isSameOriginRequest(e echo.Context) bool {
-	host := e.Request().Host
-
-	origin := strings.TrimSpace(e.Request().Header.Get("Origin"))
-	if origin != "" {
-		parsedOrigin, err := url.Parse(origin)
-		return err == nil && parsedOrigin.Host == host
-	}
-
-	referer := strings.TrimSpace(e.Request().Header.Get("Referer"))
-	if referer != "" {
-		parsedReferer, err := url.Parse(referer)
-		return err == nil && parsedReferer.Host == host
-	}
-
-	return false
-}
-
 func (s *Server) handleAccountSwitchPost(e echo.Context) error {
-	if !isSameOriginRequest(e) {
+	if !s.isSameOriginRequest(e) {
 		return e.JSON(http.StatusForbidden, map[string]string{"error": "Forbidden"})
 	}
 

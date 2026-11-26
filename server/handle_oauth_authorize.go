@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -233,6 +234,12 @@ type OauthAuthorizePostRequest struct {
 }
 
 func (s *Server) handleOauthAuthorizePost(e echo.Context) error {
+	// SameSite cookies alone do not protect against a sibling subdomain.
+	// Check before accepting OR rejecting, and before touching the request.
+	if !s.isSameOriginRequest(e) {
+		return e.JSON(http.StatusForbidden, map[string]string{"error": "Forbidden"})
+	}
+
 	ctx := e.Request().Context()
 	logger := s.logger.With("name", "handleOauthAuthorizePost")
 
